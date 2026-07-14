@@ -43,7 +43,6 @@ def test_notebooks_use_the_colab_environment_module() -> None:
         source = "\n".join(cell.source for cell in notebook.cells)
 
         assert (
-            "from jlens_reasoning.environments.colab import initialize_colab"
-            in source
+            "from jlens_reasoning.environments.colab import initialize_colab" in source
         )
         assert "context = initialize_colab(" in source

@@ -20,8 +20,7 @@ def test_colab_initialization_mounts_drive_and_authenticates(
         secret_getter=secrets.__getitem__,
         drive_mounter=lambda: events.append("drive-mounted"),
         hf_authenticator=lambda **kwargs: events.append(("hf", kwargs)),
-        wandb_authenticator=lambda **kwargs: events.append(("wandb", kwargs))
-        or True,
+        wandb_authenticator=lambda **kwargs: events.append(("wandb", kwargs)) or True,
         device_selector=lambda **_: torch.device("cuda"),
     )
 

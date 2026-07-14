@@ -43,9 +43,7 @@ def test_clone_uses_header_auth_without_putting_token_in_commands(
     fetch_environment = fetch_call[1]["env"]
     assert fetch_environment["GIT_CONFIG_COUNT"] == "1"
     assert fetch_environment["GIT_CONFIG_KEY_0"].endswith(".extraheader")
-    assert fetch_environment["GIT_CONFIG_VALUE_0"].startswith(
-        "AUTHORIZATION: basic "
-    )
+    assert fetch_environment["GIT_CONFIG_VALUE_0"].startswith("AUTHORIZATION: basic ")
 
 
 def test_locked_install_exports_experiment_dependencies(tmp_path: Path) -> None:
