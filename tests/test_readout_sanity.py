@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 import torch
 
 from jlens_reasoning.experiments.readout_sanity import (
@@ -9,11 +11,15 @@ from jlens_reasoning.experiments.readout_sanity import (
     LENS_REVISION,
     MODEL_NAME,
     READOUT_CASES,
+    ReadoutCase,
+    analyze_case,
     best_target_rank,
     concept_token_variants,
     find_last_subsequence,
     positions_after_literal,
+    run_readout_sanity,
     top_tokens,
+    validate_model_lens,
     workspace_layers,
     write_results,
 )
@@ -115,3 +121,101 @@ def test_results_round_trip_without_tensors(tmp_path: Path) -> None:
         "layers": [7, 8],
         "rank": 3,
     }
+
+
+class RunnerTokenizer(FakeTokenizer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.pieces.update(
+            {
+                "spider": [2],
+                " spider": [2],
+                "Spider": [2],
+                " Spider": [2],
+                "SPIDER": [2],
+                " SPIDER": [2],
+                "8": [4],
+                " 8": [4],
+                "eight": [4],
+                " eight": [4],
+                "Eight": [4],
+                " Eight": [4],
+                "EIGHT": [4],
+                " EIGHT": [4],
+            }
+        )
+
+
+class FakeLens:
+    d_model = 4
+    source_layers = [0, 1, 2, 3]
+    n_prompts = 1000
+
+    def apply(self, model, prompt, *, use_jacobian=True, **kwargs):
+        del model, prompt, kwargs
+        input_ids = torch.tensor([[0, 1, 3]])
+        model_logits = torch.zeros(3, 6)
+        model_logits[-1, 4] = 9.0
+        layer_logits = {}
+        for layer in self.source_layers:
+            logits = torch.zeros(3, 6)
+            logits[:, 2] = 8.0 if use_jacobian and layer == 2 else -1.0
+            layer_logits[layer] = logits
+        return layer_logits, model_logits, input_ids
+
+
+def test_validate_model_lens_rejects_width_and_layer_mismatches() -> None:
+    with pytest.raises(ValueError, match="residual width"):
+        validate_model_lens(SimpleNamespace(n_layers=4, d_model=5), FakeLens())
+
+    lens = FakeLens()
+    lens.source_layers = [0, 4]
+    with pytest.raises(ValueError, match="fitted layers"):
+        validate_model_lens(SimpleNamespace(n_layers=4, d_model=4), lens)
+
+
+def test_analyze_case_grades_baseline_and_spider_readout() -> None:
+    case = ReadoutCase(
+        key="spider",
+        prompt="prompt",
+        expected_answers=("8", "eight"),
+        target_concepts=("spider",),
+    )
+
+    result = analyze_case(
+        case,
+        model=SimpleNamespace(n_layers=4, d_model=4),
+        lens=FakeLens(),
+        tokenizer=RunnerTokenizer(),
+        top_k=3,
+    )
+
+    assert result["checks"] == {"baseline_top1": True, "target_top_k": True}
+    assert result["summary"]["jacobian_lens"]["best_rank"] == 1
+    assert result["summary"]["jacobian_lens"]["layer"] == 2
+    assert result["summary"]["logit_lens"]["best_rank"] > 1
+    assert result["passed"] is True
+
+
+def test_run_readout_sanity_keeps_failed_case_details() -> None:
+    case = ReadoutCase(
+        key="wrong-baseline",
+        prompt="prompt",
+        expected_answers=("missing",),
+        target_concepts=("spider",),
+    )
+    tokenizer = RunnerTokenizer()
+    tokenizer.pieces["missing"] = [5]
+    tokenizer.pieces[" missing"] = [5]
+
+    result = run_readout_sanity(
+        model=SimpleNamespace(n_layers=4, d_model=4),
+        lens=FakeLens(),
+        tokenizer=tokenizer,
+        cases=(case,),
+        top_k=3,
+    )
+
+    assert result["passed"] is False
+    assert result["cases"][0]["checks"]["baseline_top1"] is False
+    assert result["failures"] == ["wrong-baseline: baseline top-1 mismatch"]
