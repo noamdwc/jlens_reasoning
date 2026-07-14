@@ -151,6 +151,22 @@ def install_locked_environment(
             str(requirements),
         ],
     )
+    wheel_dir = project_dir / "dist"
+    _run(
+        runner,
+        [
+            uv_bin,
+            "build",
+            "--wheel",
+            "--clear",
+            "--out-dir",
+            str(wheel_dir),
+            str(project_dir),
+        ],
+    )
+    wheels = list(wheel_dir.glob("*.whl"))
+    if len(wheels) != 1:
+        raise RuntimeError("Colab build must produce exactly one wheel")
     _run(
         runner,
         [
@@ -159,8 +175,7 @@ def install_locked_environment(
             "install",
             "--system",
             "--no-deps",
-            "--editable",
-            str(project_dir),
+            str(wheels[0]),
         ],
     )
 

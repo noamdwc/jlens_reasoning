@@ -2,17 +2,28 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from scripts.colab_bootstrap import clone_repository, install_locked_environment
 
 
 class RecordingRunner:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        wheel_names: tuple[str, ...] = ("jlens_reasoning-0.1.0-py3-none-any.whl",),
+    ) -> None:
         self.calls: list[tuple[list[str], dict[str, Any]]] = []
+        self.wheel_names = wheel_names
 
     def __call__(
         self, command: list[str], **kwargs: Any
     ) -> subprocess.CompletedProcess:
         self.calls.append((command, kwargs))
+        if command[1:2] == ["build"]:
+            output_dir = Path(command[command.index("--out-dir") + 1])
+            output_dir.mkdir(parents=True, exist_ok=True)
+            for wheel_name in self.wheel_names:
+                (output_dir / wheel_name).touch()
         stdout = (
             "https://github.com/noamdwc/jlens-reasoning.git\n"
             if command[-2:] == ["get-url", "origin"]
@@ -82,12 +93,32 @@ def test_locked_install_exports_experiment_dependencies(tmp_path: Path) -> None:
         "--requirement",
         "/tmp/jlens-requirements.txt",
     ]
+    wheel = tmp_path / "dist" / "jlens_reasoning-0.1.0-py3-none-any.whl"
     assert commands[3] == [
+        "uv",
+        "build",
+        "--wheel",
+        "--clear",
+        "--out-dir",
+        str(tmp_path / "dist"),
+        str(tmp_path),
+    ]
+    assert commands[4] == [
         "uv",
         "pip",
         "install",
         "--system",
         "--no-deps",
-        "--editable",
-        str(tmp_path),
+        str(wheel),
     ]
+
+
+def test_locked_install_requires_exactly_one_wheel(tmp_path: Path) -> None:
+    runner = RecordingRunner(wheel_names=())
+
+    with pytest.raises(RuntimeError, match="exactly one wheel"):
+        install_locked_environment(
+            project_dir=tmp_path,
+            runner=runner,
+            uv_bin="uv",
+        )
