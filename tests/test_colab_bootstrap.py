@@ -77,6 +77,8 @@ def test_locked_install_exports_experiment_dependencies(tmp_path: Path) -> None:
         "experiment",
         "--prune",
         "torch",
+        "--prune",
+        "numpy",
         "--no-emit-project",
         "--format",
         "requirements.txt",

@@ -70,8 +70,8 @@ Add these exact names to Colab Secrets:
 Open `notebooks/_template.ipynb` through the IDE's Colab integration. Set
 `PROJECT_REF` to an explicit branch, tag, or full commit SHA, run the loader
 cell, then initialize. The bootstrap preserves Colab's CUDA-enabled PyTorch
-and installs all other project and experiment dependencies from the committed
-lockfile.
+and preloaded NumPy, and installs the remaining project and experiment
+dependencies from the committed lockfile.
 
 ```python
 from jlens_reasoning.environments.colab import initialize_colab
