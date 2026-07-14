@@ -14,7 +14,7 @@ class RecordingRunner:
     ) -> subprocess.CompletedProcess:
         self.calls.append((command, kwargs))
         stdout = (
-            "https://github.com/noamdwc/jlens-reasoning.git\n"
+            "https://github.com/noamdwc/jlens_reasoning.git\n"
             if command[-2:] == ["get-url", "origin"]
             else ""
         )

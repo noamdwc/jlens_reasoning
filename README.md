@@ -1,4 +1,4 @@
-# jlens-reasoning
+# jlens_reasoning
 
 Research tooling for applying
 [Jacobian Lens](https://github.com/anthropics/jacobian-lens) to reasoning

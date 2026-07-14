@@ -11,7 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-REPOSITORY_URL = "https://github.com/noamdwc/jlens-reasoning.git"
+REPOSITORY_URL = "https://github.com/noamdwc/jlens_reasoning.git"
 DEFAULT_PROJECT_DIR = Path("/content/jlens-reasoning")
 UV_VERSION = "0.11.28"
 Runner = Callable[..., subprocess.CompletedProcess[str]]

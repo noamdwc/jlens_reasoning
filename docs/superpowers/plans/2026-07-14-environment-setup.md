@@ -1030,7 +1030,7 @@ class RecordingRunner:
     def __call__(self, command: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
         self.calls.append((command, kwargs))
         stdout = (
-            "https://github.com/noamdwc/jlens-reasoning.git\n"
+            "https://github.com/noamdwc/jlens_reasoning.git\n"
             if command[-2:] == ["get-url", "origin"]
             else ""
         )
@@ -1141,7 +1141,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-REPOSITORY_URL = "https://github.com/noamdwc/jlens-reasoning.git"
+REPOSITORY_URL = "https://github.com/noamdwc/jlens_reasoning.git"
 DEFAULT_PROJECT_DIR = Path("/content/jlens-reasoning")
 UV_VERSION = "0.11.28"
 Runner = Callable[..., subprocess.CompletedProcess[str]]
@@ -1437,7 +1437,7 @@ def _install_project(project_ref: str):
 
     query = urllib.parse.urlencode({"ref": project_ref})
     bootstrap_url = (
-        "https://api.github.com/repos/noamdwc/jlens-reasoning/"
+        "https://api.github.com/repos/noamdwc/jlens_reasoning/"
         "contents/scripts/colab_bootstrap.py?"
         + query
     )

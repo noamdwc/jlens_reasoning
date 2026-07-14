@@ -331,7 +331,7 @@ from pathlib import Path
 
 from google.colab import userdata
 
-REPOSITORY_URL = "https://github.com/noamdwc/jlens-reasoning.git"
+REPOSITORY_URL = "https://github.com/noamdwc/jlens_reasoning.git"
 PROJECT_DIR = Path("/content/jlens-reasoning")
 
 github_token = userdata.get("GITHUB_TOKEN_JLENS_REAS")
