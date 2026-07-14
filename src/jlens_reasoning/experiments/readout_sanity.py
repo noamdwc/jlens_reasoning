@@ -14,10 +14,7 @@ import torch
 MODEL_NAME = "Qwen/Qwen3.5-4B"
 LENS_REPO = "neuronpedia/jacobian-lens"
 LENS_REVISION = "qwen-n1000"
-LENS_FILE = (
-    "qwen3.5-4b/jlens/Salesforce-wikitext/"
-    "Qwen3.5-4B_jacobian_lens_n1000.pt"
-)
+LENS_FILE = "qwen3.5-4b/jlens/Salesforce-wikitext/Qwen3.5-4B_jacobian_lens_n1000.pt"
 TOP_K = 25
 
 
@@ -193,9 +190,7 @@ def validate_model_lens(model: Any, lens: Any) -> None:
         raise ValueError(
             f"Model/lens residual width mismatch: {model.d_model} != {lens.d_model}"
         )
-    invalid = [
-        layer for layer in lens.source_layers if not 0 <= layer < model.n_layers
-    ]
+    invalid = [layer for layer in lens.source_layers if not 0 <= layer < model.n_layers]
     if invalid:
         raise ValueError(
             f"Lens fitted layers {invalid} are outside model depth {model.n_layers}"
@@ -210,7 +205,11 @@ def _summarize_lens(
     target_ids: Sequence[int],
 ) -> dict[str, int]:
     candidates = [
-        (best_target_rank(logits_by_layer[layer][position], target_ids), layer, position)
+        (
+            best_target_rank(logits_by_layer[layer][position], target_ids),
+            layer,
+            position,
+        )
         for layer in layers
         for position in positions
     ]
@@ -334,9 +333,7 @@ def run_readout_sanity(
 ) -> dict[str, Any]:
     validate_model_lens(model, lens)
     case_results = [
-        analyze_case(
-            case, model=model, lens=lens, tokenizer=tokenizer, top_k=top_k
-        )
+        analyze_case(case, model=model, lens=lens, tokenizer=tokenizer, top_k=top_k)
         for case in cases
     ]
     failures: list[str] = []
