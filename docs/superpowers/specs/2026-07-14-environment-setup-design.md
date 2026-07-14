@@ -92,8 +92,8 @@ Responsibilities are deliberately narrow:
   runs implicitly.
 - `environments/common.py` creates a platform-neutral runtime context.
 - `environments/colab.py` performs Colab-only Drive and secret integration.
-- `scripts/colab_bootstrap.py` is a dependency-free installer that runs before
-  the package can be imported.
+- `scripts/colab_bootstrap.py` installs the locked Colab environment after the
+  notebook has cloned and checked out the repository.
 
 ## Artifact Storage
 
@@ -128,15 +128,23 @@ so each notebook needs one minimal loader cell. The cell contains only the Git
 ref and enough standard-library code to:
 
 1. Read `GITHUB_TOKEN_JLENS_REAS` from Colab Secrets.
-2. Fetch the canonical `scripts/colab_bootstrap.py` from the selected Git ref
-   with the token in an authorization header, never in the URL.
-3. Execute the fetched bootstrap script.
+2. Build a process-local Git authorization environment. The token is passed as
+   an HTTP authorization header, never in the repository URL or command list.
+3. Run a normal `git clone` of the private repository.
+4. Run `git checkout` for the selected branch, tag, or commit.
+5. Execute the cloned `scripts/colab_bootstrap.py` installer.
 
-The script clones the selected ref with temporary credentials, installs the
-locked environment, removes the temporary credential mechanism, and verifies
-that the saved Git remote contains no token. New experiment notebooks are copied
-from `notebooks/_template.ipynb` so the stable loader cell is not reconstructed
-manually.
+The Git authorization environment is supplied only to the clone subprocess and
+is not stored in the notebook environment or Git configuration. The saved
+remote is the plain HTTPS repository URL. The bootstrap script has no GitHub,
+credential, clone, or checkout responsibilities; it only installs uv, exports
+the locked dependency set while preserving Colab's CUDA-enabled PyTorch, and
+installs this project into the active interpreter.
+
+The loader assumes a fresh Colab runtime. Restarting the runtime is the supported
+way to switch revisions or rerun repository setup. New experiment notebooks are
+copied from `notebooks/_template.ipynb` so the stable loader cell is not
+reconstructed manually.
 
 After installation, notebooks initialize the shared environment with:
 
@@ -165,7 +173,7 @@ It does not expose benchmark-specific paths.
 
 Colab reads these exact secret names:
 
-- `GITHUB_TOKEN_JLENS_REAS` for authenticated GitHub access during bootstrap.
+- `GITHUB_TOKEN_JLENS_REAS` for the private repository clone.
 - `HF_READ_TOKEN` for read access to Hugging Face resources.
 - `WANDB_API_KEY` for W&B authentication.
 
@@ -196,7 +204,8 @@ Initialization fails rather than continuing with a misleading partial setup
 when any of the following occurs:
 
 - Python is outside the supported range.
-- The selected Git ref cannot be fetched or the locked installation fails.
+- The private repository cannot be cloned, the selected Git ref cannot be
+  checked out, or the locked installation fails.
 - Google Drive cannot be mounted.
 - `JLENS_REAS_ARTIFACT_ROOT` is missing when required or is not writable.
 - A required GitHub or Hugging Face credential is absent or rejected.
@@ -218,9 +227,10 @@ GitHub Actions performs:
 - Package and Jacobian Lens import smoke tests without model downloads.
 - Tests for artifact path resolution, directory creation, device selection,
   W&B policy, and secret redaction.
-- Mocked tests of the Colab initializer and dependency-free bootstrap script.
-- Notebook validation ensuring the template uses the canonical loader and that
-  committed notebooks contain no outputs or credentials.
+- Mocked tests of the Colab initializer and dependency-only bootstrap script.
+- Notebook validation ensuring the template uses the canonical `git clone` and
+  `git checkout` loader, avoids the GitHub Contents API, and contains no outputs
+  or credentials.
 
 The test environment sets:
 
@@ -262,9 +272,10 @@ The environment setup is complete when:
    local tests with documented commands.
 2. GitHub Actions passes the Linux checks and the lightweight macOS compatibility
    job without research secrets.
-3. A new experiment notebook can reuse the template loader, initialize Colab
-   through the shared module, authenticate the configured services, access
-   Drive artifacts, and detect CUDA.
+3. A new experiment notebook can reuse the template loader, clone the private
+   repository with process-local credentials, check out an explicit ref,
+   initialize Colab through the shared module, authenticate the configured
+   services, access Drive artifacts, and detect CUDA.
 4. W&B is enabled and fail-fast by default in Colab, can be explicitly disabled,
    and remains disabled in CI.
 5. Adding a second benchmark requires only a new directory beneath `datasets/`
