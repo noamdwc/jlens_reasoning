@@ -93,6 +93,25 @@ generic artifact paths. It authenticates W&B but does not create a run.
 Run `notebooks/00_environment_check.ipynb` after changing environment code. It
 does not download a model or benchmark.
 
+## J-Lens readout sanity experiment
+
+`notebooks/01_jlens_readout_sanity.ipynb` is the first model-backed experiment.
+Open it through the IDE's Colab integration with a GPU runtime and run all cells.
+It uses the released `Qwen/Qwen3.5-4B` Jacobian lens, disables W&B, and writes
+results beneath:
+
+```text
+runs/jlens-readout-sanity/
+├── result.json
+├── spider.html
+└── france_capital.html
+```
+
+The experiment checks whether the J-Lens surfaces the unspoken `spider`
+intermediate and preserves `France` after the argument token across four factual
+operations. It is a readout-only open-model sanity check, not a reproduction of
+the paper's causal spider→ant or France→China swaps.
+
 ## CI policy
 
 CI installs the committed `uv.lock`, disables W&B, sets Hugging Face and
