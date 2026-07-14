@@ -5,6 +5,7 @@ import nbformat
 NOTEBOOKS = [
     Path("notebooks/_template.ipynb"),
     Path("notebooks/00_environment_check.ipynb"),
+    Path("notebooks/01_jlens_readout_sanity.ipynb"),
 ]
 
 
@@ -46,3 +47,18 @@ def test_notebooks_use_the_colab_environment_module() -> None:
             "from jlens_reasoning.environments.colab import initialize_colab" in source
         )
         assert "context = initialize_colab(" in source
+
+
+def test_readout_sanity_notebook_has_pinned_gpu_workflow() -> None:
+    notebook = load_notebook(Path("notebooks/01_jlens_readout_sanity.ipynb"))
+    source = "\n".join(cell.source for cell in notebook.cells)
+
+    assert "initialize_colab(enable_wandb=False, require_cuda=True)" in source
+    assert 'MODEL_NAME = "Qwen/Qwen3.5-4B"' not in source
+    assert "from jlens_reasoning.experiments.readout_sanity import" in source
+    assert "JacobianLens.from_pretrained" in source
+    assert "run_readout_sanity" in source
+    assert "write_results" in source
+    assert "compute_slice" in source
+    assert 'mode="embed"' in source
+    assert "raise RuntimeError" in source
