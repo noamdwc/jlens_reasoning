@@ -120,6 +120,22 @@ NO_REASONING_ID = ComponentId("none", "v1")
 NO_REASONING_PARSER = ReasoningParser(NO_REASONING_ID, _no_reasoning)
 
 
+_THINK_SPAN = re.compile(r"<think>(?:(?!</?think>).)*</think>", re.DOTALL)
+
+
+def _parse_think_tags(text: str) -> tuple[str, ReasoningStatus]:
+    if "<think>" not in text and "</think>" not in text:
+        return text, ReasoningStatus.NOT_PRESENT
+    visible = _THINK_SPAN.sub("", text)
+    if "<think>" in visible or "</think>" in visible:
+        return "", ReasoningStatus.MALFORMED
+    return visible, ReasoningStatus.PARSED
+
+
+THINK_TAGS_ID = ComponentId("think_tags", "v1")
+THINK_TAGS_PARSER = ReasoningParser(THINK_TAGS_ID, _parse_think_tags)
+
+
 def _normalize(text: str) -> str:
     return unicodedata.normalize("NFC", text).strip().casefold().rstrip(".!?")
 
@@ -139,43 +155,73 @@ class FactualEvaluator(Protocol):
 class SimpleFactualEvaluator:
     reasoning_parser: ReasoningParser = NO_REASONING_PARSER
 
+    def _result(
+        self,
+        output: ModelOutput,
+        references: tuple[str, ...],
+        reasoning: ReasoningStatus,
+        status: AnswerStatus,
+        text: str = "",
+        answer: str | None = None,
+        normalized: str | None = None,
+        matched: str | None = None,
+    ) -> EvaluationResult:
+        return EvaluationResult(
+            SIMPLE_FACTUAL,
+            self.reasoning_parser.component_id,
+            FRONT_LOADED,
+            MINIMAL_TEXT,
+            references,
+            output.generation_status,
+            reasoning,
+            status,
+            output.generation_error,
+            output,
+            text,
+            answer,
+            normalized,
+            matched,
+        )
+
     def __call__(
         self, output: ModelOutput, accepted_references: tuple[str, ...]
     ) -> EvaluationResult:
+        if output.generation_status is GenerationStatus.GENERATION_ERROR:
+            return self._result(
+                output,
+                accepted_references,
+                ReasoningStatus.NOT_PRESENT,
+                AnswerStatus.NOT_GRADED,
+            )
         evaluation_text, reasoning_status = self.reasoning_parser(output.text)
+        if reasoning_status is ReasoningStatus.MALFORMED:
+            return self._result(
+                output,
+                accepted_references,
+                reasoning_status,
+                AnswerStatus.NOT_GRADED,
+            )
         evaluation_text = evaluation_text.strip()
         answer = _extract(evaluation_text)
         normalized = _normalize(answer) if answer is not None else None
         matched = next(
-            (
-                reference
-                for reference in accepted_references
-                if _normalize(reference) == normalized
-            ),
-            None,
+            (r for r in accepted_references if _normalize(r) == normalized), None
         )
-        status = (
-            AnswerStatus.UNPARSEABLE
-            if answer is None
-            else AnswerStatus.CORRECT
-            if matched is not None
-            else AnswerStatus.INCORRECT
-        )
-        return EvaluationResult(
-            evaluator=SIMPLE_FACTUAL,
-            reasoning_parser=self.reasoning_parser.component_id,
-            extractor=FRONT_LOADED,
-            normalizer=MINIMAL_TEXT,
-            accepted_references=accepted_references,
-            generation_status=output.generation_status,
-            reasoning_status=reasoning_status,
-            answer_status=status,
-            generation_error=output.generation_error,
-            raw_output=output,
-            evaluation_text=evaluation_text,
-            extracted_answer=answer,
-            normalized_answer=normalized,
-            matched_reference=matched,
+        if answer is None:
+            status = AnswerStatus.UNPARSEABLE
+        elif matched is None:
+            status = AnswerStatus.INCORRECT
+        else:
+            status = AnswerStatus.CORRECT
+        return self._result(
+            output,
+            accepted_references,
+            reasoning_status,
+            status,
+            evaluation_text,
+            answer,
+            normalized,
+            matched,
         )
 
 

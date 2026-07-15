@@ -1,12 +1,14 @@
 import pytest
 
 from jlens_reasoning.evaluation import (
+    THINK_TAGS_PARSER,
     AnswerStatus,
     ComponentId,
     EvaluationResult,
     GenerationStatus,
     ModelOutput,
     ReasoningStatus,
+    SimpleFactualEvaluator,
     evaluate,
 )
 
@@ -146,3 +148,95 @@ def test_result_records_factual_provenance() -> None:
         "v1",
     )
     assert result.reasoning_status is ReasoningStatus.NOT_PRESENT
+
+
+def test_answer_after_inline_thinking_is_graded() -> None:
+    raw_text = "<think>A spider has eight legs.</think>\n 8."
+    result = evaluate(
+        raw_text,
+        "8",
+        evaluator=SimpleFactualEvaluator(reasoning_parser=THINK_TAGS_PARSER),
+    )
+
+    assert result.raw_output.text == raw_text
+    assert result.reasoning_parser.name == "think_tags"
+    assert result.reasoning_status is ReasoningStatus.PARSED
+    assert result.evaluation_text == "8."
+    assert result.extracted_answer == "8"
+    assert result.passed
+
+
+def test_answer_only_inside_thinking_does_not_count() -> None:
+    result = evaluate(
+        "<think>The answer is 8.</think>\n6",
+        "8",
+        evaluator=SimpleFactualEvaluator(reasoning_parser=THINK_TAGS_PARSER),
+    )
+
+    assert result.evaluation_text == "6"
+    assert result.extracted_answer == "6"
+    assert result.answer_status is AnswerStatus.INCORRECT
+
+
+def test_multiple_thinking_spans_are_removed() -> None:
+    result = evaluate(
+        "<think>first</think> 8.<think>second</think>",
+        "8",
+        evaluator=SimpleFactualEvaluator(reasoning_parser=THINK_TAGS_PARSER),
+    )
+
+    assert result.reasoning_status is ReasoningStatus.PARSED
+    assert result.evaluation_text == "8."
+    assert result.answer_status is AnswerStatus.CORRECT
+
+
+def test_absent_thinking_is_not_present() -> None:
+    result = evaluate(
+        "8.",
+        "8",
+        evaluator=SimpleFactualEvaluator(reasoning_parser=THINK_TAGS_PARSER),
+    )
+
+    assert result.reasoning_status is ReasoningStatus.NOT_PRESENT
+    assert result.answer_status is AnswerStatus.CORRECT
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "<think>unfinished",
+        "stray</think>8",
+        "<think>outer <think>nested</think></think>8",
+    ],
+)
+def test_malformed_thinking_is_not_graded(text: str) -> None:
+    result = evaluate(
+        text,
+        "8",
+        evaluator=SimpleFactualEvaluator(reasoning_parser=THINK_TAGS_PARSER),
+    )
+
+    assert result.raw_output.text == text
+    assert result.evaluation_text == ""
+    assert result.extracted_answer is None
+    assert result.normalized_answer is None
+    assert result.reasoning_status is ReasoningStatus.MALFORMED
+    assert result.answer_status is AnswerStatus.NOT_GRADED
+    assert not result.passed
+
+
+def test_generation_error_is_not_graded() -> None:
+    output = ModelOutput(
+        text="partial raw output",
+        generation_status=GenerationStatus.GENERATION_ERROR,
+        generation_error="device failure",
+    )
+
+    result = evaluate(output, "8")
+
+    assert result.raw_output is output
+    assert result.raw_output.text == "partial raw output"
+    assert result.generation_error == "device failure"
+    assert result.evaluation_text == ""
+    assert result.answer_status is AnswerStatus.NOT_GRADED
+    assert not result.passed
