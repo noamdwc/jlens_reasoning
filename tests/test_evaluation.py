@@ -3,9 +3,7 @@ from dataclasses import FrozenInstanceError, fields, replace
 import pytest
 
 from jlens_reasoning.evaluation import (
-    THINK_TAGS_PARSER,
     AnswerStatus,
-    ComponentId,
     EvaluationResult,
     GenerationStatus,
     ModelOutput,
@@ -13,6 +11,7 @@ from jlens_reasoning.evaluation import (
     SimpleFactualEvaluator,
     evaluate,
 )
+from jlens_reasoning.evaluation_utils import parse_think_tags
 
 
 def test_model_output_preserves_raw_token_artifact() -> None:
@@ -55,12 +54,6 @@ def test_model_output_rejects_inconsistent_generation_error(
         )
 
 
-@pytest.mark.parametrize(("name", "version"), [("", "v1"), (" ", "v1"), ("parser", "")])
-def test_component_id_rejects_empty_values(name: str, version: str) -> None:
-    with pytest.raises(ValueError, match="non-empty"):
-        ComponentId(name, version)
-
-
 def test_spider_regression() -> None:
     result = evaluate(
         " 8.\n\nThis conclusion is based on...",
@@ -71,29 +64,26 @@ def test_spider_regression() -> None:
     assert result.evaluation_text == "8.\n\nThis conclusion is based on..."
     assert result.extracted_answer == "8"
     assert result.normalized_answer == "8"
-    assert result.matched_reference == "8"
     assert result.answer_status is AnswerStatus.CORRECT
     assert result.passed
 
 
 @pytest.mark.parametrize(
-    ("output", "references", "normalized", "match"),
+    ("output", "references", "normalized"),
     [
-        (" EIGHT! ", "eight", "eight", "eight"),
-        ("Paris? Explanation", ("Lyon", "paris."), "paris", "paris."),
-        ("Cafe\u0301", "Café", "café", "Café"),
+        (" EIGHT! ", "eight", "eight"),
+        ("Paris? Explanation", ("Lyon", "paris."), "paris"),
+        ("Cafe\u0301", "Café", "café"),
     ],
 )
 def test_minimal_normalization(
     output: str,
     references: str | tuple[str, ...],
     normalized: str,
-    match: str,
 ) -> None:
     result = evaluate(output, references)
 
     assert result.normalized_answer == normalized
-    assert result.matched_reference == match
     assert result.answer_status is AnswerStatus.CORRECT
 
 
@@ -114,7 +104,6 @@ def test_extraction_does_not_search_for_reference() -> None:
 
     assert result.extracted_answer == "6"
     assert result.normalized_answer == "6"
-    assert result.matched_reference is None
     assert result.answer_status is AnswerStatus.INCORRECT
 
 
@@ -129,40 +118,15 @@ def test_empty_complete_output_is_unparseable(text: str) -> None:
     assert not result.passed
 
 
-def test_result_records_factual_provenance() -> None:
-    result = evaluate("Paris.", ("Paris", "PARIS"))
-
-    assert isinstance(result, EvaluationResult)
-    assert result.accepted_references == ("Paris", "PARIS")
-    assert (result.evaluator.name, result.evaluator.version) == (
-        "simple_factual",
-        "v1",
-    )
-    assert (result.reasoning_parser.name, result.reasoning_parser.version) == (
-        "none",
-        "v1",
-    )
-    assert (result.extractor.name, result.extractor.version) == (
-        "front_loaded_segment",
-        "v1",
-    )
-    assert (result.normalizer.name, result.normalizer.version) == (
-        "minimal_text",
-        "v1",
-    )
-    assert result.reasoning_status is ReasoningStatus.NOT_PRESENT
-
-
 def test_answer_after_inline_thinking_is_graded() -> None:
     raw_text = "<think>A spider has eight legs.</think>\n 8."
     result = evaluate(
         raw_text,
         "8",
-        evaluator=SimpleFactualEvaluator(reasoning_parser=THINK_TAGS_PARSER),
+        evaluator=SimpleFactualEvaluator(reasoning_parser=parse_think_tags),
     )
 
     assert result.raw_output.text == raw_text
-    assert result.reasoning_parser.name == "think_tags"
     assert result.reasoning_status is ReasoningStatus.PARSED
     assert result.evaluation_text == "8."
     assert result.extracted_answer == "8"
@@ -173,7 +137,7 @@ def test_answer_only_inside_thinking_does_not_count() -> None:
     result = evaluate(
         "<think>The answer is 8.</think>\n6",
         "8",
-        evaluator=SimpleFactualEvaluator(reasoning_parser=THINK_TAGS_PARSER),
+        evaluator=SimpleFactualEvaluator(reasoning_parser=parse_think_tags),
     )
 
     assert result.evaluation_text == "6"
@@ -185,7 +149,7 @@ def test_multiple_thinking_spans_are_removed() -> None:
     result = evaluate(
         "<think>first</think> 8.<think>second</think>",
         "8",
-        evaluator=SimpleFactualEvaluator(reasoning_parser=THINK_TAGS_PARSER),
+        evaluator=SimpleFactualEvaluator(reasoning_parser=parse_think_tags),
     )
 
     assert result.reasoning_status is ReasoningStatus.PARSED
@@ -197,7 +161,7 @@ def test_absent_thinking_is_not_present() -> None:
     result = evaluate(
         "8.",
         "8",
-        evaluator=SimpleFactualEvaluator(reasoning_parser=THINK_TAGS_PARSER),
+        evaluator=SimpleFactualEvaluator(reasoning_parser=parse_think_tags),
     )
 
     assert result.reasoning_status is ReasoningStatus.NOT_PRESENT
@@ -216,7 +180,7 @@ def test_malformed_thinking_is_not_graded(text: str) -> None:
     result = evaluate(
         text,
         "8",
-        evaluator=SimpleFactualEvaluator(reasoning_parser=THINK_TAGS_PARSER),
+        evaluator=SimpleFactualEvaluator(reasoning_parser=parse_think_tags),
     )
 
     assert result.raw_output.text == text
@@ -313,7 +277,6 @@ def test_frozen_dataclasses_and_tuple_fields_are_immutable() -> None:
     output = ModelOutput("8", token_ids=(23,), token_pieces=("8",))
     result = evaluate(output, ["8", "eight"])
 
-    assert result.accepted_references == ("8", "eight")
     with pytest.raises(FrozenInstanceError):
         output.text = "6"  # type: ignore[misc]
     with pytest.raises(FrozenInstanceError):
@@ -323,32 +286,25 @@ def test_frozen_dataclasses_and_tuple_fields_are_immutable() -> None:
 def test_result_stores_only_final_text_processing_artifacts() -> None:
     names = {field.name for field in fields(EvaluationResult)}
 
-    assert {
+    assert names == {
         "raw_output",
         "evaluation_text",
         "extracted_answer",
         "normalized_answer",
-    } <= names
-    assert "visible_text" not in names
-    assert "reasoning_removed_text" not in names
-    assert "truncation_text" not in names
+        "reasoning_status",
+        "answer_status",
+    }
 
 
 @pytest.mark.parametrize(
     "changes",
     [
-        {"generation_status": GenerationStatus.TRUNCATED},
-        {"generation_error": "boom"},
-        {"matched_reference": "eight"},
-        {"accepted_references": ["8"]},
-        {"answer_status": AnswerStatus.CORRECT, "matched_reference": None},
-        {"answer_status": AnswerStatus.INCORRECT, "matched_reference": "8"},
         {
             "answer_status": AnswerStatus.INCORRECT,
             "extracted_answer": None,
             "normalized_answer": None,
-            "matched_reference": None,
         },
+        {"answer_status": AnswerStatus.UNPARSEABLE},
     ],
 )
 def test_result_rejects_inconsistent_fields(changes: dict[str, object]) -> None:
@@ -363,7 +319,7 @@ def test_pass_rule_covers_each_status_dimension() -> None:
     malformed = evaluate(
         "<think>unfinished",
         "8",
-        evaluator=SimpleFactualEvaluator(reasoning_parser=THINK_TAGS_PARSER),
+        evaluator=SimpleFactualEvaluator(reasoning_parser=parse_think_tags),
     )
     generation_error = evaluate(
         ModelOutput(
@@ -381,7 +337,7 @@ def test_pass_rule_covers_each_status_dimension() -> None:
 
 
 def test_runner_accepts_a_custom_factual_evaluator() -> None:
-    expected = replace(evaluate("8", "8"), evaluator=ComponentId("custom", "v1"))
+    expected = evaluate("8", "8")
 
     def custom(
         output: ModelOutput, accepted_references: tuple[str, ...]

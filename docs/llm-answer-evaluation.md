@@ -46,10 +46,11 @@ span multiple tokens or follow tokenizer-specific whitespace tokens.
 
 Remove reasoning content only through the model's declared protocol:
 
-- use the declared visible-answer field when reasoning and visible output are
-  returned separately; or
 - remove complete declared reasoning spans such as `<think>...</think>` and
   retain the text outside them.
+
+Version 1 accepts a single raw text output only. Separate reasoning and visible
+answer input fields are out of scope.
 
 Do not infer reasoning delimiters from the output after seeing a result.
 Unsupported nesting or unbalanced declared delimiters set reasoning status to
@@ -196,12 +197,10 @@ At minimum, save:
     "text": "..."
   },
   "evaluation": {
-    "reasoning_protocol": "none",
     "reasoning_status": "not_present",
-    "visible_text": "...",
+    "evaluation_text": "...",
     "extracted_answer": "...",
     "normalized_answer": "...",
-    "matched_reference": null,
     "answer_status": "incorrect"
   }
 }
@@ -212,9 +211,11 @@ dependency versions, device, and dtype.
 
 ## Implementation Requirements
 
-- The reasoning parser, front-loaded answer extractor, normalizer, and reference
-  comparator must be separate functions with versioned behavior.
-- Extraction must receive visible text, but not accepted references.
+- The reasoning parser, front-loaded answer extractor, normalizer, reference
+  comparator, and truncation cleanup must be separate reusable functions.
+- Their behavior is versioned by the project Git commit; runtime component IDs
+  are not required.
+- Extraction must receive `evaluation_text`, but not accepted references.
 - Comparison receives only the extracted answer and predefined references.
 - Every real artifact failure becomes a regression test before behavior is
   changed.
