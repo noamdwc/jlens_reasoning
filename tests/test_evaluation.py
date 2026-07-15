@@ -240,3 +240,49 @@ def test_generation_error_is_not_graded() -> None:
     assert result.evaluation_text == ""
     assert result.answer_status is AnswerStatus.NOT_GRADED
     assert not result.passed
+
+
+@pytest.mark.parametrize("text", ["8 or", "8", "partial answer"])
+def test_ambiguous_truncation_is_not_graded(text: str) -> None:
+    output = ModelOutput(text, generation_status=GenerationStatus.TRUNCATED)
+
+    result = evaluate(output, "8")
+
+    assert result.raw_output.text == text
+    assert result.evaluation_text == ""
+    assert result.extracted_answer is None
+    assert result.normalized_answer is None
+    assert result.generation_status is GenerationStatus.TRUNCATED
+    assert result.answer_status is AnswerStatus.NOT_GRADED
+    assert not result.passed
+
+
+@pytest.mark.parametrize(
+    ("text", "evaluation_text"),
+    [
+        ("8.\nThis sentence is incom", "8."),
+        ("8! trailing frag", "8!"),
+        ("8\ntrailing frag", "8"),
+    ],
+)
+def test_complete_front_loaded_answer_survives_truncation(
+    text: str, evaluation_text: str
+) -> None:
+    output = ModelOutput(text, generation_status=GenerationStatus.TRUNCATED)
+
+    result = evaluate(output, "8")
+
+    assert result.raw_output.text == text
+    assert result.evaluation_text == evaluation_text
+    assert result.extracted_answer == "8"
+    assert result.answer_status is AnswerStatus.CORRECT
+    assert result.passed
+
+
+def test_empty_safe_truncation_prefix_is_not_graded() -> None:
+    output = ModelOutput("\npartial", generation_status=GenerationStatus.TRUNCATED)
+
+    result = evaluate(output, "8")
+
+    assert result.evaluation_text == ""
+    assert result.answer_status is AnswerStatus.NOT_GRADED

@@ -145,6 +145,11 @@ def _extract(evaluation_text: str) -> str | None:
     return answer or None
 
 
+def _safe_truncated_text(text: str) -> str | None:
+    boundary = max(text.rfind(character) for character in ".!?\n")
+    return None if boundary < 0 else text[: boundary + 1].strip()
+
+
 class FactualEvaluator(Protocol):
     def __call__(
         self, output: ModelOutput, accepted_references: tuple[str, ...]
@@ -201,6 +206,15 @@ class SimpleFactualEvaluator:
                 reasoning_status,
                 AnswerStatus.NOT_GRADED,
             )
+        if output.generation_status is GenerationStatus.TRUNCATED:
+            evaluation_text = _safe_truncated_text(evaluation_text)
+            if not evaluation_text:
+                return self._result(
+                    output,
+                    accepted_references,
+                    reasoning_status,
+                    AnswerStatus.NOT_GRADED,
+                )
         evaluation_text = evaluation_text.strip()
         answer = _extract(evaluation_text)
         normalized = _normalize(answer) if answer is not None else None
