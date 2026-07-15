@@ -112,6 +112,13 @@ intermediate and preserves `France` after the argument token across four factual
 operations. It is a readout-only open-model sanity check, not a reproduction of
 the paper's causal spider→ant or France→China swaps.
 
+All experiments that grade model responses are expected to follow the
+[LLM answer-evaluation policy](docs/llm-answer-evaluation.md). The policy keeps
+raw generation, visible output, gold-blind extraction, normalization, and
+scoring separate, distinguishes paper-faithful metrics from semantic
+correctness, and records adoption status for evaluators that still need to be
+migrated.
+
 ## CI policy
 
 CI installs the committed `uv.lock`, disables W&B, sets Hugging Face and
