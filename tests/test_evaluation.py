@@ -1,3 +1,5 @@
+from dataclasses import FrozenInstanceError, fields, replace
+
 import pytest
 
 from jlens_reasoning.evaluation import (
@@ -37,6 +39,7 @@ def test_model_output_rejects_mismatched_token_metadata() -> None:
     [
         (GenerationStatus.GENERATION_ERROR, None),
         (GenerationStatus.GENERATION_ERROR, ""),
+        (GenerationStatus.GENERATION_ERROR, "   "),
         (GenerationStatus.COMPLETE, "boom"),
         (GenerationStatus.TRUNCATED, "boom"),
     ],
@@ -52,7 +55,7 @@ def test_model_output_rejects_inconsistent_generation_error(
         )
 
 
-@pytest.mark.parametrize(("name", "version"), [("", "v1"), ("parser", "")])
+@pytest.mark.parametrize(("name", "version"), [("", "v1"), (" ", "v1"), ("parser", "")])
 def test_component_id_rejects_empty_values(name: str, version: str) -> None:
     with pytest.raises(ValueError, match="non-empty"):
         ComponentId(name, version)
@@ -286,3 +289,105 @@ def test_empty_safe_truncation_prefix_is_not_graded() -> None:
 
     assert result.evaluation_text == ""
     assert result.answer_status is AnswerStatus.NOT_GRADED
+
+
+@pytest.mark.parametrize("references", [(), [], "", "...", " ? "])
+def test_empty_or_normalized_empty_references_are_rejected(
+    references: str | list[str] | tuple[str, ...],
+) -> None:
+    with pytest.raises(ValueError, match="reference"):
+        evaluate("8", references)
+
+
+def test_any_empty_reference_is_rejected() -> None:
+    with pytest.raises(ValueError, match="reference"):
+        evaluate("8", ("8", "   "))
+
+
+def test_model_output_rejects_mutable_token_collections() -> None:
+    with pytest.raises(TypeError, match="tuples"):
+        ModelOutput(text="8", token_ids=[23], token_pieces=["8"])  # type: ignore[arg-type]
+
+
+def test_frozen_dataclasses_and_tuple_fields_are_immutable() -> None:
+    output = ModelOutput("8", token_ids=(23,), token_pieces=("8",))
+    result = evaluate(output, ["8", "eight"])
+
+    assert result.accepted_references == ("8", "eight")
+    with pytest.raises(FrozenInstanceError):
+        output.text = "6"  # type: ignore[misc]
+    with pytest.raises(FrozenInstanceError):
+        result.answer_status = AnswerStatus.INCORRECT  # type: ignore[misc]
+
+
+def test_result_stores_only_final_text_processing_artifacts() -> None:
+    names = {field.name for field in fields(EvaluationResult)}
+
+    assert {
+        "raw_output",
+        "evaluation_text",
+        "extracted_answer",
+        "normalized_answer",
+    } <= names
+    assert "visible_text" not in names
+    assert "reasoning_removed_text" not in names
+    assert "truncation_text" not in names
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"generation_status": GenerationStatus.TRUNCATED},
+        {"generation_error": "boom"},
+        {"matched_reference": "eight"},
+        {"accepted_references": ["8"]},
+        {"answer_status": AnswerStatus.CORRECT, "matched_reference": None},
+        {"answer_status": AnswerStatus.INCORRECT, "matched_reference": "8"},
+        {
+            "answer_status": AnswerStatus.INCORRECT,
+            "extracted_answer": None,
+            "normalized_answer": None,
+            "matched_reference": None,
+        },
+    ],
+)
+def test_result_rejects_inconsistent_fields(changes: dict[str, object]) -> None:
+    result = evaluate("8", "8")
+
+    with pytest.raises((TypeError, ValueError)):
+        replace(result, **changes)
+
+
+def test_pass_rule_covers_each_status_dimension() -> None:
+    correct = evaluate("8", "8")
+    malformed = evaluate(
+        "<think>unfinished",
+        "8",
+        evaluator=SimpleFactualEvaluator(reasoning_parser=THINK_TAGS_PARSER),
+    )
+    generation_error = evaluate(
+        ModelOutput(
+            "",
+            generation_status=GenerationStatus.GENERATION_ERROR,
+            generation_error="boom",
+        ),
+        "8",
+    )
+
+    assert correct.passed
+    assert not evaluate("6", "8").passed
+    assert not malformed.passed
+    assert not generation_error.passed
+
+
+def test_runner_accepts_a_custom_factual_evaluator() -> None:
+    expected = replace(evaluate("8", "8"), evaluator=ComponentId("custom", "v1"))
+
+    def custom(
+        output: ModelOutput, accepted_references: tuple[str, ...]
+    ) -> EvaluationResult:
+        assert output.text == "ignored"
+        assert accepted_references == ("unused",)
+        return expected
+
+    assert evaluate("ignored", "unused", evaluator=custom) is expected

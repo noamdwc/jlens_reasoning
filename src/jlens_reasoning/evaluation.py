@@ -31,7 +31,7 @@ class ComponentId:
     version: str
 
     def __post_init__(self) -> None:
-        if not self.name or not self.version:
+        if not self.name.strip() or not self.version.strip():
             raise ValueError("component name and version must be non-empty")
 
 
@@ -45,9 +45,13 @@ class ModelOutput:
     generation_error: str | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.token_ids, tuple) or not isinstance(
+            self.token_pieces, tuple
+        ):
+            raise TypeError("token IDs and pieces must be tuples")
         if len(self.token_ids) != len(self.token_pieces):
             raise ValueError("token IDs and pieces must have the same length")
-        has_error = bool(self.generation_error)
+        has_error = bool(self.generation_error and self.generation_error.strip())
         expects_error = self.generation_status is GenerationStatus.GENERATION_ERROR
         if has_error != expects_error:
             raise ValueError("generation_error status and message must agree")
@@ -71,42 +75,37 @@ class EvaluationResult:
     matched_reference: str | None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.accepted_references, tuple):
+            raise TypeError("accepted references must be a tuple")
         if (
             self.generation_status is not self.raw_output.generation_status
             or self.generation_error != self.raw_output.generation_error
         ):
             raise ValueError("generation fields must match raw output")
-        if (
-            self.matched_reference is not None
-            and self.matched_reference not in self.accepted_references
-        ):
+        graded = self.answer_status in (AnswerStatus.CORRECT, AnswerStatus.INCORRECT)
+        has_answer = (
+            self.extracted_answer is not None and self.normalized_answer is not None
+        )
+        if graded != has_answer:
+            raise ValueError("graded status and answer must agree")
+        has_match = self.matched_reference is not None
+        if (self.answer_status is AnswerStatus.CORRECT) != has_match:
+            raise ValueError("correct status and match must agree")
+        if has_match and self.matched_reference not in self.accepted_references:
             raise ValueError("matched reference must be accepted")
-        if self.answer_status is AnswerStatus.CORRECT and (
-            self.extracted_answer is None
-            or self.normalized_answer is None
-            or self.matched_reference is None
-        ):
-            raise ValueError("correct result requires an answer and match")
 
     @property
     def passed(self) -> bool:
-        return (
-            self.answer_status is AnswerStatus.CORRECT
-            and self.reasoning_status is not ReasoningStatus.MALFORMED
-            and self.generation_status is not GenerationStatus.GENERATION_ERROR
+        return self.answer_status is AnswerStatus.CORRECT and not (
+            self.reasoning_status is ReasoningStatus.MALFORMED
+            or self.generation_status is GenerationStatus.GENERATION_ERROR
         )
-
-
-ReasoningFunction = Callable[[str], tuple[str, ReasoningStatus]]
 
 
 @dataclass(frozen=True, slots=True)
 class ReasoningParser:
     component_id: ComponentId
-    parse: ReasoningFunction
-
-    def __call__(self, text: str) -> tuple[str, ReasoningStatus]:
-        return self.parse(text)
+    parse: Callable[[str], tuple[str, ReasoningStatus]]
 
 
 def _no_reasoning(text: str) -> tuple[str, ReasoningStatus]:
@@ -191,6 +190,11 @@ class SimpleFactualEvaluator:
     def __call__(
         self, output: ModelOutput, accepted_references: tuple[str, ...]
     ) -> EvaluationResult:
+        if not accepted_references or any(
+            not isinstance(reference, str) or not _normalize(reference)
+            for reference in accepted_references
+        ):
+            raise ValueError("accepted references must normalize to non-empty text")
         if output.generation_status is GenerationStatus.GENERATION_ERROR:
             return self._result(
                 output,
@@ -198,23 +202,17 @@ class SimpleFactualEvaluator:
                 ReasoningStatus.NOT_PRESENT,
                 AnswerStatus.NOT_GRADED,
             )
-        evaluation_text, reasoning_status = self.reasoning_parser(output.text)
-        if reasoning_status is ReasoningStatus.MALFORMED:
-            return self._result(
-                output,
-                accepted_references,
-                reasoning_status,
-                AnswerStatus.NOT_GRADED,
-            )
+        evaluation_text, reasoning_status = self.reasoning_parser.parse(output.text)
         if output.generation_status is GenerationStatus.TRUNCATED:
             evaluation_text = _safe_truncated_text(evaluation_text)
-            if not evaluation_text:
-                return self._result(
-                    output,
-                    accepted_references,
-                    reasoning_status,
-                    AnswerStatus.NOT_GRADED,
-                )
+        if reasoning_status is ReasoningStatus.MALFORMED or not evaluation_text:
+            status = (
+                AnswerStatus.NOT_GRADED
+                if reasoning_status is ReasoningStatus.MALFORMED
+                or output.generation_status is GenerationStatus.TRUNCATED
+                else AnswerStatus.UNPARSEABLE
+            )
+            return self._result(output, accepted_references, reasoning_status, status)
         evaluation_text = evaluation_text.strip()
         answer = _extract(evaluation_text)
         normalized = _normalize(answer) if answer is not None else None
@@ -245,9 +243,8 @@ def evaluate(
     evaluator: FactualEvaluator | None = None,
 ) -> EvaluationResult:
     model_output = ModelOutput(output) if isinstance(output, str) else output
-    references = (
-        (accepted_references,)
-        if isinstance(accepted_references, str)
-        else tuple(accepted_references)
-    )
+    if isinstance(accepted_references, str):
+        references = (accepted_references,)
+    else:
+        references = tuple(accepted_references)
     return (evaluator or SimpleFactualEvaluator())(model_output, references)

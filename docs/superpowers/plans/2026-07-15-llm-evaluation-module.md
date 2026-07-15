@@ -4,7 +4,7 @@
 
 **Goal:** Add a small, dependency-free evaluator for simple factual LLM sanity-test outputs, with exhaustive regression tests and auditable immutable results.
 
-**Architecture:** Put the complete production implementation in one module and its tests in one test module. `evaluate()` only converts shorthand inputs and delegates to a callable factual evaluator. The default evaluator composes a declared reasoning parser, a gold-blind front-loaded extractor, minimal normalization, and exact reference comparison. Frozen dataclasses preserve raw output, statuses, normalized text, references, and component versions.
+**Architecture:** Put the complete production implementation in one module and its tests in one test module. `evaluate()` only converts shorthand inputs and delegates to a callable factual evaluator. Version 1 accepts one raw text output; an optional declared parser may remove inline `<think>...</think>` spans. The default evaluator produces one final `evaluation_text`, extracts directly from it, minimally normalizes the answer, and compares it exactly with accepted references.
 
 **Tech Stack:** Python 3.11 standard library (`dataclasses`, `enum`, `re`, `typing`, `unicodedata`), pytest, Ruff.
 
@@ -15,6 +15,10 @@
 - Production file: `src/jlens_reasoning/evaluation.py`
 - Test file: `tests/test_evaluation.py`
 - No Inspect AI dependency, registry, abstract base class, plugin loader, task-family hierarchy, or integration with `readout_sanity.py` in this change.
+- Version 1 has no separate reasoning field or visible-answer field. `ModelOutput.text` is the single source string.
+- Never modify `raw_output.text`. Build `evaluation_text` separately by applying declared reasoning removal, safe truncation cleanup, and outer trimming in that order.
+- Store no intermediate reasoning-removed or truncation-cleaned strings. Apart from statuses and required provenance, the only text-processing artifacts are the raw model output, final `evaluation_text`, extracted answer, and normalized answer. Extraction runs directly on `evaluation_text`.
+- `evaluation_text` is the implementation name for the policy's gradeable visible text after all pre-extraction cleanup; it is not a second model-output field.
 - Target at most 250 physical lines in the production module. If it exceeds that, remove duplication or unnecessary abstraction before splitting files.
 - Keep extraction gold-blind: neither the extractor nor the reasoning parser may receive accepted references.
 
@@ -25,7 +29,7 @@
 - Create: `src/jlens_reasoning/evaluation.py`
 - Create: `tests/test_evaluation.py`
 
-- [ ] Write failing tests for string-valued enums and `ModelOutput` validation:
+- [x] Write failing tests for string-valued enums and `ModelOutput` validation:
 
 ```python
 import pytest
@@ -72,7 +76,7 @@ def test_model_output_rejects_inconsistent_generation_error(
         )
 ```
 
-- [ ] Run the focused tests and confirm they fail because the module does not exist:
+- [x] Run the focused tests and confirm they fail because the module does not exist:
 
 ```bash
 .venv/bin/pytest tests/test_evaluation.py -q
@@ -80,7 +84,7 @@ def test_model_output_rejects_inconsistent_generation_error(
 
 Expected: collection error for `jlens_reasoning.evaluation`.
 
-- [ ] Implement only the input types:
+- [x] Implement only the input types:
 
 ```python
 from dataclasses import dataclass
@@ -134,9 +138,9 @@ class ModelOutput:
             raise ValueError("generation_error status and message must agree")
 ```
 
-- [ ] Run the focused tests and confirm they pass.
+- [x] Run the focused tests and confirm they pass.
 
-- [ ] Commit:
+- [x] Commit:
 
 ```bash
 git add src/jlens_reasoning/evaluation.py tests/test_evaluation.py
@@ -150,7 +154,7 @@ git commit -m "feat: add immutable evaluation contract"
 - Modify: `src/jlens_reasoning/evaluation.py`
 - Modify: `tests/test_evaluation.py`
 
-- [ ] Add failing tests for the spider regression, string shorthand, multiple references, outer whitespace, case folding, terminal punctuation, NFC equivalence, internal punctuation preservation, and gold-blind first-segment extraction.
+- [x] Add failing tests for the spider regression, string shorthand, multiple references, outer whitespace, case folding, terminal punctuation, NFC equivalence, internal punctuation preservation, and gold-blind first-segment extraction.
 
 The critical assertions are:
 
@@ -162,7 +166,7 @@ def test_spider_regression() -> None:
     )
 
     assert result.raw_output.text == " 8.\n\nThis conclusion is based on..."
-    assert result.visible_text == "8.\n\nThis conclusion is based on..."
+    assert result.evaluation_text == "8.\n\nThis conclusion is based on..."
     assert result.extracted_answer == "8"
     assert result.normalized_answer == "8"
     assert result.matched_reference == "8"
@@ -181,7 +185,7 @@ def test_normalization_does_not_remove_meaningful_characters() -> None:
     assert evaluate("Cote d'Ivoire", "Côte d'Ivoire").answer_status is AnswerStatus.INCORRECT
 ```
 
-- [ ] Add the frozen result contract, callable protocol, and default evaluator. Keep helpers private and single-purpose:
+- [x] Add the frozen result contract, callable protocol, and default evaluator. Keep helpers private and single-purpose:
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -196,7 +200,7 @@ class EvaluationResult:
     answer_status: AnswerStatus
     generation_error: str | None
     raw_output: ModelOutput
-    visible_text: str
+    evaluation_text: str
     extracted_answer: str | None
     normalized_answer: str | None
     matched_reference: str | None
@@ -230,22 +234,44 @@ def evaluate(
     return (evaluator or SimpleFactualEvaluator())(model_output, references)
 ```
 
-Use these exact initial component IDs:
+Introduce the small parser value type with the default no-op parser in this task:
+
+```python
+ReasoningFunction = Callable[[str], tuple[str, ReasoningStatus]]
+
+
+@dataclass(frozen=True, slots=True)
+class ReasoningParser:
+    component_id: ComponentId
+    parse: ReasoningFunction
+
+    def __call__(self, text: str) -> tuple[str, ReasoningStatus]:
+        return self.parse(text)
+
+
+def _no_reasoning(text: str) -> tuple[str, ReasoningStatus]:
+    return text, ReasoningStatus.NOT_PRESENT
+```
+
+Keep parser objects distinct from their component IDs:
 
 ```python
 SIMPLE_FACTUAL = ComponentId("simple_factual", "v1")
-NO_REASONING = ComponentId("none", "v1")
 FRONT_LOADED = ComponentId("front_loaded_segment", "v1")
 MINIMAL_TEXT = ComponentId("minimal_text", "v1")
+NO_REASONING_ID = ComponentId("none", "v1")
+NO_REASONING_PARSER = ReasoningParser(NO_REASONING_ID, _no_reasoning)
 ```
 
-Implement `_normalize()` with Unicode NFC, `strip()`, `casefold()`, and trailing `.?!` removal only. Implement `_extract()` as the stripped text before the first `.`, `!`, `?`, or newline. Validate references before scoring and preserve their original surface forms in the result.
+`SimpleFactualEvaluator.reasoning_parser` is a `ReasoningParser` and defaults to `NO_REASONING_PARSER`. `EvaluationResult.reasoning_parser` stores only that object's `component_id` for provenance.
 
-- [ ] Validate result consistency in `EvaluationResult.__post_init__`: generation fields equal the raw output, any match belongs to accepted references, and `correct` requires extracted/normalized answers plus a match.
+Implement `_normalize()` with Unicode NFC, `strip()`, `casefold()`, and trailing `.?!` removal only. Implement `_extract()` as the stripped text before the first `.`, `!`, `?`, or newline. It receives only the final `evaluation_text`. Validate references before scoring and preserve their original surface forms in the result.
 
-- [ ] Run focused tests and confirm they pass.
+- [x] Validate result consistency in `EvaluationResult.__post_init__`: generation fields equal the raw output, any match belongs to accepted references, and `correct` requires extracted/normalized answers plus a match.
 
-- [ ] Commit:
+- [x] Run focused tests and confirm they pass.
+
+- [x] Commit:
 
 ```bash
 git add src/jlens_reasoning/evaluation.py tests/test_evaluation.py
@@ -259,16 +285,17 @@ git commit -m "feat: evaluate simple factual outputs"
 - Modify: `src/jlens_reasoning/evaluation.py`
 - Modify: `tests/test_evaluation.py`
 
-- [ ] Add failing tests for:
+- [x] Add failing tests for:
 
 ```python
-def test_visible_answer_after_thinking_is_graded() -> None:
+def test_answer_after_inline_thinking_is_graded() -> None:
     result = evaluate(
         "<think>A spider has eight legs.</think>\n 8.",
         "8",
-        evaluator=SimpleFactualEvaluator(reasoning_parser=THINK_TAGS),
+        evaluator=SimpleFactualEvaluator(reasoning_parser=THINK_TAGS_PARSER),
     )
     assert result.reasoning_status is ReasoningStatus.PARSED
+    assert result.evaluation_text == "8."
     assert result.extracted_answer == "8"
     assert result.passed
 
@@ -277,7 +304,7 @@ def test_answer_only_inside_thinking_does_not_count() -> None:
     result = evaluate(
         "<think>The answer is 8.</think>\n6",
         "8",
-        evaluator=SimpleFactualEvaluator(reasoning_parser=THINK_TAGS),
+        evaluator=SimpleFactualEvaluator(reasoning_parser=THINK_TAGS_PARSER),
     )
     assert result.extracted_answer == "6"
     assert result.answer_status is AnswerStatus.INCORRECT
@@ -295,7 +322,7 @@ def test_malformed_thinking_is_not_graded(text: str) -> None:
     result = evaluate(
         text,
         "8",
-        evaluator=SimpleFactualEvaluator(reasoning_parser=THINK_TAGS),
+        evaluator=SimpleFactualEvaluator(reasoning_parser=THINK_TAGS_PARSER),
     )
     assert result.reasoning_status is ReasoningStatus.MALFORMED
     assert result.answer_status is AnswerStatus.NOT_GRADED
@@ -304,11 +331,11 @@ def test_malformed_thinking_is_not_graded(text: str) -> None:
 
 Also test absent tags, multiple balanced non-nested spans, and a `generation_error` result with the raw text and message intact.
 
-- [ ] Implement a small frozen `ReasoningParser` containing its `ComponentId` and callable. Export `THINK_TAGS`; keep the no-reasoning parser as the default. Parse balanced, non-nested `<think>...</think>` spans and fail closed on nesting, stray closers, or unclosed openers.
+- [x] Add only the inline `<think>...</think>` implementation to the `ReasoningParser` type introduced in Task 2. Define `THINK_TAGS_ID = ComponentId("think_tags", "v1")` and export the distinct parser object `THINK_TAGS_PARSER = ReasoningParser(THINK_TAGS_ID, _parse_think_tags)`. Keep `NO_REASONING_PARSER` as the default. Parse balanced, non-nested spans and fail closed on nesting, stray closers, or unclosed openers. Do not add separate reasoning or visible-answer inputs.
 
-- [ ] In `SimpleFactualEvaluator`, validate references first, then return `not_graded` for generation errors or malformed reasoning. Use one private result-construction helper so every exit records identical provenance fields without duplicating constructors.
+- [x] In `SimpleFactualEvaluator`, validate references first, then return `not_graded` for generation errors or malformed reasoning. For a gradeable output, keep `raw_output.text` untouched, use one local string as it passes through reasoning removal, truncation cleanup, and `strip()`, store only the resulting `evaluation_text`, and call `_extract(evaluation_text)` directly. Use one private result-construction helper so every exit records identical provenance fields without duplicating constructors.
 
-- [ ] Run focused tests and commit:
+- [x] Run focused tests and commit:
 
 ```bash
 git add src/jlens_reasoning/evaluation.py tests/test_evaluation.py
@@ -322,7 +349,7 @@ git commit -m "feat: parse declared thinking output"
 - Modify: `src/jlens_reasoning/evaluation.py`
 - Modify: `tests/test_evaluation.py`
 
-- [ ] Add failing truncation regressions:
+- [x] Add failing truncation regressions:
 
 ```python
 @pytest.mark.parametrize("text", ["8 or", "8", "partial answer"])
@@ -331,6 +358,9 @@ def test_ambiguous_truncation_is_not_graded(text: str) -> None:
     result = evaluate(output, "8")
 
     assert result.raw_output.text == text
+    assert result.evaluation_text == ""
+    assert result.extracted_answer is None
+    assert result.normalized_answer is None
     assert result.generation_status is GenerationStatus.TRUNCATED
     assert result.answer_status is AnswerStatus.NOT_GRADED
 
@@ -344,6 +374,7 @@ def test_complete_front_loaded_answer_survives_truncation(text: str) -> None:
     result = evaluate(output, "8")
 
     assert result.raw_output.text == text
+    assert result.evaluation_text in {"8.", "8!"}
     assert result.extracted_answer == "8"
     assert result.answer_status is AnswerStatus.CORRECT
     assert result.passed
@@ -351,7 +382,7 @@ def test_complete_front_loaded_answer_survives_truncation(text: str) -> None:
 
 Add a newline-boundary case and an empty safe prefix case.
 
-- [ ] Implement one safe-prefix helper. Its only boundaries are `.`, `!`, `?`, and newline. Keep the last boundary in evaluation text. If no boundary exists, return `not_graded`. Whitespace may be trimmed around the retained prefix but must never establish completeness.
+- [x] Implement one safe-prefix helper. Its only boundaries are `.`, `!`, `?`, and newline. Keep the last boundary in evaluation text. If no boundary exists, return `not_graded`. Whitespace may be trimmed around the retained prefix but must never establish completeness.
 
 ```python
 def _safe_truncated_text(text: str) -> str | None:
@@ -359,9 +390,9 @@ def _safe_truncated_text(text: str) -> str | None:
     return None if boundary < 0 else text[: boundary + 1].strip()
 ```
 
-- [ ] Run focused tests. Explicitly verify truncated `"8 or"` cannot pass.
+- [x] Run focused tests. Explicitly verify truncated `"8 or"` cannot pass.
 
-- [ ] Commit:
+- [x] Commit:
 
 ```bash
 git add src/jlens_reasoning/evaluation.py tests/test_evaluation.py
@@ -375,13 +406,13 @@ git commit -m "feat: reject ambiguous truncated answers"
 - Modify: `src/jlens_reasoning/evaluation.py`
 - Modify: `tests/test_evaluation.py`
 
-- [ ] Add tests rejecting an empty reference tuple, empty reference strings, and references that normalize to empty (`"..."`, `" ? "`).
+- [x] Add tests rejecting an empty reference tuple, empty reference strings, and references that normalize to empty (`"..."`, `" ? "`).
 
-- [ ] Add tests for every `passed` branch, inconsistent `EvaluationResult` construction (use `dataclasses.replace`), immutable tuple fields, and `normalized_answer` on both correct and incorrect results.
+- [x] Add tests for every `passed` branch, inconsistent `EvaluationResult` construction (use `dataclasses.replace`), immutable tuple fields, and `normalized_answer` on both correct and incorrect results. Inspect the result dataclass fields once to assert that `evaluation_text` exists and no `visible_text`, reasoning-removed-text, or truncation-cleanup-text field exists.
 
-- [ ] Prove the open-closed extension point with a tiny test-only callable evaluator passed to `evaluate()`. Assert the runner delegates unchanged without a registry or modification to production dispatch logic.
+- [x] Prove the open-closed extension point with a tiny test-only callable evaluator passed to `evaluate()`. Assert the runner delegates unchanged without a registry or modification to production dispatch logic.
 
-- [ ] Run all verification commands:
+- [x] Run all verification commands:
 
 ```bash
 .venv/bin/pytest tests/test_evaluation.py -v
@@ -394,21 +425,22 @@ wc -l src/jlens_reasoning/evaluation.py
 
 Expected: all tests and Ruff checks pass; production module is at most 250 physical lines.
 
-- [ ] Manually audit the final module against both policy documents:
+- [x] Manually audit the final module against both policy documents:
 
   - raw output and token metadata remain unchanged;
   - extraction never receives references;
   - normalized answer, accepted references, and component IDs are always recorded;
   - answer, reasoning, and generation statuses remain separate;
-  - empty complete visible output is `unparseable`;
+  - `evaluation_text` is the only processed-text field and extraction consumes it directly;
+  - empty complete `evaluation_text` is `unparseable`;
   - generation error and malformed reasoning are `not_graded`;
   - ambiguous truncation such as `8 or` is `not_graded`;
   - each required spider/thinking example has a named regression test; and
   - no functionality outside simple factual evaluation was introduced.
 
-- [ ] If the production file exceeds the line target or contains repeated branches, simplify it before completion. Do not create a framework layer merely to reduce physical line count.
+- [x] If the production file exceeds the line target or contains repeated branches, simplify it before completion. Do not create a framework layer merely to reduce physical line count.
 
-- [ ] Commit:
+- [x] Commit:
 
 ```bash
 git add src/jlens_reasoning/evaluation.py tests/test_evaluation.py
