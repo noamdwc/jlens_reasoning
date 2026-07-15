@@ -98,9 +98,11 @@ parsing and before answer extraction, the evaluator removes an incomplete
 trailing fragment from a separate evaluation-text value:
 
 1. Cut after the last `.`, `!`, `?`, or newline, keeping that boundary.
-2. If none exists, cut at the last whitespace boundary only to discard a
-   partial final word.
-3. If no safe boundary exists, return `not_graded`.
+2. If none exists, return `not_graded`.
+
+Whitespace surrounding retained safe text may be trimmed, but whitespace never
+establishes a safe truncation boundary. In particular, truncated output `8 or`
+is `not_graded`; it must never be shortened to `8` and marked correct.
 
 If safe text retains an earlier complete front-loaded answer, grade it normally
 while keeping generation status `truncated`. If it does not retain an
@@ -130,7 +132,8 @@ Unit tests cover:
 - empty and normalized-empty references;
 - empty visible text, generation errors, and every pass-rule branch;
 - truncated text ending after a sentence, line, partial word, or no safe
-  boundary, while asserting raw text is unchanged;
+  boundary, including the `8 or` regression, while asserting raw text is
+  unchanged;
 - token metadata and generation-field validation;
 - normalized answer and all component names and versions in results;
 - gold-blind extraction; and
