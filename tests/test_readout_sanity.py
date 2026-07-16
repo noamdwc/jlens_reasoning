@@ -11,13 +11,17 @@ from jlens_reasoning.experiments.readout_sanity import (
     LENS_REVISION,
     MODEL_NAME,
     READOUT_CASES,
+    SWAP_CASES,
     ReadoutCase,
+    SwapCase,
+    TokenVariant,
     analyze_case,
     best_target_rank,
     concept_token_variants,
     find_last_subsequence,
     positions_after_literal,
     run_readout_sanity,
+    single_token_surface,
     top_tokens,
     validate_model_lens,
     workspace_layers,
@@ -32,26 +36,39 @@ def test_released_artifact_coordinates_match_upstream_walkthrough() -> None:
     assert LENS_FILE.endswith("Qwen3.5-4B_jacobian_lens_n1000.pt")
 
 
-def test_cases_cover_exact_spider_and_france_prompts() -> None:
-    cases = {case.key: case for case in READOUT_CASES}
+def test_cases_cover_released_read_and_swap_examples() -> None:
+    read_cases = {case.key: case for case in READOUT_CASES}
+    swap_cases = {case.key: case for case in SWAP_CASES}
 
-    assert cases["spider"].prompt == (
+    assert read_cases["spider"].prompt == (
         "The number of legs on the animal that spins webs is"
     )
-    assert cases["spider"].expected_answers == ("8", "eight")
-    assert cases["spider"].target_concepts == ("spider",)
-    assert cases["spider"].literal_argument is None
+    assert read_cases["spider"].expected_answers == ("8", "eight")
+    assert read_cases["spider"].target_concepts == ("spider",)
 
-    france = [case for case in READOUT_CASES if case.key.startswith("france_")]
-    assert len(france) == 4
-    assert {case.expected_answers[0] for case in france} == {
-        "Paris",
-        "French",
-        "Europe",
-        "Euro",
-    }
-    assert all(case.target_concepts == ("France",) for case in france)
-    assert all(case.literal_argument == "France" for case in france)
+    assert [(case.key, case.target_answers[0]) for case in SWAP_CASES] == [
+        ("spider", "6"),
+        ("france_capital", "Beijing"),
+        ("france_language", "Chinese"),
+        ("france_continent", "Asia"),
+        ("france_currency", "Yuan"),
+    ]
+    assert swap_cases["spider"].source_surface == " spider"
+    assert swap_cases["spider"].target_surface == " ant"
+    france_swaps = [case for case in SWAP_CASES if case.key.startswith("france_")]
+    assert all(case.source_surface == " France" for case in france_swaps)
+    assert all(case.target_surface == " China" for case in france_swaps)
+
+
+def test_single_token_surface_is_strict() -> None:
+    tokenizer = FakeTokenizer()
+
+    assert single_token_surface(tokenizer, " France") == TokenVariant(
+        token_id=17,
+        surface=" France",
+    )
+    with pytest.raises(ValueError, match="exactly one token"):
+        single_token_surface(tokenizer, " FRANCE")
 
 
 class FakeTokenizer:

@@ -27,6 +27,14 @@ class ReadoutCase:
     literal_argument: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class SwapCase:
+    key: str
+    source_surface: str
+    target_surface: str
+    target_answers: tuple[str, ...]
+
+
 READOUT_CASES = (
     ReadoutCase(
         key="spider",
@@ -65,10 +73,28 @@ READOUT_CASES = (
 )
 
 
+SWAP_CASES = (
+    SwapCase("spider", " spider", " ant", ("6", "six")),
+    SwapCase("france_capital", " France", " China", ("Beijing",)),
+    SwapCase("france_language", " France", " China", ("Chinese",)),
+    SwapCase("france_continent", " France", " China", ("Asia",)),
+    SwapCase("france_currency", " France", " China", ("Yuan",)),
+)
+
+
 @dataclass(frozen=True, slots=True)
 class TokenVariant:
     token_id: int
     surface: str
+
+
+def single_token_surface(tokenizer: Any, surface: str) -> TokenVariant:
+    token_ids = tokenizer.encode(surface, add_special_tokens=False)
+    if len(token_ids) != 1:
+        raise ValueError(
+            f"Configured swap surface {surface!r} must encode as exactly one token"
+        )
+    return TokenVariant(token_id=token_ids[0], surface=surface)
 
 
 def _concept_surfaces(concept: str) -> tuple[str, ...]:
