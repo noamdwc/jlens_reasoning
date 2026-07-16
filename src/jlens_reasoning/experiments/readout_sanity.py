@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from torch import nn
 
 MODEL_NAME = "Qwen/Qwen3.5-4B"
 LENS_REPO = "neuronpedia/jacobian-lens"
@@ -161,6 +162,57 @@ def coordinate_swap(
     coordinates = working @ torch.linalg.pinv(vectors).T
     delta = (coordinates.flip(-1) - coordinates) @ vectors.T
     return (working + float(alpha) * delta).to(dtype=hidden.dtype)
+
+
+class LensCoordinateSwapper:
+    def __init__(
+        self,
+        blocks: Sequence[nn.Module],
+        vectors_by_layer: Mapping[int, tuple[torch.Tensor, torch.Tensor]],
+        *,
+        alpha: float,
+    ) -> None:
+        self._blocks = blocks
+        self._vectors_by_layer = dict(vectors_by_layer)
+        self._alpha = alpha
+        self._handles: list[torch.utils.hooks.RemovableHandle] = []
+
+    def _hook(self, layer: int):
+        source_vector, target_vector = self._vectors_by_layer[layer]
+
+        def patch(module: nn.Module, inputs: tuple[Any, ...], output: Any) -> Any:
+            del module, inputs
+            hidden = output if torch.is_tensor(output) else output[0]
+            patched = coordinate_swap(
+                hidden,
+                source_vector,
+                target_vector,
+                alpha=self._alpha,
+            )
+            if torch.is_tensor(output):
+                return patched
+            return (patched, *output[1:])
+
+        return patch
+
+    def __enter__(self) -> LensCoordinateSwapper:
+        try:
+            for layer in sorted(self._vectors_by_layer):
+                self._handles.append(
+                    self._blocks[layer].register_forward_hook(self._hook(layer))
+                )
+        except Exception:
+            self._remove()
+            raise
+        return self
+
+    def _remove(self) -> None:
+        for handle in self._handles:
+            handle.remove()
+        self._handles = []
+
+    def __exit__(self, *exc: Any) -> None:
+        self._remove()
 
 
 def find_last_subsequence(

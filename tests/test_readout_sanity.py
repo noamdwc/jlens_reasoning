@@ -4,11 +4,13 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from torch import nn
 
 from jlens_reasoning.experiments.readout_sanity import (
     LENS_FILE,
     LENS_REPO,
     LENS_REVISION,
+    LensCoordinateSwapper,
     MODEL_NAME,
     READOUT_CASES,
     SWAP_CASES,
@@ -168,6 +170,47 @@ def test_coordinate_swap_preserves_shape_and_dtype() -> None:
 
     assert actual.shape == hidden.shape
     assert actual.dtype == hidden.dtype
+
+
+class TensorBlock(nn.Module):
+    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
+        return hidden
+
+
+class TupleBlock(nn.Module):
+    def forward(self, hidden: torch.Tensor) -> tuple[torch.Tensor, str]:
+        return hidden, "cache"
+
+
+def test_swapper_patches_all_positions_and_preserves_tuple_members() -> None:
+    blocks = nn.ModuleList([TensorBlock(), TupleBlock()])
+    vectors = {
+        0: (torch.tensor([1.0, 0.0]), torch.tensor([0.0, 1.0])),
+        1: (torch.tensor([1.0, 0.0]), torch.tensor([0.0, 1.0])),
+    }
+    hidden = torch.tensor([[[1.0, 0.0], [0.0, 1.0]]])
+
+    with LensCoordinateSwapper(blocks, vectors, alpha=1.0):
+        first = blocks[0](hidden)
+        second, cache = blocks[1](hidden)
+
+    assert torch.equal(first, torch.tensor([[[0.0, 1.0], [1.0, 0.0]]]))
+    assert torch.equal(second, torch.tensor([[[0.0, 1.0], [1.0, 0.0]]]))
+    assert cache == "cache"
+    assert all(not block._forward_hooks for block in blocks)
+
+
+def test_swapper_removes_hooks_after_exception() -> None:
+    blocks = nn.ModuleList([TensorBlock()])
+    vectors = {
+        0: (torch.tensor([1.0, 0.0]), torch.tensor([0.0, 1.0])),
+    }
+
+    with pytest.raises(RuntimeError, match="stop"):
+        with LensCoordinateSwapper(blocks, vectors, alpha=1.0):
+            raise RuntimeError("stop")
+
+    assert not blocks[0]._forward_hooks
 
 
 def test_top_tokens_preserve_token_ids_and_logits() -> None:
