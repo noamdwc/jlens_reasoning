@@ -62,3 +62,10 @@ def test_readout_sanity_notebook_has_pinned_gpu_workflow() -> None:
     assert "compute_slice" in source
     assert 'mode="embed"' in source
     assert "raise RuntimeError" in source
+    assert "forward_next_token" in source
+    assert "get_output_embeddings().weight" in source
+    assert "intervention_strengths" in source
+    assert 'result["swaps"]' in source
+    assert "causal_lm.generate" not in source
+    assert "SimpleFactualEvaluator" not in source
+    assert "max_new_tokens" not in source
