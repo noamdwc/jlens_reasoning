@@ -93,7 +93,7 @@ generic artifact paths. It authenticates W&B but does not create a run.
 Run `notebooks/00_environment_check.ipynb` after changing environment code. It
 does not download a model or benchmark.
 
-## J-Lens readout sanity experiment
+## J-Lens read-and-change sanity experiment
 
 `notebooks/01_jlens_readout_sanity.ipynb` is the first model-backed experiment.
 Open it through the IDE's Colab integration with a GPU runtime and run all cells.
@@ -108,9 +108,12 @@ runs/jlens-readout-sanity/
 ```
 
 The experiment checks whether the J-Lens surfaces the unspoken `spider`
-intermediate and preserves `France` after the argument token across four factual
-operations. It is a readout-only open-model sanity check, not a reproduction of
-the paper's causal spider→ant or France→China swaps.
+intermediate and whether clamped coordinate swaps causally redirect next-token
+answers. It runs the paper's `spider`→`ant` example and the same
+`France`→`China` swap across capital, language, continent, and currency prompts
+at both the standard (`alpha=1`) and double (`alpha=2`) strengths. The result
+artifact reports exact per-swap ranks and applies an open-model capability gate;
+it does not claim numerical replication of Claude 4.5.
 
 All experiments that grade model responses are expected to follow the
 [LLM answer-evaluation policy](docs/llm-answer-evaluation.md). The policy keeps
