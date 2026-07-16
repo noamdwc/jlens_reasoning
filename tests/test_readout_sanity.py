@@ -18,7 +18,9 @@ from jlens_reasoning.experiments.readout_sanity import (
     analyze_case,
     best_target_rank,
     concept_token_variants,
+    coordinate_swap,
     find_last_subsequence,
+    jlens_vector,
     positions_after_literal,
     run_readout_sanity,
     single_token_surface,
@@ -116,6 +118,56 @@ def test_rank_is_one_based_best_variant_and_stable_for_ties() -> None:
 
     assert best_target_rank(logits, (2, 3)) == 2
     assert best_target_rank(logits, (3,)) == 3
+
+
+def test_jlens_vector_composes_jacobian_and_unembedding() -> None:
+    lens = SimpleNamespace(
+        jacobians={1: torch.tensor([[1.0, 2.0], [3.0, 4.0]])}
+    )
+    unembedding = torch.tensor([[0.0, 0.0], [5.0, 6.0]])
+
+    assert torch.equal(
+        jlens_vector(lens, unembedding, layer=1, token_id=1),
+        torch.tensor([23.0, 34.0]),
+    )
+
+
+@pytest.mark.parametrize(
+    ("alpha", "expected"),
+    [
+        (0.0, [1.0, 0.0, 7.0]),
+        (1.0, [0.0, 1.0, 7.0]),
+        (2.0, [-1.0, 2.0, 7.0]),
+    ],
+)
+def test_coordinate_swap_strength_and_orthogonal_component(
+    alpha: float,
+    expected: list[float],
+) -> None:
+    hidden = torch.tensor([1.0, 0.0, 7.0])
+    source = torch.tensor([1.0, 0.0, 0.0])
+    target = torch.tensor([0.0, 1.0, 0.0])
+
+    actual = coordinate_swap(hidden, source, target, alpha=alpha)
+
+    assert torch.allclose(actual, torch.tensor(expected))
+
+
+def test_coordinate_swap_preserves_shape_and_dtype() -> None:
+    hidden = torch.tensor(
+        [[[1.0, 0.0], [0.5, 0.25]]],
+        dtype=torch.bfloat16,
+    )
+
+    actual = coordinate_swap(
+        hidden,
+        torch.tensor([1.0, 0.0]),
+        torch.tensor([0.0, 1.0]),
+        alpha=1.0,
+    )
+
+    assert actual.shape == hidden.shape
+    assert actual.dtype == hidden.dtype
 
 
 def test_top_tokens_preserve_token_ids_and_logits() -> None:

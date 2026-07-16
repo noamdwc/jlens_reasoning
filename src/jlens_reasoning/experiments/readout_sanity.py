@@ -123,6 +123,46 @@ def concept_token_variants(
     return tuple(variants)
 
 
+def jlens_vector(
+    lens: Any,
+    unembedding_weight: torch.Tensor,
+    *,
+    layer: int,
+    token_id: int,
+) -> torch.Tensor:
+    jacobian = lens.jacobians[layer].to(
+        device=unembedding_weight.device,
+        dtype=torch.float32,
+    )
+    unembedding_row = unembedding_weight[token_id].to(dtype=torch.float32)
+    return jacobian.T @ unembedding_row
+
+
+def coordinate_swap(
+    hidden: torch.Tensor,
+    source_vector: torch.Tensor,
+    target_vector: torch.Tensor,
+    *,
+    alpha: float,
+) -> torch.Tensor:
+    if hidden.shape[-1] != source_vector.numel():
+        raise ValueError("Source vector width does not match hidden width")
+    if source_vector.shape != target_vector.shape:
+        raise ValueError("Source and target vectors must have the same shape")
+
+    working = hidden.float()
+    vectors = torch.stack(
+        (
+            source_vector.to(device=hidden.device, dtype=torch.float32),
+            target_vector.to(device=hidden.device, dtype=torch.float32),
+        ),
+        dim=-1,
+    )
+    coordinates = working @ torch.linalg.pinv(vectors).T
+    delta = (coordinates.flip(-1) - coordinates) @ vectors.T
+    return (working + float(alpha) * delta).to(dtype=hidden.dtype)
+
+
 def find_last_subsequence(
     sequence: Sequence[int], patterns: Iterable[Sequence[int]]
 ) -> tuple[int, int]:
