@@ -41,18 +41,16 @@ equal lengths.
 - final `evaluation_text` after reasoning removal, truncation cleanup, and trim;
 - extracted answer;
 - normalized answer;
-- reasoning status; and
-- answer status;
-- accepted references and the original matched reference; and
-- evaluator, reasoning-parser, extractor, and normalizer names and versions.
+- reasoning status;
+- answer status; and
+- accepted references and the original matched reference.
 
 Generation status and error are exposed directly from `raw_output`; they are not
 stored twice. `passed` implements the policy pass rule.
 
-Audit metadata is stored as plain immutable fields rather than component
-objects. The result does not store intermediate reasoning-removed or
-truncation-cleaned strings. The project Git commit remains the authoritative
-version of the implementation.
+The result does not store component names, versions, intermediate
+reasoning-removed strings, or intermediate truncation-cleaned strings. The
+project Git commit identifies the implementation.
 
 ## Reusable Utilities
 
@@ -92,5 +90,5 @@ Any truncated output with no extractable answer, including `...`, is
 Tests cover the spider regression, string and structured inputs, minimal
 normalization, gold-blind extraction, inline and malformed thinking, generation
 errors, safe truncation including `8 or` and `...`, immutable raw artifacts,
-invalid references, original-reference matching, audit metadata, result
+invalid references, original-reference matching, reference audit data, result
 invariants, and delegation to another factual evaluator.

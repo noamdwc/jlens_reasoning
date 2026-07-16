@@ -15,14 +15,14 @@
 - `ModelOutput` preserves raw text and immutable token metadata.
 - Version 1 accepts no separate reasoning or visible-answer fields.
 - `EvaluationResult` stores raw output, final `evaluation_text`, extracted and
-  normalized answers, statuses, accepted and matched references, and component
-  names and versions. It stores no intermediate text stages.
+  normalized answers, statuses, and accepted and matched references. It stores
+  no component metadata or intermediate text stages.
 - Generation status and generation error are read from `raw_output` properties.
 - Inline `<think>...</think>` parsing is an optional plain callable.
 - Extraction is gold-blind and runs directly on `evaluation_text`.
 - Whitespace is never treated as a safe truncation boundary.
-- Plain fields store audit names and versions; no component object hierarchy is
-  required, and the Git commit remains authoritative.
+- The thin result dataclass is constructed directly, without a result-builder
+  helper. The Git commit identifies the implementation.
 
 ## Completed TDD tasks
 
@@ -34,8 +34,8 @@
 - [x] Grade truncated `...` with no extractable answer as `not_graded`.
 - [x] Reject empty and normalized-empty references.
 - [x] Keep only final evaluation artifacts in `EvaluationResult`.
-- [x] Record accepted/matched references and component audit names and versions.
-- [x] Keep audit metadata as plain fields and avoid component objects.
+- [x] Record accepted and matched references without component metadata.
+- [x] Construct the thin result dataclass directly.
 - [x] Move reusable text-processing functions to `evaluation_utils.py`.
 - [x] Prove another factual evaluator can be passed directly to `evaluate()`.
 - [x] Run focused tests, full tests, Ruff, formatting, and diff checks.

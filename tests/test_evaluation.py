@@ -309,14 +309,6 @@ def test_result_stores_only_final_text_processing_artifacts() -> None:
         "answer_status",
         "accepted_references",
         "matched_reference",
-        "evaluator_name",
-        "evaluator_version",
-        "reasoning_parser_name",
-        "reasoning_parser_version",
-        "extractor_name",
-        "extractor_version",
-        "normalizer_name",
-        "normalizer_version",
     }
 
 
@@ -361,27 +353,11 @@ def test_pass_rule_covers_each_status_dimension() -> None:
     assert not generation_error.passed
 
 
-def test_result_records_audit_metadata() -> None:
+def test_result_records_reference_audit_data() -> None:
     result = evaluate("Paris.", ("Lyon", "paris."))
 
     assert result.accepted_references == ("Lyon", "paris.")
     assert result.matched_reference == "paris."
-    assert (result.evaluator_name, result.evaluator_version) == (
-        "simple_factual",
-        "v1",
-    )
-    assert (result.reasoning_parser_name, result.reasoning_parser_version) == (
-        "no_reasoning",
-        "v1",
-    )
-    assert (result.extractor_name, result.extractor_version) == (
-        "extract_answer",
-        "v1",
-    )
-    assert (result.normalizer_name, result.normalizer_version) == (
-        "normalize_text",
-        "v1",
-    )
 
 
 def test_runner_accepts_a_custom_factual_evaluator() -> None:

@@ -58,14 +58,6 @@ class EvaluationResult:
     answer_status: AnswerStatus
     accepted_references: tuple[str, ...]
     matched_reference: str | None
-    evaluator_name: str
-    evaluator_version: str
-    reasoning_parser_name: str
-    reasoning_parser_version: str
-    extractor_name: str
-    extractor_version: str
-    normalizer_name: str
-    normalizer_version: str
 
     def __post_init__(self) -> None:
         if not isinstance(self.accepted_references, tuple):
@@ -108,36 +100,6 @@ class FactualEvaluator(Protocol):
 class SimpleFactualEvaluator:
     reasoning_parser: Callable[[str], tuple[str, ReasoningStatus]] = no_reasoning
 
-    def _result(
-        self,
-        output: ModelOutput,
-        references: tuple[str, ...],
-        reasoning_status: ReasoningStatus,
-        answer_status: AnswerStatus,
-        evaluation_text: str = "",
-        answer: str | None = None,
-        normalized: str | None = None,
-        matched: str | None = None,
-    ) -> EvaluationResult:
-        return EvaluationResult(
-            raw_output=output,
-            evaluation_text=evaluation_text,
-            extracted_answer=answer,
-            normalized_answer=normalized,
-            reasoning_status=reasoning_status,
-            answer_status=answer_status,
-            accepted_references=references,
-            matched_reference=matched,
-            evaluator_name="simple_factual",
-            evaluator_version="v1",
-            reasoning_parser_name=self.reasoning_parser.__name__,
-            reasoning_parser_version="v1",
-            extractor_name=extract_answer.__name__,
-            extractor_version="v1",
-            normalizer_name=normalize_text.__name__,
-            normalizer_version="v1",
-        )
-
     def __call__(
         self, output: ModelOutput, accepted_references: tuple[str, ...]
     ) -> EvaluationResult:
@@ -147,11 +109,15 @@ class SimpleFactualEvaluator:
         ):
             raise ValueError("accepted references must normalize to non-empty text")
         if output.generation_status is GenerationStatus.GENERATION_ERROR:
-            return self._result(
-                output,
-                accepted_references,
-                ReasoningStatus.NOT_PRESENT,
-                AnswerStatus.NOT_GRADED,
+            return EvaluationResult(
+                raw_output=output,
+                evaluation_text="",
+                extracted_answer=None,
+                normalized_answer=None,
+                reasoning_status=ReasoningStatus.NOT_PRESENT,
+                answer_status=AnswerStatus.NOT_GRADED,
+                accepted_references=accepted_references,
+                matched_reference=None,
             )
         evaluation_text, reasoning_status = self.reasoning_parser(output.text)
         if output.generation_status is GenerationStatus.TRUNCATED:
@@ -163,7 +129,16 @@ class SimpleFactualEvaluator:
                 or output.generation_status is GenerationStatus.TRUNCATED
                 else AnswerStatus.UNPARSEABLE
             )
-            return self._result(output, accepted_references, reasoning_status, status)
+            return EvaluationResult(
+                raw_output=output,
+                evaluation_text="",
+                extracted_answer=None,
+                normalized_answer=None,
+                reasoning_status=reasoning_status,
+                answer_status=status,
+                accepted_references=accepted_references,
+                matched_reference=None,
+            )
         evaluation_text = evaluation_text.strip()
         answer = extract_answer(evaluation_text)
         normalized = normalize_text(answer) if answer is not None else None
@@ -179,15 +154,15 @@ class SimpleFactualEvaluator:
             status = (
                 AnswerStatus.CORRECT if matched is not None else AnswerStatus.INCORRECT
             )
-        return self._result(
-            output,
-            accepted_references,
-            reasoning_status,
-            status,
-            evaluation_text,
-            answer,
-            normalized,
-            matched,
+        return EvaluationResult(
+            raw_output=output,
+            evaluation_text=evaluation_text,
+            extracted_answer=answer,
+            normalized_answer=normalized,
+            reasoning_status=reasoning_status,
+            answer_status=status,
+            accepted_references=accepted_references,
+            matched_reference=matched,
         )
 
 
