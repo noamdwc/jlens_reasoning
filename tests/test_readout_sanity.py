@@ -10,15 +10,16 @@ from jlens_reasoning.experiments.readout_sanity import (
     LENS_FILE,
     LENS_REPO,
     LENS_REVISION,
-    LensCoordinateSwapper,
     MODEL_NAME,
     READOUT_CASES,
     SWAP_CASES,
+    LensCoordinateSwapper,
     ReadoutCase,
     SwapCase,
     TokenVariant,
     aggregate_capability_checks,
     analyze_case,
+    analyze_swap_case,
     best_target_rank,
     concept_token_variants,
     coordinate_swap,
@@ -32,6 +33,7 @@ from jlens_reasoning.experiments.readout_sanity import (
     top_tokens,
     validate_model_lens,
     workspace_layers,
+    workspace_loading,
     write_results,
 )
 
@@ -126,9 +128,7 @@ def test_rank_is_one_based_best_variant_and_stable_for_ties() -> None:
 
 
 def test_jlens_vector_composes_jacobian_and_unembedding() -> None:
-    lens = SimpleNamespace(
-        jacobians={1: torch.tensor([[1.0, 2.0], [3.0, 4.0]])}
-    )
+    lens = SimpleNamespace(jacobians={1: torch.tensor([[1.0, 2.0], [3.0, 4.0]])})
     unembedding = torch.tensor([[0.0, 0.0], [5.0, 6.0]])
 
     assert torch.equal(
@@ -228,6 +228,21 @@ def test_workspace_layers_use_inclusive_ceil_and_floor_bounds() -> None:
     assert workspace_layers(20, [0, 6, 7, 12, 16, 17, 19]) == [7, 12, 16]
 
 
+def test_workspace_loading_averages_layers_and_positions() -> None:
+    activations = {
+        2: torch.tensor([[[1.0, 0.0], [0.0, 1.0]]]),
+        3: torch.tensor([[[1.0, 0.0], [1.0, 0.0]]]),
+    }
+    vectors = {
+        2: torch.tensor([1.0, 0.0]),
+        3: torch.tensor([1.0, 0.0]),
+    }
+
+    assert workspace_loading(activations, vectors, positions=[0, 1]) == pytest.approx(
+        0.75
+    )
+
+
 def test_results_round_trip_without_tensors(tmp_path: Path) -> None:
     output = tmp_path / "result.json"
     write_results(output, {"rank": torch.tensor(3), "layers": torch.tensor([7, 8])})
@@ -307,6 +322,84 @@ class FormattingTokenizer(RunnerTokenizer):
     ) -> str:
         assert clean_up_tokenization_spaces is False
         return " " if token_ids[0] == 0 else f"token-{token_ids[0]}"
+
+
+class SwapTokenizer(RunnerTokenizer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.pieces.update(
+            {
+                " ant": [3],
+                "6": [5],
+                " 6": [5],
+                "six": [5],
+                " six": [5],
+                "Six": [5],
+                " Six": [5],
+                "SIX": [5],
+                " SIX": [5],
+            }
+        )
+
+
+class TinySwapModel:
+    n_layers = 4
+    d_model = 2
+
+    def __init__(self) -> None:
+        self.layers = nn.ModuleList(
+            [TensorBlock(), TensorBlock(), TensorBlock(), TensorBlock()]
+        )
+
+    def encode(self, prompt: str, *, max_length: int = 512) -> torch.Tensor:
+        del prompt, max_length
+        return torch.tensor([[0, 1]])
+
+
+def test_analyze_swap_case_runs_clean_and_both_strengths() -> None:
+    model = TinySwapModel()
+    lens = SimpleNamespace(
+        jacobians={2: torch.eye(2)},
+        source_layers=[2],
+        d_model=2,
+    )
+    unembedding = torch.zeros(6, 2)
+    unembedding[2] = torch.tensor([1.0, 0.0])
+    unembedding[3] = torch.tensor([0.0, 1.0])
+
+    def forward_next_token(input_ids: torch.Tensor) -> torch.Tensor:
+        del input_ids
+        hidden = torch.tensor([[[1.0, 0.0], [1.0, 0.0]]])
+        for block in model.layers:
+            hidden = block(hidden)
+        logits = torch.zeros(6)
+        logits[4] = hidden[0, -1, 0]
+        logits[5] = hidden[0, -1, 1]
+        return logits
+
+    result = analyze_swap_case(
+        SwapCase("spider", " spider", " ant", ("6", "six")),
+        read_case=ReadoutCase(
+            key="spider",
+            prompt="prompt",
+            expected_answers=("8", "eight"),
+            target_concepts=("spider",),
+        ),
+        model=model,
+        lens=lens,
+        tokenizer=SwapTokenizer(),
+        unembedding_weight=unembedding,
+        forward_next_token=forward_next_token,
+        layers=[2],
+        alphas=(1.0, 2.0),
+        top_k=3,
+    )
+
+    assert result["source"] == {"surface": " spider", "token_id": 2}
+    assert result["target"] == {"surface": " ant", "token_id": 3}
+    assert set(result["interventions"]) == {"1.0", "2.0"}
+    assert result["improved"] is True
+    assert result["target_top1"] is True
 
 
 def test_scoring_input_appends_only_bounded_clean_formatting_tokens() -> None:
@@ -431,25 +524,67 @@ def test_analyze_case_grades_baseline_and_spider_readout() -> None:
     assert result["passed"] is True
 
 
-def test_run_readout_sanity_keeps_failed_case_details() -> None:
-    case = ReadoutCase(
-        key="wrong-baseline",
-        prompt="prompt",
-        expected_answers=("missing",),
-        target_concepts=("spider",),
-    )
-    tokenizer = RunnerTokenizer()
-    tokenizer.pieces["missing"] = [5]
-    tokenizer.pieces[" missing"] = [5]
+class TinyCompleteLens:
+    d_model = 2
+    source_layers = [2]
+    n_prompts = 1000
+
+    def __init__(self) -> None:
+        self.jacobians = {2: torch.eye(2)}
+
+    def apply(self, model, prompt, *, use_jacobian=True, **kwargs):
+        del prompt, kwargs
+        input_ids = model.encode("prompt")
+        model_logits = torch.zeros(input_ids.shape[1], 6)
+        model_logits[-1, 4] = 5.0
+        readout = torch.zeros(input_ids.shape[1], 6)
+        readout[:, 2] = 4.0 if use_jacobian else -1.0
+        return {2: readout}, model_logits, input_ids
+
+
+def test_run_readout_sanity_combines_read_and_change_checks() -> None:
+    model = TinySwapModel()
+    lens = TinyCompleteLens()
+    tokenizer = SwapTokenizer()
+    unembedding = torch.zeros(6, 2)
+    unembedding[2] = torch.tensor([1.0, 0.0])
+    unembedding[3] = torch.tensor([0.0, 1.0])
+
+    def forward_next_token(input_ids: torch.Tensor) -> torch.Tensor:
+        del input_ids
+        hidden = torch.tensor([[[1.0, 0.0], [1.0, 0.0]]])
+        for block in model.layers:
+            hidden = block(hidden)
+        logits = torch.zeros(6)
+        logits[4] = hidden[0, -1, 0]
+        logits[5] = hidden[0, -1, 1]
+        return logits
 
     result = run_readout_sanity(
-        model=SimpleNamespace(n_layers=4, d_model=4),
-        lens=FakeLens(),
+        model=model,
+        lens=lens,
         tokenizer=tokenizer,
-        cases=(case,),
+        unembedding_weight=unembedding,
+        forward_next_token=forward_next_token,
+        cases=(
+            ReadoutCase(
+                key="spider",
+                prompt="prompt",
+                expected_answers=("8", "eight"),
+                target_concepts=("spider",),
+            ),
+        ),
+        swap_cases=(SwapCase("spider", " spider", " ant", ("6", "six")),),
+        minimum_improvements=1,
         top_k=3,
     )
 
-    assert result["passed"] is False
-    assert result["cases"][0]["checks"]["baseline_top1"] is False
-    assert result["failures"] == ["wrong-baseline: baseline top-1 mismatch"]
+    assert result["checks"] == {
+        "clean_baselines": True,
+        "spider_read": True,
+        "swap_rank_improvements": True,
+        "swap_target_top1": True,
+    }
+    assert result["cases"][0]["checks"]["baseline_top1"] is True
+    assert result["swaps"][0]["target_top1"] is True
+    assert result["passed"] is True

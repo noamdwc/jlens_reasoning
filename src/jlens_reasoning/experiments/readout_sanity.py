@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from jlens.hooks import ActivationRecorder
 from torch import nn
 
 MODEL_NAME = "Qwen/Qwen3.5-4B"
@@ -246,6 +247,20 @@ def positions_after_literal(
     return positions
 
 
+def positions_from_literal(
+    tokenizer: Any,
+    input_ids: torch.Tensor,
+    literal: str,
+) -> list[int]:
+    sequence = input_ids[0].tolist()
+    patterns = [
+        tokenizer.encode(surface, add_special_tokens=False)
+        for surface in _concept_surfaces(literal)
+    ]
+    start, _ = find_last_subsequence(sequence, patterns)
+    return list(range(start, len(sequence)))
+
+
 def best_target_rank(logits: torch.Tensor, target_ids: Sequence[int]) -> int:
     if logits.ndim != 1:
         raise ValueError("best_target_rank expects one logits vector")
@@ -286,9 +301,7 @@ def _next_token_payload(
     top1_id = int(logits.argmax().item())
     return {
         "top1_id": top1_id,
-        "top1_token": tokenizer.decode(
-            [top1_id], clean_up_tokenization_spaces=False
-        ),
+        "top1_token": tokenizer.decode([top1_id], clean_up_tokenization_spaces=False),
         "target_rank": best_target_rank(logits, target_ids),
         "top_tokens": top_tokens(logits, tokenizer, k=top_k),
     }
@@ -306,9 +319,7 @@ def prepare_scoring_input(
     for _ in range(max_formatting_tokens):
         logits = forward_next_token(scoring_input)
         token_id = int(logits.argmax().item())
-        surface = tokenizer.decode(
-            [token_id], clean_up_tokenization_spaces=False
-        )
+        surface = tokenizer.decode([token_id], clean_up_tokenization_spaces=False)
         if surface.strip():
             break
         prefix.append({"token_id": token_id, "token": surface})
@@ -388,6 +399,22 @@ def aggregate_capability_checks(
     if not checks["swap_target_top1"]:
         failures.append("no coordinate swap placed its target answer at top-1")
     return checks, failures
+
+
+def workspace_loading(
+    activations_by_layer: Mapping[int, torch.Tensor],
+    vectors_by_layer: Mapping[int, torch.Tensor],
+    *,
+    positions: Sequence[int],
+) -> float:
+    similarities = []
+    for layer, vector in vectors_by_layer.items():
+        hidden = activations_by_layer[layer][0, list(positions)].float()
+        direction = vector.to(hidden.device, dtype=torch.float32).expand_as(hidden)
+        similarities.append(
+            torch.nn.functional.cosine_similarity(hidden, direction, dim=-1)
+        )
+    return float(torch.cat(similarities).mean().item())
 
 
 def workspace_layers(n_layers: int, source_layers: Iterable[int]) -> list[int]:
@@ -523,8 +550,7 @@ def analyze_case(
         checks.update(
             {
                 "paper_top1_hit": jacobian_rank == 1,
-                "read_capability": jacobian_rank <= 5
-                and jacobian_rank < logit_rank,
+                "read_capability": jacobian_rank <= 5 and jacobian_rank < logit_rank,
             }
         )
     return {
@@ -561,25 +587,141 @@ def analyze_case(
     }
 
 
+def analyze_swap_case(
+    case: SwapCase,
+    *,
+    read_case: ReadoutCase,
+    model: Any,
+    lens: Any,
+    tokenizer: Any,
+    unembedding_weight: torch.Tensor,
+    forward_next_token: Callable[[torch.Tensor], torch.Tensor],
+    layers: Sequence[int],
+    alphas: Sequence[float],
+    top_k: int,
+) -> dict[str, Any]:
+    source = single_token_surface(tokenizer, case.source_surface)
+    target = single_token_surface(tokenizer, case.target_surface)
+    input_ids = model.encode(read_case.prompt)
+    scoring_input, formatting_prefix = prepare_scoring_input(
+        input_ids,
+        forward_next_token=forward_next_token,
+        tokenizer=tokenizer,
+    )
+    vectors_by_layer = {
+        layer: (
+            jlens_vector(
+                lens,
+                unembedding_weight,
+                layer=layer,
+                token_id=source.token_id,
+            ),
+            jlens_vector(
+                lens,
+                unembedding_weight,
+                layer=layer,
+                token_id=target.token_id,
+            ),
+        )
+        for layer in layers
+    }
+    loading = None
+    if read_case.literal_argument is not None:
+        with (
+            torch.inference_mode(),
+            ActivationRecorder(
+                model.layers,
+                at=layers,
+            ) as recorder,
+        ):
+            forward_next_token(input_ids)
+        loading = workspace_loading(
+            recorder.activations,
+            {layer: vectors_by_layer[layer][0] for layer in layers},
+            positions=positions_from_literal(
+                tokenizer,
+                input_ids,
+                read_case.literal_argument,
+            ),
+        )
+    with torch.inference_mode():
+        clean_logits = forward_next_token(scoring_input)
+        intervened_logits: dict[float, torch.Tensor] = {}
+        for alpha in alphas:
+            with LensCoordinateSwapper(model.layers, vectors_by_layer, alpha=alpha):
+                intervened_logits[alpha] = forward_next_token(scoring_input)
+
+    summary = summarize_swap_logits(
+        clean_logits,
+        intervened_logits,
+        clean_answers=read_case.expected_answers,
+        target_answers=case.target_answers,
+        tokenizer=tokenizer,
+        top_k=top_k,
+    )
+    return {
+        "key": case.key,
+        "prompt": read_case.prompt,
+        "source": asdict(source),
+        "target": asdict(target),
+        "formatting_prefix": formatting_prefix,
+        "workspace_loading": loading,
+        "workspace_layers": list(layers),
+        **summary,
+    }
+
+
 def run_readout_sanity(
     *,
     model: Any,
     lens: Any,
     tokenizer: Any,
+    unembedding_weight: torch.Tensor,
+    forward_next_token: Callable[[torch.Tensor], torch.Tensor],
     cases: Sequence[ReadoutCase] = READOUT_CASES,
+    swap_cases: Sequence[SwapCase] = SWAP_CASES,
+    alphas: Sequence[float] = (1.0, 2.0),
+    minimum_improvements: int = 3,
     top_k: int = TOP_K,
 ) -> dict[str, Any]:
     validate_model_lens(model, lens)
-    case_results = [
+    layers = workspace_layers(model.n_layers, lens.source_layers)
+    if not layers:
+        raise ValueError("No fitted layers fall inside the workspace range")
+
+    read_results = [
         analyze_case(case, model=model, lens=lens, tokenizer=tokenizer, top_k=top_k)
         for case in cases
     ]
-    failures: list[str] = []
-    for case in case_results:
-        if not case["checks"]["baseline_top1"]:
-            failures.append(f"{case['key']}: baseline top-1 mismatch")
-        if not case["checks"]["target_top_k"]:
-            failures.append(f"{case['key']}: target outside J-Lens top {top_k}")
+    read_cases_by_key = {case.key: case for case in cases}
+    swap_results = [
+        analyze_swap_case(
+            swap_case,
+            read_case=read_cases_by_key[swap_case.key],
+            model=model,
+            lens=lens,
+            tokenizer=tokenizer,
+            unembedding_weight=unembedding_weight,
+            forward_next_token=forward_next_token,
+            layers=layers,
+            alphas=alphas,
+            top_k=top_k,
+        )
+        for swap_case in swap_cases
+    ]
+    swaps_by_key = {case["key"]: case for case in swap_results}
+    for read_result in read_results:
+        swap_result = swaps_by_key[read_result["key"]]
+        read_result["baseline"]["formatting_prefix"] = swap_result["formatting_prefix"]
+        read_result["baseline"]["expected_rank"] = swap_result["clean"]["expected_rank"]
+        read_result["checks"]["baseline_top1"] = swap_result["clean"]["expected_top1"]
+        read_result["passed"] = all(read_result["checks"].values())
+
+    checks, failures = aggregate_capability_checks(
+        read_results,
+        swap_results,
+        minimum_improvements=minimum_improvements,
+    )
     return {
         "model": MODEL_NAME,
         "lens": {
@@ -593,7 +735,10 @@ def run_readout_sanity(
         "n_layers": model.n_layers,
         "d_model": model.d_model,
         "top_k": top_k,
-        "cases": case_results,
+        "intervention_strengths": list(alphas),
+        "cases": read_results,
+        "swaps": swap_results,
+        "checks": checks,
         "failures": failures,
-        "passed": not failures,
+        "passed": all(checks.values()),
     }
