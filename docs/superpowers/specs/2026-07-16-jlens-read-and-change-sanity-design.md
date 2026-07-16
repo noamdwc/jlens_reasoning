@@ -27,7 +27,8 @@ flexible-generalization protocol grades the greedy next token.
 
 The revised experiment removes both mismatches:
 
-- clean factual answers are graded from the next-token distribution;
+- clean factual answers are graded from a deterministic next-token
+  distribution after ignoring a fixed formatting-only prefix;
 - `France` readout ranks and workspace loading remain diagnostics, not a hard
   post-literal top-25 requirement;
 - flexible use is tested causally with `France` to `China` coordinate swaps.
@@ -72,6 +73,26 @@ The four released country templates use the same `France` to `China` swap:
 
 All four clean answers must be top-1. The identical semantic coordinate swap is
 applied for every function; it is not selected or tuned per prompt.
+
+## Formatting-Token Handling
+
+The observed Qwen spider completion begins with a standalone whitespace token
+and predicts `8` on the following step. Treating the literal first vocabulary
+token as the answer would therefore fail a semantically correct clean run for a
+tokenizer-formatting reason.
+
+For each prompt, the experiment greedily collects at most two leading tokens
+whose decoded surface is entirely whitespace. It appends this clean formatting
+prefix to the prompt but stops before appending the first content token. The
+resulting input is then held fixed for the clean, `alpha=1`, and `alpha=2`
+conditions, and all three conditions are graded from the next-token
+distribution at that same position. The chosen formatting token IDs and
+surfaces are recorded. If the clean model continues to select formatting-only
+tokens after two steps, the clean baseline fails clearly rather than entering
+an unbounded generation loop.
+
+This is not free-form answer extraction: no content token is generated or
+parsed, and clean and intervened conditions receive identical token context.
 
 ## Token Resolution
 
@@ -127,8 +148,8 @@ tensor or a tuple whose first element is the hidden tensor, preserves all
 non-hidden tuple members, and removes every hook on normal exit or exception.
 
 The notebook obtains clean and intervened next-token logits from the same
-causal language model. It does not generate a multi-token continuation for
-grading.
+causal language model and uses only the bounded clean formatting-prefix rule
+above. It does not generate or parse a content continuation for grading.
 
 ## Read Metrics
 
@@ -167,7 +188,8 @@ is used only for the Qwen capability gate.
 The overall sanity experiment passes only when all of these conditions hold:
 
 1. The pinned model and lens load and pass compatibility validation.
-2. All five clean expected answers are top-1 in their next-token distributions.
+2. All five clean expected answers are top-1 in their formatting-adjusted
+   next-token distributions.
 3. The spider read satisfies the Qwen capability gate: best J-Lens rank is at
    most 5 and is better than the best logit-lens rank.
 4. At least three of the five swaps strictly improve the swapped-in target's
@@ -196,6 +218,7 @@ and gains:
 - the pure tensor coordinate-swap operation;
 - the exception-safe block-hook context manager;
 - next-token rank summaries for clean, `alpha=1`, and `alpha=2` runs;
+- bounded clean formatting-prefix selection shared by all three conditions;
 - workspace-loading and aggregate capability-gate calculations.
 
 Model download, Colab initialization, and fixed artifact paths remain outside
@@ -223,6 +246,7 @@ and the existing detailed readout payload. It additionally contains:
 - swap source/target surfaces and token IDs;
 - intervention strengths and workspace layers;
 - clean and intervened top tokens and target ranks;
+- formatting-prefix token IDs and decoded surfaces;
 - per-case improvement and top-1 flags;
 - France workspace loading;
 - read and change aggregate counts;
@@ -245,6 +269,7 @@ blocks. Test-driven implementation must cover:
 - tensor and tuple block outputs;
 - hook cleanup after normal execution and exceptions;
 - next-token answer ranks across token variants;
+- bounded formatting-prefix selection and reuse across intervention strengths;
 - spider read capability checks;
 - three-of-five rank-improvement and any-top-1 aggregation;
 - JSON serialization of the expanded schema;
