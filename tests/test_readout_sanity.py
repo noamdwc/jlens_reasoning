@@ -342,6 +342,17 @@ class SwapTokenizer(RunnerTokenizer):
         )
 
 
+class FormattingSwapTokenizer(SwapTokenizer):
+    def decode(
+        self,
+        token_ids: list[int],
+        *,
+        clean_up_tokenization_spaces: bool = False,
+    ) -> str:
+        assert clean_up_tokenization_spaces is False
+        return " " if token_ids[0] == 0 else f"token-{token_ids[0]}"
+
+
 class TinySwapModel:
     n_layers = 4
     d_model = 2
@@ -514,13 +525,38 @@ def test_analyze_case_grades_baseline_and_spider_readout() -> None:
         top_k=3,
     )
 
-    assert result["checks"] == {
-        "paper_top1_hit": True,
-        "read_capability": True,
-    }
+    assert result["checks"] == {"read_capability": True}
+    assert result["diagnostics"] == {"paper_top1_hit": True}
     assert result["summary"]["jacobian_lens"]["best_rank"] == 1
     assert result["summary"]["jacobian_lens"]["layer"] == 2
     assert result["summary"]["logit_lens"]["best_rank"] > 1
+    assert result["passed"] is True
+
+
+def test_spider_paper_top1_is_diagnostic_not_a_capability_requirement() -> None:
+    class RankTwoLens(FakeLens):
+        def apply(self, model, prompt, *, use_jacobian=True, **kwargs):
+            layer_logits, model_logits, input_ids = super().apply(
+                model,
+                prompt,
+                use_jacobian=use_jacobian,
+                **kwargs,
+            )
+            if use_jacobian:
+                layer_logits[2][:, 0] = 9.0
+            return layer_logits, model_logits, input_ids
+
+    result = analyze_case(
+        ReadoutCase("spider", "prompt", ("8", "eight"), ("spider",)),
+        model=SimpleNamespace(n_layers=4, d_model=4),
+        lens=RankTwoLens(),
+        tokenizer=RunnerTokenizer(),
+        top_k=3,
+    )
+
+    assert result["summary"]["jacobian_lens"]["best_rank"] == 2
+    assert result["diagnostics"]["paper_top1_hit"] is False
+    assert result["checks"]["read_capability"] is True
     assert result["passed"] is True
 
 
@@ -536,7 +572,7 @@ class TinyCompleteLens:
         del prompt, kwargs
         input_ids = model.encode("prompt")
         model_logits = torch.zeros(input_ids.shape[1], 6)
-        model_logits[-1, 4] = 5.0
+        model_logits[-1, 0] = 5.0
         readout = torch.zeros(input_ids.shape[1], 6)
         readout[:, 2] = 4.0 if use_jacobian else -1.0
         return {2: readout}, model_logits, input_ids
@@ -545,14 +581,17 @@ class TinyCompleteLens:
 def test_run_readout_sanity_combines_read_and_change_checks() -> None:
     model = TinySwapModel()
     lens = TinyCompleteLens()
-    tokenizer = SwapTokenizer()
+    tokenizer = FormattingSwapTokenizer()
     unembedding = torch.zeros(6, 2)
     unembedding[2] = torch.tensor([1.0, 0.0])
     unembedding[3] = torch.tensor([0.0, 1.0])
 
     def forward_next_token(input_ids: torch.Tensor) -> torch.Tensor:
-        del input_ids
-        hidden = torch.tensor([[[1.0, 0.0], [1.0, 0.0]]])
+        if input_ids.shape[1] == 2:
+            logits = torch.zeros(6)
+            logits[0] = 10.0
+            return logits
+        hidden = torch.tensor([[[1.0, 0.0]]]).expand(1, input_ids.shape[1], 2)
         for block in model.layers:
             hidden = block(hidden)
         logits = torch.zeros(6)
@@ -586,5 +625,38 @@ def test_run_readout_sanity_combines_read_and_change_checks() -> None:
         "swap_target_top1": True,
     }
     assert result["cases"][0]["checks"]["baseline_top1"] is True
+    assert result["cases"][0]["baseline"]["top1_id"] == 4
+    assert result["cases"][0]["baseline"]["top1_token"] == "token-4"
+    assert result["cases"][0]["baseline"]["formatting_prefix"] == [
+        {"token_id": 0, "token": " "}
+    ]
+    assert result["cases"][0]["baseline"]["unformatted_prompt"]["top1_id"] == 0
     assert result["swaps"][0]["target_top1"] is True
     assert result["passed"] is True
+
+
+def test_run_validates_swap_surfaces_before_lens_forwards() -> None:
+    class CountingLens(TinyCompleteLens):
+        def __init__(self) -> None:
+            super().__init__()
+            self.apply_calls = 0
+
+        def apply(self, *args, **kwargs):
+            self.apply_calls += 1
+            return super().apply(*args, **kwargs)
+
+    lens = CountingLens()
+
+    with pytest.raises(ValueError, match="exactly one token"):
+        run_readout_sanity(
+            model=TinySwapModel(),
+            lens=lens,
+            tokenizer=SwapTokenizer(),
+            unembedding_weight=torch.zeros(6, 2),
+            forward_next_token=lambda input_ids: torch.zeros(6),
+            cases=(ReadoutCase("spider", "prompt", ("8",), ("spider",)),),
+            swap_cases=(SwapCase("spider", " spider", " bad surface", ("6",)),),
+            minimum_improvements=1,
+        )
+
+    assert lens.apply_calls == 0

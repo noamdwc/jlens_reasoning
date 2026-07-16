@@ -1,4 +1,4 @@
-"""Readout-only sanity checks for the public Qwen Jacobian lens."""
+"""Read-and-change sanity checks for the public Qwen Jacobian lens."""
 
 from __future__ import annotations
 
@@ -90,6 +90,14 @@ class TokenVariant:
     surface: str
 
 
+@dataclass(frozen=True, slots=True)
+class ResolvedSwapCase:
+    case: SwapCase
+    read_case: ReadoutCase
+    source: TokenVariant
+    target: TokenVariant
+
+
 def single_token_surface(tokenizer: Any, surface: str) -> TokenVariant:
     token_ids = tokenizer.encode(surface, add_special_tokens=False)
     if len(token_ids) != 1:
@@ -97,6 +105,41 @@ def single_token_surface(tokenizer: Any, surface: str) -> TokenVariant:
             f"Configured swap surface {surface!r} must encode as exactly one token"
         )
     return TokenVariant(token_id=token_ids[0], surface=surface)
+
+
+def resolve_swap_cases(
+    cases: Sequence[ReadoutCase],
+    swap_cases: Sequence[SwapCase],
+    tokenizer: Any,
+) -> tuple[ResolvedSwapCase, ...]:
+    read_cases_by_key: dict[str, ReadoutCase] = {}
+    for case in cases:
+        if case.key in read_cases_by_key:
+            raise ValueError(f"Duplicate readout case key: {case.key}")
+        read_cases_by_key[case.key] = case
+
+    seen_swap_keys: set[str] = set()
+    resolved = []
+    for case in swap_cases:
+        if case.key in seen_swap_keys:
+            raise ValueError(f"Duplicate swap case key: {case.key}")
+        seen_swap_keys.add(case.key)
+        if case.key not in read_cases_by_key:
+            raise ValueError(f"Swap case has no matching readout case: {case.key}")
+        resolved.append(
+            ResolvedSwapCase(
+                case=case,
+                read_case=read_cases_by_key[case.key],
+                source=single_token_surface(tokenizer, case.source_surface),
+                target=single_token_surface(tokenizer, case.target_surface),
+            )
+        )
+
+    missing_swap_keys = set(read_cases_by_key) - seen_swap_keys
+    if missing_swap_keys:
+        missing = ", ".join(sorted(missing_swap_keys))
+        raise ValueError(f"Readout cases have no matching swap case: {missing}")
+    return tuple(resolved)
 
 
 def _concept_surfaces(concept: str) -> tuple[str, ...]:
@@ -544,15 +587,12 @@ def analyze_case(
         ),
     }
     checks: dict[str, bool] = {}
+    diagnostics: dict[str, bool] = {}
     if case.key == "spider":
         jacobian_rank = summaries["jacobian_lens"]["best_rank"]
         logit_rank = summaries["logit_lens"]["best_rank"]
-        checks.update(
-            {
-                "paper_top1_hit": jacobian_rank == 1,
-                "read_capability": jacobian_rank <= 5 and jacobian_rank < logit_rank,
-            }
-        )
+        diagnostics["paper_top1_hit"] = jacobian_rank == 1
+        checks["read_capability"] = jacobian_rank <= 5 and jacobian_rank < logit_rank
     return {
         "key": case.key,
         "prompt": case.prompt,
@@ -583,6 +623,7 @@ def analyze_case(
             ),
         },
         "checks": checks,
+        "diagnostics": diagnostics,
         "passed": all(checks.values()),
     }
 
@@ -599,9 +640,11 @@ def analyze_swap_case(
     layers: Sequence[int],
     alphas: Sequence[float],
     top_k: int,
+    source: TokenVariant | None = None,
+    target: TokenVariant | None = None,
 ) -> dict[str, Any]:
-    source = single_token_surface(tokenizer, case.source_surface)
-    target = single_token_surface(tokenizer, case.target_surface)
+    source = source or single_token_surface(tokenizer, case.source_surface)
+    target = target or single_token_surface(tokenizer, case.target_surface)
     input_ids = model.encode(read_case.prompt)
     scoring_input, formatting_prefix = prepare_scoring_input(
         input_ids,
@@ -688,16 +731,16 @@ def run_readout_sanity(
     layers = workspace_layers(model.n_layers, lens.source_layers)
     if not layers:
         raise ValueError("No fitted layers fall inside the workspace range")
+    resolved_swaps = resolve_swap_cases(cases, swap_cases, tokenizer)
 
     read_results = [
         analyze_case(case, model=model, lens=lens, tokenizer=tokenizer, top_k=top_k)
         for case in cases
     ]
-    read_cases_by_key = {case.key: case for case in cases}
     swap_results = [
         analyze_swap_case(
-            swap_case,
-            read_case=read_cases_by_key[swap_case.key],
+            resolved.case,
+            read_case=resolved.read_case,
             model=model,
             lens=lens,
             tokenizer=tokenizer,
@@ -706,15 +749,23 @@ def run_readout_sanity(
             layers=layers,
             alphas=alphas,
             top_k=top_k,
+            source=resolved.source,
+            target=resolved.target,
         )
-        for swap_case in swap_cases
+        for resolved in resolved_swaps
     ]
     swaps_by_key = {case["key"]: case for case in swap_results}
     for read_result in read_results:
         swap_result = swaps_by_key[read_result["key"]]
-        read_result["baseline"]["formatting_prefix"] = swap_result["formatting_prefix"]
-        read_result["baseline"]["expected_rank"] = swap_result["clean"]["expected_rank"]
-        read_result["checks"]["baseline_top1"] = swap_result["clean"]["expected_top1"]
+        unformatted_prompt = read_result["baseline"]
+        read_result["baseline"] = {
+            **swap_result["clean"],
+            "formatting_prefix": swap_result["formatting_prefix"],
+            "unformatted_prompt": unformatted_prompt,
+        }
+        read_result["checks"]["baseline_top1"] = read_result["baseline"][
+            "expected_top1"
+        ]
         read_result["passed"] = all(read_result["checks"].values())
 
     checks, failures = aggregate_capability_checks(
