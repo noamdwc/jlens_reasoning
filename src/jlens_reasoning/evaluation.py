@@ -6,7 +6,7 @@ from typing import Protocol
 from .evaluation_utils import (
     ReasoningStatus,
     extract_answer,
-    matches_reference,
+    match_reference,
     no_reasoning,
     normalize_text,
     safe_truncated_text,
@@ -56,14 +56,31 @@ class EvaluationResult:
     normalized_answer: str | None
     reasoning_status: ReasoningStatus
     answer_status: AnswerStatus
+    accepted_references: tuple[str, ...]
+    matched_reference: str | None
+    evaluator_name: str
+    evaluator_version: str
+    reasoning_parser_name: str
+    reasoning_parser_version: str
+    extractor_name: str
+    extractor_version: str
+    normalizer_name: str
+    normalizer_version: str
 
     def __post_init__(self) -> None:
+        if not isinstance(self.accepted_references, tuple):
+            raise TypeError("accepted references must be a tuple")
         graded = self.answer_status in (AnswerStatus.CORRECT, AnswerStatus.INCORRECT)
         has_answer = (
             self.extracted_answer is not None and self.normalized_answer is not None
         )
         if graded != has_answer:
             raise ValueError("graded status and answer must agree")
+        has_match = self.matched_reference is not None
+        if (self.answer_status is AnswerStatus.CORRECT) != has_match:
+            raise ValueError("correct status and matched reference must agree")
+        if has_match and self.matched_reference not in self.accepted_references:
+            raise ValueError("matched reference must be accepted")
 
     @property
     def generation_status(self) -> GenerationStatus:
@@ -91,6 +108,36 @@ class FactualEvaluator(Protocol):
 class SimpleFactualEvaluator:
     reasoning_parser: Callable[[str], tuple[str, ReasoningStatus]] = no_reasoning
 
+    def _result(
+        self,
+        output: ModelOutput,
+        references: tuple[str, ...],
+        reasoning_status: ReasoningStatus,
+        answer_status: AnswerStatus,
+        evaluation_text: str = "",
+        answer: str | None = None,
+        normalized: str | None = None,
+        matched: str | None = None,
+    ) -> EvaluationResult:
+        return EvaluationResult(
+            raw_output=output,
+            evaluation_text=evaluation_text,
+            extracted_answer=answer,
+            normalized_answer=normalized,
+            reasoning_status=reasoning_status,
+            answer_status=answer_status,
+            accepted_references=references,
+            matched_reference=matched,
+            evaluator_name="simple_factual",
+            evaluator_version="v1",
+            reasoning_parser_name=self.reasoning_parser.__name__,
+            reasoning_parser_version="v1",
+            extractor_name=extract_answer.__name__,
+            extractor_version="v1",
+            normalizer_name=normalize_text.__name__,
+            normalizer_version="v1",
+        )
+
     def __call__(
         self, output: ModelOutput, accepted_references: tuple[str, ...]
     ) -> EvaluationResult:
@@ -100,11 +147,9 @@ class SimpleFactualEvaluator:
         ):
             raise ValueError("accepted references must normalize to non-empty text")
         if output.generation_status is GenerationStatus.GENERATION_ERROR:
-            return EvaluationResult(
+            return self._result(
                 output,
-                "",
-                None,
-                None,
+                accepted_references,
                 ReasoningStatus.NOT_PRESENT,
                 AnswerStatus.NOT_GRADED,
             )
@@ -118,18 +163,31 @@ class SimpleFactualEvaluator:
                 or output.generation_status is GenerationStatus.TRUNCATED
                 else AnswerStatus.UNPARSEABLE
             )
-            return EvaluationResult(output, "", None, None, reasoning_status, status)
+            return self._result(output, accepted_references, reasoning_status, status)
         evaluation_text = evaluation_text.strip()
         answer = extract_answer(evaluation_text)
         normalized = normalize_text(answer) if answer is not None else None
         if answer is None:
-            status = AnswerStatus.UNPARSEABLE
-        elif matches_reference(normalized, accepted_references):
-            status = AnswerStatus.CORRECT
+            status = (
+                AnswerStatus.NOT_GRADED
+                if output.generation_status is GenerationStatus.TRUNCATED
+                else AnswerStatus.UNPARSEABLE
+            )
+            matched = None
         else:
-            status = AnswerStatus.INCORRECT
-        return EvaluationResult(
-            output, evaluation_text, answer, normalized, reasoning_status, status
+            matched = match_reference(normalized, accepted_references)
+            status = (
+                AnswerStatus.CORRECT if matched is not None else AnswerStatus.INCORRECT
+            )
+        return self._result(
+            output,
+            accepted_references,
+            reasoning_status,
+            status,
+            evaluation_text,
+            answer,
+            normalized,
+            matched,
         )
 
 

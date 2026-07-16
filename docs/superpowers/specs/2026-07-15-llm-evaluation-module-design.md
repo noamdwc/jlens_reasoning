@@ -2,6 +2,8 @@
 
 **Date:** 2026-07-15
 
+**Updated:** 2026-07-16
+
 ## Purpose
 
 Provide a short, deterministic evaluator for simple factual model sanity tests.
@@ -40,15 +42,17 @@ equal lengths.
 - extracted answer;
 - normalized answer;
 - reasoning status; and
-- answer status.
+- answer status;
+- accepted references and the original matched reference; and
+- evaluator, reasoning-parser, extractor, and normalizer names and versions.
 
 Generation status and error are exposed directly from `raw_output`; they are not
 stored twice. `passed` implements the policy pass rule.
 
-The result intentionally does not store component IDs, parser names, intermediate
-cleanup strings, accepted references, or matched references. Code behavior is
-versioned by the project Git commit. Experiment artifacts remain responsible for
-saving their prompt and accepted references alongside the result.
+Audit metadata is stored as plain immutable fields rather than component
+objects. The result does not store intermediate reasoning-removed or
+truncation-cleaned strings. The project Git commit remains the authoritative
+version of the implementation.
 
 ## Reusable Utilities
 
@@ -57,7 +61,7 @@ saving their prompt and accepted references alongside the result.
 - no-reasoning and inline `<think>` parsing;
 - minimal Unicode text normalization;
 - gold-blind front-loaded extraction;
-- exact accepted-reference matching; and
+- exact accepted-reference matching that returns the original reference; and
 - safe truncation cleanup.
 
 The `<think>` parser removes complete, non-nested spans. Any leftover opening or
@@ -75,14 +79,18 @@ The default evaluator:
 6. stores the resulting trimmed value as `evaluation_text`;
 7. extracts directly from `evaluation_text` without seeing references;
 8. minimally normalizes the answer; and
-9. compares it exactly with normalized accepted references.
+9. compares it exactly with normalized accepted references and records the
+   original matched reference.
 
 Whitespace is never a safe truncation boundary. Truncated `8 or` is therefore
 `not_graded`, while an earlier complete front-loaded answer may still be graded.
+Any truncated output with no extractable answer, including `...`, is
+`not_graded`, not `unparseable`.
 
 ## Testing
 
 Tests cover the spider regression, string and structured inputs, minimal
 normalization, gold-blind extraction, inline and malformed thinking, generation
-errors, safe truncation including `8 or`, immutable raw artifacts, invalid
-references, result invariants, and delegation to another factual evaluator.
+errors, safe truncation including `8 or` and `...`, immutable raw artifacts,
+invalid references, original-reference matching, audit metadata, result
+invariants, and delegation to another factual evaluator.

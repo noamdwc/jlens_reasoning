@@ -35,10 +35,8 @@ def extract_answer(evaluation_text: str) -> str | None:
     return answer or None
 
 
-def matches_reference(normalized_answer: str, references: tuple[str, ...]) -> bool:
-    return any(
-        normalize_text(reference) == normalized_answer for reference in references
-    )
+def match_reference(normalized_answer: str, references: tuple[str, ...]) -> str | None:
+    return next((r for r in references if normalize_text(r) == normalized_answer), None)
 
 
 def safe_truncated_text(text: str) -> str | None:

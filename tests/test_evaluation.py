@@ -69,21 +69,23 @@ def test_spider_regression() -> None:
 
 
 @pytest.mark.parametrize(
-    ("output", "references", "normalized"),
+    ("output", "references", "normalized", "matched"),
     [
-        (" EIGHT! ", "eight", "eight"),
-        ("Paris? Explanation", ("Lyon", "paris."), "paris"),
-        ("Cafe\u0301", "Café", "café"),
+        (" EIGHT! ", "eight", "eight", "eight"),
+        ("Paris? Explanation", ("Lyon", "paris."), "paris", "paris."),
+        ("Cafe\u0301", "Café", "café", "Café"),
     ],
 )
 def test_minimal_normalization(
     output: str,
     references: str | tuple[str, ...],
     normalized: str,
+    matched: str,
 ) -> None:
     result = evaluate(output, references)
 
     assert result.normalized_answer == normalized
+    assert result.matched_reference == matched
     assert result.answer_status is AnswerStatus.CORRECT
 
 
@@ -209,6 +211,17 @@ def test_generation_error_is_not_graded() -> None:
     assert not result.passed
 
 
+def test_punctuation_only_truncation_is_not_graded() -> None:
+    output = ModelOutput("...", generation_status=GenerationStatus.TRUNCATED)
+
+    result = evaluate(output, "8")
+
+    assert result.evaluation_text == "..."
+    assert result.extracted_answer is None
+    assert result.normalized_answer is None
+    assert result.answer_status is AnswerStatus.NOT_GRADED
+
+
 @pytest.mark.parametrize("text", ["8 or", "8", "partial answer"])
 def test_ambiguous_truncation_is_not_graded(text: str) -> None:
     output = ModelOutput(text, generation_status=GenerationStatus.TRUNCATED)
@@ -277,6 +290,7 @@ def test_frozen_dataclasses_and_tuple_fields_are_immutable() -> None:
     output = ModelOutput("8", token_ids=(23,), token_pieces=("8",))
     result = evaluate(output, ["8", "eight"])
 
+    assert result.accepted_references == ("8", "eight")
     with pytest.raises(FrozenInstanceError):
         output.text = "6"  # type: ignore[misc]
     with pytest.raises(FrozenInstanceError):
@@ -293,12 +307,23 @@ def test_result_stores_only_final_text_processing_artifacts() -> None:
         "normalized_answer",
         "reasoning_status",
         "answer_status",
+        "accepted_references",
+        "matched_reference",
+        "evaluator_name",
+        "evaluator_version",
+        "reasoning_parser_name",
+        "reasoning_parser_version",
+        "extractor_name",
+        "extractor_version",
+        "normalizer_name",
+        "normalizer_version",
     }
 
 
 @pytest.mark.parametrize(
     "changes",
     [
+        {"matched_reference": None},
         {
             "answer_status": AnswerStatus.INCORRECT,
             "extracted_answer": None,
@@ -334,6 +359,29 @@ def test_pass_rule_covers_each_status_dimension() -> None:
     assert not evaluate("6", "8").passed
     assert not malformed.passed
     assert not generation_error.passed
+
+
+def test_result_records_audit_metadata() -> None:
+    result = evaluate("Paris.", ("Lyon", "paris."))
+
+    assert result.accepted_references == ("Lyon", "paris.")
+    assert result.matched_reference == "paris."
+    assert (result.evaluator_name, result.evaluator_version) == (
+        "simple_factual",
+        "v1",
+    )
+    assert (result.reasoning_parser_name, result.reasoning_parser_version) == (
+        "no_reasoning",
+        "v1",
+    )
+    assert (result.extractor_name, result.extractor_version) == (
+        "extract_answer",
+        "v1",
+    )
+    assert (result.normalizer_name, result.normalizer_version) == (
+        "normalize_text",
+        "v1",
+    )
 
 
 def test_runner_accepts_a_custom_factual_evaluator() -> None:

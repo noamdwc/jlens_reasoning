@@ -201,6 +201,15 @@ At minimum, save:
     "evaluation_text": "...",
     "extracted_answer": "...",
     "normalized_answer": "...",
+    "matched_reference": null,
+    "evaluator_name": "simple_factual",
+    "evaluator_version": "v1",
+    "reasoning_parser_name": "no_reasoning",
+    "reasoning_parser_version": "v1",
+    "extractor_name": "extract_answer",
+    "extractor_version": "v1",
+    "normalizer_name": "normalize_text",
+    "normalizer_version": "v1",
     "answer_status": "incorrect"
   }
 }
@@ -213,15 +222,17 @@ dependency versions, device, and dtype.
 
 - The reasoning parser, front-loaded answer extractor, normalizer, reference
   comparator, and truncation cleanup must be separate reusable functions.
-- Their behavior is versioned by the project Git commit; runtime component IDs
-  are not required.
+- Results must record the accepted references, original matched reference, and
+  the name and version of the evaluator, reasoning parser, extractor, and
+  normalizer. Plain immutable fields are sufficient; component objects are not
+  required. The project Git commit remains authoritative.
 - Extraction must receive `evaluation_text`, but not accepted references.
 - Comparison receives only the extracted answer and predefined references.
 - Every real artifact failure becomes a regression test before behavior is
   changed.
 - Tests must cover tokenizer-separated leading whitespace, multi-token output,
   thinking removal, malformed thinking, truncation, generation errors, case
-  differences, and terminal punctuation.
+  differences, terminal punctuation, and truncated punctuation-only output.
 
 ## Known Limits
 

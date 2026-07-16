@@ -14,13 +14,15 @@
 
 - `ModelOutput` preserves raw text and immutable token metadata.
 - Version 1 accepts no separate reasoning or visible-answer fields.
-- `EvaluationResult` stores raw output, final `evaluation_text`, extracted answer,
-  normalized answer, reasoning status, and answer status only.
+- `EvaluationResult` stores raw output, final `evaluation_text`, extracted and
+  normalized answers, statuses, accepted and matched references, and component
+  names and versions. It stores no intermediate text stages.
 - Generation status and generation error are read from `raw_output` properties.
 - Inline `<think>...</think>` parsing is an optional plain callable.
 - Extraction is gold-blind and runs directly on `evaluation_text`.
 - Whitespace is never treated as a safe truncation boundary.
-- Git commits version evaluator behavior; no runtime component IDs are stored.
+- Plain fields store audit names and versions; no component object hierarchy is
+  required, and the Git commit remains authoritative.
 
 ## Completed TDD tasks
 
@@ -29,9 +31,11 @@
 - [x] Add inline, absent, multiple, nested, and malformed thinking regressions.
 - [x] Add generation-error and pass-rule regressions.
 - [x] Add safe truncation regressions, including `8 or` as `not_graded`.
+- [x] Grade truncated `...` with no extractable answer as `not_graded`.
 - [x] Reject empty and normalized-empty references.
 - [x] Keep only final evaluation artifacts in `EvaluationResult`.
-- [x] Remove component IDs and redundant generation fields.
+- [x] Record accepted/matched references and component audit names and versions.
+- [x] Keep audit metadata as plain fields and avoid component objects.
 - [x] Move reusable text-processing functions to `evaluation_utils.py`.
 - [x] Prove another factual evaluator can be passed directly to `evaluate()`.
 - [x] Run focused tests, full tests, Ruff, formatting, and diff checks.
