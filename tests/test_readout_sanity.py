@@ -17,6 +17,7 @@ from jlens_reasoning.experiments.readout_sanity import (
     ReadoutCase,
     SwapCase,
     TokenVariant,
+    aggregate_capability_checks,
     analyze_case,
     best_target_rank,
     concept_token_variants,
@@ -24,8 +25,10 @@ from jlens_reasoning.experiments.readout_sanity import (
     find_last_subsequence,
     jlens_vector,
     positions_after_literal,
+    prepare_scoring_input,
     run_readout_sanity,
     single_token_surface,
+    summarize_swap_logits,
     top_tokens,
     validate_model_lens,
     workspace_layers,
@@ -258,6 +261,122 @@ class RunnerTokenizer(FakeTokenizer):
         )
 
 
+def test_swap_summary_uses_best_strength_and_clean_rank() -> None:
+    tokenizer = RunnerTokenizer()
+    tokenizer.pieces.update(
+        {
+            "6": [5],
+            " 6": [5],
+            "six": [5],
+            " six": [5],
+            "Six": [5],
+            " Six": [5],
+            "SIX": [5],
+            " SIX": [5],
+        }
+    )
+    clean = torch.tensor([4.0, 3.0, 2.0, 1.0, 0.0, -1.0])
+    alpha_1 = torch.tensor([4.0, 3.0, 2.0, 1.0, 0.0, 3.5])
+    alpha_2 = torch.tensor([1.0, 0.0, -1.0, -2.0, -3.0, 5.0])
+
+    result = summarize_swap_logits(
+        clean,
+        {1.0: alpha_1, 2.0: alpha_2},
+        clean_answers=("8", "eight"),
+        target_answers=("6", "six"),
+        tokenizer=tokenizer,
+        top_k=3,
+    )
+
+    assert result["clean"]["expected_rank"] == 5
+    assert result["clean"]["expected_top1"] is False
+    assert result["clean"]["target_rank"] == 6
+    assert result["interventions"]["1.0"]["target_rank"] == 2
+    assert result["interventions"]["2.0"]["target_rank"] == 1
+    assert result["best_intervened_rank"] == 1
+    assert result["improved"] is True
+    assert result["target_top1"] is True
+
+
+class FormattingTokenizer(RunnerTokenizer):
+    def decode(
+        self,
+        token_ids: list[int],
+        *,
+        clean_up_tokenization_spaces: bool = False,
+    ) -> str:
+        assert clean_up_tokenization_spaces is False
+        return " " if token_ids[0] == 0 else f"token-{token_ids[0]}"
+
+
+def test_scoring_input_appends_only_bounded_clean_formatting_tokens() -> None:
+    calls: list[list[int]] = []
+
+    def forward_next_token(input_ids: torch.Tensor) -> torch.Tensor:
+        calls.append(input_ids[0].tolist())
+        logits = torch.zeros(6)
+        logits[0 if input_ids.shape[1] == 1 else 4] = 5.0
+        return logits
+
+    scoring_input, prefix = prepare_scoring_input(
+        torch.tensor([[9]]),
+        forward_next_token=forward_next_token,
+        tokenizer=FormattingTokenizer(),
+        max_formatting_tokens=2,
+    )
+
+    assert scoring_input.tolist() == [[9, 0]]
+    assert prefix == [{"token_id": 0, "token": " "}]
+    assert calls == [[9], [9, 0]]
+
+
+def test_capability_gate_requires_three_improvements_and_one_top1() -> None:
+    read_results = [
+        {"key": "spider", "checks": {"baseline_top1": True, "read_capability": True}},
+        {"key": "france_capital", "checks": {"baseline_top1": True}},
+        {"key": "france_language", "checks": {"baseline_top1": True}},
+        {"key": "france_continent", "checks": {"baseline_top1": True}},
+        {"key": "france_currency", "checks": {"baseline_top1": True}},
+    ]
+    swap_results = [
+        {"improved": True, "target_top1": True},
+        {"improved": True, "target_top1": False},
+        {"improved": True, "target_top1": False},
+        {"improved": False, "target_top1": False},
+        {"improved": False, "target_top1": False},
+    ]
+
+    checks, failures = aggregate_capability_checks(read_results, swap_results)
+
+    assert checks == {
+        "clean_baselines": True,
+        "spider_read": True,
+        "swap_rank_improvements": True,
+        "swap_target_top1": True,
+    }
+    assert failures == []
+
+
+def test_capability_gate_reports_aggregate_swap_failures() -> None:
+    read_results = [
+        {"key": "spider", "checks": {"baseline_top1": True, "read_capability": True}},
+    ]
+    swap_results = [
+        {"improved": True, "target_top1": False},
+        {"improved": True, "target_top1": False},
+        {"improved": False, "target_top1": False},
+    ]
+
+    checks, failures = aggregate_capability_checks(read_results, swap_results)
+
+    assert checks["swap_rank_improvements"] is False
+    assert checks["swap_target_top1"] is False
+    assert failures == [
+        "coordinate swaps improved 2/3 target ranks; need at least 3",
+        "no coordinate swap placed its target answer at top-1",
+    ]
+
+
 class FakeLens:
     d_model = 4
     source_layers = [0, 1, 2, 3]
@@ -302,7 +421,10 @@ def test_analyze_case_grades_baseline_and_spider_readout() -> None:
         top_k=3,
     )
 
-    assert result["checks"] == {"baseline_top1": True, "target_top_k": True}
+    assert result["checks"] == {
+        "paper_top1_hit": True,
+        "read_capability": True,
+    }
     assert result["summary"]["jacobian_lens"]["best_rank"] == 1
     assert result["summary"]["jacobian_lens"]["layer"] == 2
     assert result["summary"]["logit_lens"]["best_rank"] > 1

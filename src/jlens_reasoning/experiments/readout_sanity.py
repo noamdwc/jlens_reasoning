@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -275,6 +275,121 @@ def top_tokens(logits: torch.Tensor, tokenizer: Any, *, k: int = TOP_K) -> list[
     ]
 
 
+def _next_token_payload(
+    logits: torch.Tensor,
+    target_ids: Sequence[int],
+    tokenizer: Any,
+    *,
+    top_k: int,
+) -> dict[str, Any]:
+    logits = logits.detach().float().cpu()
+    top1_id = int(logits.argmax().item())
+    return {
+        "top1_id": top1_id,
+        "top1_token": tokenizer.decode(
+            [top1_id], clean_up_tokenization_spaces=False
+        ),
+        "target_rank": best_target_rank(logits, target_ids),
+        "top_tokens": top_tokens(logits, tokenizer, k=top_k),
+    }
+
+
+def prepare_scoring_input(
+    input_ids: torch.Tensor,
+    *,
+    forward_next_token: Callable[[torch.Tensor], torch.Tensor],
+    tokenizer: Any,
+    max_formatting_tokens: int = 2,
+) -> tuple[torch.Tensor, list[dict[str, Any]]]:
+    scoring_input = input_ids
+    prefix: list[dict[str, Any]] = []
+    for _ in range(max_formatting_tokens):
+        logits = forward_next_token(scoring_input)
+        token_id = int(logits.argmax().item())
+        surface = tokenizer.decode(
+            [token_id], clean_up_tokenization_spaces=False
+        )
+        if surface.strip():
+            break
+        prefix.append({"token_id": token_id, "token": surface})
+        next_id = torch.tensor(
+            [[token_id]],
+            device=scoring_input.device,
+            dtype=scoring_input.dtype,
+        )
+        scoring_input = torch.cat((scoring_input, next_id), dim=1)
+    return scoring_input, prefix
+
+
+def summarize_swap_logits(
+    clean_logits: torch.Tensor,
+    intervened_logits: Mapping[float, torch.Tensor],
+    *,
+    clean_answers: Sequence[str],
+    target_answers: Sequence[str],
+    tokenizer: Any,
+    top_k: int,
+) -> dict[str, Any]:
+    expected_variants = concept_token_variants(tokenizer, clean_answers)
+    expected_ids = tuple(variant.token_id for variant in expected_variants)
+    target_variants = concept_token_variants(tokenizer, target_answers)
+    target_ids = tuple(variant.token_id for variant in target_variants)
+    normalized_clean = clean_logits.detach().float().cpu()
+    clean = _next_token_payload(normalized_clean, target_ids, tokenizer, top_k=top_k)
+    clean["expected_rank"] = best_target_rank(normalized_clean, expected_ids)
+    clean["expected_top1"] = clean["expected_rank"] == 1
+    interventions = {
+        str(alpha): _next_token_payload(logits, target_ids, tokenizer, top_k=top_k)
+        for alpha, logits in sorted(intervened_logits.items())
+    }
+    best_rank = min(item["target_rank"] for item in interventions.values())
+    return {
+        "clean_answers": list(clean_answers),
+        "clean_answer_variants": [asdict(variant) for variant in expected_variants],
+        "target_answers": list(target_answers),
+        "target_variants": [asdict(variant) for variant in target_variants],
+        "clean": clean,
+        "interventions": interventions,
+        "best_intervened_rank": best_rank,
+        "improved": best_rank < clean["target_rank"],
+        "target_top1": best_rank == 1,
+    }
+
+
+def aggregate_capability_checks(
+    read_results: Sequence[Mapping[str, Any]],
+    swap_results: Sequence[Mapping[str, Any]],
+    *,
+    minimum_improvements: int = 3,
+) -> tuple[dict[str, bool], list[str]]:
+    clean_baselines = all(
+        bool(case["checks"]["baseline_top1"]) for case in read_results
+    )
+    spider = next((case for case in read_results if case["key"] == "spider"), None)
+    spider_read = bool(spider and spider["checks"].get("read_capability", False))
+    improved_count = sum(bool(case["improved"]) for case in swap_results)
+    top1_count = sum(bool(case["target_top1"]) for case in swap_results)
+    checks = {
+        "clean_baselines": clean_baselines,
+        "spider_read": spider_read,
+        "swap_rank_improvements": improved_count >= minimum_improvements,
+        "swap_target_top1": top1_count >= 1,
+    }
+    failures: list[str] = []
+    if not clean_baselines:
+        failures.append("one or more clean baseline answers are not top-1")
+    if not spider_read:
+        failures.append("spider readout did not satisfy the Qwen capability gate")
+    if not checks["swap_rank_improvements"]:
+        failures.append(
+            f"coordinate swaps improved {improved_count}/{len(swap_results)} "
+            f"target ranks; need at least {minimum_improvements}"
+        )
+    if not checks["swap_target_top1"]:
+        failures.append("no coordinate swap placed its target answer at top-1")
+    return checks, failures
+
+
 def workspace_layers(n_layers: int, source_layers: Iterable[int]) -> list[int]:
     lower = math.ceil(0.35 * n_layers)
     upper = math.floor(0.80 * n_layers)
@@ -377,8 +492,6 @@ def analyze_case(
 
     target_variants = concept_token_variants(tokenizer, case.target_concepts)
     target_ids = tuple(variant.token_id for variant in target_variants)
-    answer_variants = concept_token_variants(tokenizer, case.expected_answers)
-    answer_ids = {variant.token_id for variant in answer_variants}
     baseline_top1_id = int(model_logits[-1].argmax().item())
     scored_positions = (
         list(range(input_ids.shape[1]))
@@ -403,10 +516,17 @@ def analyze_case(
             target_ids=target_ids,
         ),
     }
-    checks = {
-        "baseline_top1": baseline_top1_id in answer_ids,
-        "target_top_k": summaries["jacobian_lens"]["best_rank"] <= top_k,
-    }
+    checks: dict[str, bool] = {}
+    if case.key == "spider":
+        jacobian_rank = summaries["jacobian_lens"]["best_rank"]
+        logit_rank = summaries["logit_lens"]["best_rank"]
+        checks.update(
+            {
+                "paper_top1_hit": jacobian_rank == 1,
+                "read_capability": jacobian_rank <= 5
+                and jacobian_rank < logit_rank,
+            }
+        )
     return {
         "key": case.key,
         "prompt": case.prompt,
