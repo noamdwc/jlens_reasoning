@@ -66,6 +66,11 @@ def test_readout_sanity_notebook_has_pinned_gpu_workflow() -> None:
     assert "get_output_embeddings().weight" in source
     assert "intervention_strengths" in source
     assert 'result["swaps"]' in source
+    assert "identity_control" in source
+    assert "matched_random_vector_control" in source
+    assert "wrong_concept_control" in source
+    assert "random_target_control" in source
+    assert "overall_controls" in source
     assert "causal_lm.generate" not in source
     assert "SimpleFactualEvaluator" not in source
     assert "max_new_tokens" not in source

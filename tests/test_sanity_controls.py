@@ -1,9 +1,12 @@
+import json
 import math
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import torch
 
+from jlens_reasoning.experiments.readout_sanity import write_results
 from jlens_reasoning.experiments.sanity_controls import (
     CONTROL_CASE_KEYS,
     CONTROL_SEEDS,
@@ -430,3 +433,39 @@ def test_missing_control_payload_is_rejected() -> None:
 
     with pytest.raises(KeyError, match="identity"):
         aggregate_all_checks({"clean_baselines": True}, [], controls)
+
+
+def test_control_schema_serializes_stably_with_separate_pass_scopes(
+    tmp_path: Path,
+) -> None:
+    controls = {
+        "seeds": list(CONTROL_SEEDS),
+        "definitions": {
+            "percentile_interpretation": (
+                "deterministic sanity check; not statistical significance"
+            )
+        },
+        "thresholds": {"percentile_quantile": 0.95},
+        "tolerances": {"identity_logits": {"atol": 1e-6, "rtol": 1e-5}},
+        **_passing_controls(),
+        "passed": True,
+    }
+    result = {
+        "controls": controls,
+        "checks": {"clean_baselines": False, "identity_control": True},
+        "failures": ["existing failure"],
+        "passed": False,
+    }
+    first = tmp_path / "first.json"
+    second = tmp_path / "second.json"
+
+    write_results(first, result)
+    write_results(second, result)
+
+    assert first.read_bytes() == second.read_bytes()
+    serialized = json.loads(first.read_text(encoding="utf-8"))
+    assert serialized["controls"]["seeds"] == list(CONTROL_SEEDS)
+    assert serialized["controls"]["thresholds"] == {"percentile_quantile": 0.95}
+    assert serialized["controls"]["identity"]["passed"] is True
+    assert serialized["controls"]["passed"] is True
+    assert serialized["passed"] is False
