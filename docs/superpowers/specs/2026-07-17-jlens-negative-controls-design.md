@@ -83,8 +83,10 @@ are processed in ascending numeric order.
 
 All base random tensors are generated on CPU in `float32`, making fixed-seed
 generation reproducible in CPU-only tests and independent of the model's
-device. Tensors move to the real vector's device only after deterministic
-generation and norm matching.
+device. After deterministic generation and norm matching, every random vector
+is converted back to the exact device and dtype of its corresponding real
+vector before entering the shared intervention executor. Norm validation is
+performed on the converted vector with tolerances appropriate to that dtype.
 
 ### Log-rank gain
 
@@ -115,6 +117,11 @@ real_mean > percentile_95
 ```
 
 Equality fails.
+
+These 16-sample percentile comparisons are deterministic negative-control
+sanity checks. They are not hypothesis tests, confidence intervals, or evidence
+of statistical significance, and the result metadata and notebook wording must
+not describe them as such.
 
 ## Identity Control
 
@@ -154,9 +161,10 @@ mean of the five log-rank gains. The gate is:
 real alpha=1 mean gain > 95th percentile of 16 random-vector mean gains
 ```
 
-The result records per-layer real and generated norms, per-case ranks and
-gains, every seed mean, the real per-case gains and mean, the percentile
-threshold, and the gate outcome.
+The result records per-layer real and generated norms, device/dtype parity,
+per-case ranks and gains, every seed mean, the real per-case gains and mean,
+the percentile threshold, the gate outcome, and a statement that this is a
+sanity check rather than a statistical-significance claim.
 
 ## Wrong-Concept Control
 
@@ -199,8 +207,8 @@ Build exclusions after tokenization. The union contains:
 
 - every ID in every real source concept token sequence;
 - every ID in every real target concept token sequence;
-- every ID in all intended real target-answer tokenizations and accepted
-  answer variants;
+- every ID in all clean-answer and intended real target-answer tokenizations
+  and accepted answer variants;
 - IDs observed in the existing per-case prompt-formatting prefixes;
 - vocabulary IDs whose decoded surface is empty or whitespace-only;
 - tokenizer special, control, padding, beginning-of-sequence,
@@ -218,6 +226,17 @@ targets unique when at least 16 eligible IDs exist. If fewer than 16 IDs are
 eligible, deterministic reuse is allowed only after the eligible set has been
 exhausted. Selection never depends on unordered collection iteration.
 
+The candidate pool is also intersected with the model output vocabulary:
+
+```text
+0 <= token_id < unembedding_weight.shape[0]
+```
+
+Tokenizer-only IDs that the causal language-model head cannot score or map
+through `W_U` are therefore ineligible. Token strings are decoded everywhere
+with the existing convention
+`tokenizer.decode([token_id], clean_up_tokenization_spaces=False)`.
+
 For each target, compute the arithmetic mean of five case-level gains. The gate
 is:
 
@@ -225,9 +244,19 @@ is:
 real alpha=1 mean gain > 95th percentile of 16 random-target mean gains
 ```
 
-The result records every selected token ID and readable decoded string,
-exclusion categories and IDs, per-case ranks and gains, target means, the real
-score, percentile threshold, and gate outcome.
+The result records every selected token ID and readable decoded string, model
+output-vocabulary size, exclusion categories and IDs, per-case ranks and gains,
+target means, the real score, percentile threshold, gate outcome, and the same
+non-significance statement used by the random-vector control.
+
+## Exact Case-Set Invariant
+
+All real and control comparisons require the exact ordered keys from the five
+existing scored cases. Before aggregation, validate that real matched results,
+identity results, every random-vector seed, wrong-concept results, and every
+random-target result contain each of those five keys exactly once, with no
+missing, duplicate, or additional cases. A malformed case set raises a clear
+error instead of calculating a partial mean or percentile.
 
 ## Result Schema and Gate Aggregation
 
@@ -250,11 +279,18 @@ Each control contains configuration, per-case results, repeated-run results
 where applicable, aggregate values, thresholds or required conditions, and a
 `passed` field.
 
+The two overall states have deliberately different scope:
+
+- `controls["passed"]` is true exactly when all four control gates pass;
+- top-level `result["passed"]` is true exactly when every pre-existing sanity
+  check and all four control gates pass.
+
 One explicit aggregation function receives the existing checks, existing
 failures, and all four control payloads. It iterates one authoritative mapping
 from control name to global check key, adds all four booleans to the existing
 top-level `checks`, appends a control-specific actionable failure for each
-failed gate, and derives global `passed = all(checks.values())`.
+failed gate, derives `controls["passed"]` from the four control payloads only,
+and derives global `result["passed"] = all(checks.values())`.
 
 Failure text includes observed values and the strict threshold or failed
 condition. There is no second pass/fail assembly path in the notebook or
@@ -285,6 +321,7 @@ A focused module owns deterministic and directly testable control logic:
 - stable sub-seed derivation;
 - deterministic matched-norm vector generation;
 - token-ID exclusion construction and deterministic target selection;
+- exact five-case-set validation;
 - wrong-concept comparison calculation;
 - control/global check aggregation and failure formatting.
 
@@ -311,25 +348,39 @@ stubs without downloads, network access, or GPU requirements. They cover:
 1. fixed-seed random-vector determinism;
 2. deterministic sub-seed mapping independent of unordered iteration;
 3. deterministic random-target selection and uniqueness;
-4. token-ID exclusions for source, target, multi-token intended answers,
-   formatting, reserved, special, and existing-filter IDs;
-5. per-layer source and target norm matching, including zero norms;
-6. identity execution through the real hooks with unchanged top-1, unchanged
+4. selected random-target IDs bounded by the model output vocabulary;
+5. token-ID exclusions for all real source, target, clean-answer,
+   intended-target-answer, multi-token answer, formatting, reserved, special,
+   and existing-filter IDs, with consistent decoding;
+6. per-layer source and target norm matching, including zero norms, plus exact
+   device and dtype parity with real vectors;
+7. identity execution through the real hooks with unchanged top-1, unchanged
    rank, and logits within `atol=1e-6`, `rtol=1e-5`;
-7. natural-log rank-gain calculation;
-8. deterministic percentile interpolation and strict equality failure;
-9. wrong-concept arithmetic means, strict case wins, and the four-of-five
+8. hook cleanup when a control forward raises;
+9. natural-log rank-gain calculation;
+10. deterministic percentile interpolation, strict equality failure, and
+    non-significance metadata;
+11. wrong-concept arithmetic means, strict case wins, and the four-of-five
    requirement;
-10. all four controls in global checks;
-11. any failed control forcing global failure and adding an actionable,
+12. rejection of missing, duplicate, or extra cases in every comparison;
+13. all four controls in global checks;
+14. separate control-only and global pass semantics;
+15. any failed control forcing global failure and adding an actionable,
     control-specific failure;
-12. stable JSON serialization of seeds, definitions, tolerances, thresholds,
+16. stable JSON serialization of seeds, definitions, tolerances, thresholds,
     per-case results, repeated-run results, and gate outcomes;
-13. notebook presence of the concise control summary.
+17. notebook presence of the concise control summary.
 
 Tests exercise the real tensor transforms, hook context manager, rank logic,
 and aggregation functions. Stubs replace only heavyweight model inference and
 tokenization infrastructure.
+
+Repeated control execution retains only the small JSON-ready score payload for
+each condition. Logit tensors are consumed immediately to calculate top-1,
+rank, identity tolerance diagnostics, and gain, then references are released.
+The implementation must not accumulate logits from the roughly 170 additional
+control forwards in lists, dictionaries, dataclasses, closures, or the result
+artifact.
 
 ## Validation
 

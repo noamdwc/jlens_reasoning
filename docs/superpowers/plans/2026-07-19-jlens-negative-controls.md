@@ -14,7 +14,7 @@
 
 ## File Structure
 
-- Create `src/jlens_reasoning/experiments/sanity_controls.py`: fixed seeds, tolerances, rank gain, percentile, stable sub-seeds, matched-norm random vectors, random-target exclusions/selection, wrong-concept summaries, and the single global check/failure aggregator.
+- Create `src/jlens_reasoning/experiments/sanity_controls.py`: fixed seeds, tolerances, rank gain, explicitly non-significance percentile sanity checks, stable sub-seeds, matched-norm random vectors, output-vocabulary-bounded random-target exclusions/selection, exact five-case validation, wrong-concept summaries, and the single global check/failure aggregator.
 - Create `tests/test_sanity_controls.py`: CPU-only unit tests for all deterministic control calculations and schemas.
 - Modify `src/jlens_reasoning/experiments/readout_sanity.py`: share one prepared per-case runtime and one hook-backed intervention executor across real and control conditions; assemble all four control payloads.
 - Modify `tests/test_readout_sanity.py`: verify identity execution and full runner/check/failure integration using tiny real tensor hooks and tokenizer/model stubs.
@@ -79,7 +79,7 @@ def test_percentile_gate_is_strict() -> None:
 
 
 def test_subseeds_are_stable_and_role_specific() -> None:
-    assert derive_subseed(11, 7, "source") == derive_subseed(11, 7, "source")
+    assert derive_subseed(11, 7, "source") == 3688398498245801101
     assert derive_subseed(11, 7, "source") != derive_subseed(11, 7, "target")
     assert derive_subseed(11, 7, "source") != derive_subseed(11, 8, "source")
 ```
@@ -170,6 +170,7 @@ def strict_percentile_gate(
         "percentile": quantile,
         "threshold": threshold,
         "comparison": "real_score > threshold",
+        "interpretation": "deterministic sanity check; not statistical significance",
         "passed": float(real_score) > threshold,
     }
 
@@ -282,9 +283,12 @@ def _matched_random_vector(
 ```
 
 `matched_random_vectors` must iterate `sorted(real_vectors)`, generate source
-and target roles separately, move each generated tensor to the corresponding
-real tensor's device, and return both the vector mapping and a JSON-ready norm
-report using `torch.isclose(..., atol=NORM_ATOL, rtol=NORM_RTOL)`.
+and target roles separately, and convert each generated tensor with
+`.to(device=real.device, dtype=real.dtype)` before returning it. Return both the
+vector mapping and a JSON-ready report that asserts exact device/dtype parity
+and checks the converted vector's norm with tolerances appropriate to the real
+dtype. Add test assertions for `generated.device == real.device` and
+`generated.dtype == real.dtype`, including a non-`float32` CPU tensor.
 
 - [ ] **Step 4: Run focused tests and verify GREEN**
 
@@ -314,27 +318,32 @@ git commit -m "feat: generate norm-matched control vectors"
 
 Add a tokenizer stub with `encode`, `decode`, `get_vocab`, and
 `all_special_ids`. Its vocabulary must include ordinary tokens, source and
-target concepts, a multi-token intended answer, whitespace-only formatting,
-reserved/special IDs, and an explicitly prefiltered ID. Add tests asserting:
+target concepts, clean answers, a multi-token intended answer,
+whitespace-only formatting, reserved/special IDs, an explicitly prefiltered
+ID, and tokenizer IDs beyond a small model output vocabulary. Add tests
+asserting:
 
 ```python
 exclusions = build_random_target_exclusions(
     tokenizer,
     source_surfaces=("spider", "France"),
     target_surfaces=("ant", "China"),
+    clean_answer_surfaces=("8", "Paris"),
     intended_answer_surfaces=("six", "New Yuan"),
     formatting_token_ids=(8,),
     existing_excluded_ids=(9,),
 )
 excluded = set(exclusions["all"])
 assert {source_id, france_id, ant_id, china_id} <= excluded
-assert {new_id, yuan_id} <= excluded
+assert {eight_id, paris_id, new_id, yuan_id} <= excluded
 assert {formatting_id, whitespace_id, special_id, reserved_id, 9} <= excluded
 ```
 
-Also select twice with `CONTROL_SEEDS` and assert identical ordered results,
-16 results, uniqueness when at least 16 eligible IDs exist, and every result
-outside the exclusion set.
+Also select twice with `CONTROL_SEEDS` and `output_vocab_size=32`; assert exact
+expected IDs for the first several seeds, identical ordered results, 16
+results, uniqueness when at least 16 eligible IDs exist, every result outside
+the exclusion set, and `0 <= token_id < output_vocab_size`. Include an eligible
+tokenizer ID at 32 or above and assert it is never selected.
 
 - [ ] **Step 2: Run the new tests and verify RED**
 
@@ -360,8 +369,9 @@ def _encoded_ids(tokenizer: Any, surfaces: Sequence[str]) -> set[int]:
 ```
 
 `build_random_target_exclusions` must return sorted per-category lists for
-`sources`, `targets`, `intended_answers`, `formatting`, `reserved_special`,
-`decoded_formatting`, `existing_filter`, and their sorted union `all`.
+`sources`, `targets`, `clean_answers`, `intended_answers`, `formatting`,
+`reserved_special`, `decoded_formatting`, `existing_filter`, and their sorted
+union `all`.
 Reserved IDs come from `tokenizer.all_special_ids` plus special entries exposed
 by `added_tokens_decoder`. Decoded formatting IDs are vocabulary IDs whose
 single-token decoded surface is empty or whitespace-only. Multi-token inputs
@@ -370,7 +380,8 @@ contribute every encoded ID.
 - [ ] **Step 4: Implement deterministic unique selection**
 
 `select_random_targets` must build the ascending list of unique IDs from
-`tokenizer.get_vocab().values()`, subtract exclusions, and for each seed use:
+`tokenizer.get_vocab().values()`, intersect it with
+`range(output_vocab_size)`, subtract exclusions, and for each seed use:
 
 ```python
 digest = hashlib.sha256(f"jlens-random-target-v1:{seed}".encode()).digest()
@@ -380,6 +391,9 @@ token_id = remaining.pop(index)
 
 If the remaining list is exhausted before 16 selections, reset it to the full
 eligible list. Return `[{"seed": seed, "token_id": id, "token": decoded}, ...]`.
+Decode every token through one helper that always calls
+`tokenizer.decode([token_id], clean_up_tokenization_spaces=False)`; use the same
+helper when detecting decoded formatting IDs and serializing selected targets.
 
 - [ ] **Step 5: Run focused tests and verify GREEN**
 
@@ -411,6 +425,12 @@ Add tests for `summarize_wrong_concept` using five matched and five mismatched
 case dictionaries. Cover four strict wins passing, three wins failing, and a
 tie not counting. Assert both aggregates are arithmetic means.
 
+Add `require_exact_cases` tests using the exact ordered keys from `SWAP_CASES`.
+Assert it accepts exactly those five once each and raises clear errors for a
+missing case, duplicate case, extra case, or order mismatch. Apply this
+validator to matched results and every repeated control result before any mean
+or percentile calculation.
+
 Add tests for `aggregate_all_checks` with four control payloads:
 
 ```python
@@ -433,6 +453,11 @@ assert checks == {
 assert failures == []
 assert passed is True
 ```
+
+Also assert `controls_passed(controls)` is true when the four control payloads
+pass even if an existing check is false, while the returned global `passed` is
+false. Conversely, any false control must make both the control-only status and
+global status false.
 
 Parameterize each control as failed and assert global `passed` is false and a
 failure containing the control name plus observed/required values is appended.
@@ -461,6 +486,11 @@ passed = aggregate_condition and case_condition
 Return both conditions, both means, all paired cases, required wins, observed
 wins, and the combined gate.
 
+Implement `require_exact_cases(results, expected_keys=EXPECTED_CASE_KEYS)` with
+`EXPECTED_CASE_KEYS` equal to the five existing swap keys in their existing
+order. It must reject partial, duplicate, reordered, or extended inputs rather
+than computing a partial aggregate.
+
 - [ ] **Step 4: Implement the authoritative gate map and aggregator**
 
 Define one ordered tuple:
@@ -476,8 +506,11 @@ CONTROL_CHECK_MAP = (
 
 `aggregate_all_checks` must copy existing checks/failures, iterate this tuple,
 add every control result, call one control-specific failure formatter for each
-false result, and return `(checks, failures, all(checks.values()))`. Missing
-control payloads must raise rather than silently omit a gate.
+false result, and return `(checks, failures, all(checks.values()))`. A separate
+`controls_passed` helper returns `all(controls[name]["passed"] for name, _ in
+CONTROL_CHECK_MAP)` and populates only `controls["passed"]`; it must not include
+existing checks. Missing control payloads must raise rather than silently omit
+a gate.
 
 - [ ] **Step 5: Run focused tests and verify GREEN**
 
@@ -514,6 +547,11 @@ tolerances, and `passed=True`.
 
 Add a failure test where the tiny forward deliberately perturbs identity
 logits beyond `atol=1e-6`, `rtol=1e-5`, and assert the identity gate fails.
+
+Add a forward that raises inside `execute_intervention`. Assert the exception
+propagates and every selected block has an empty `_forward_hooks` mapping
+afterward. This exercises cleanup from an actual control-forward error, not
+only an exception raised manually inside the context manager.
 
 - [ ] **Step 2: Run the new tests and verify RED**
 
@@ -559,7 +597,10 @@ def execute_intervention(
 
 Route the existing real `alpha=1` and `alpha=2` runs through this helper before
 adding controls. Re-run all existing readout tests to prove behavior and schema
-are unchanged.
+are unchanged. The helper returns one transient logits tensor; callers must
+immediately convert it to the small score payload they need and release the
+reference. Only the five reusable clean logits may remain in per-case contexts;
+no control logits may accumulate across iterations.
 
 - [ ] **Step 5: Implement identity through that executor**
 
@@ -603,15 +644,20 @@ random-target vector pairs while still passing through real tensor hooks.
 Assert:
 
 - every randomized intervention uses `alpha=1`;
+- every comparator contains exactly the existing five case keys once and in
+  order, and a missing case raises before aggregation;
 - every result scores the original real target IDs;
 - matched-random contains exactly 16 seed entries and five cases per entry;
 - wrong-concept uses `France→China` for spider and `spider→ant` for France;
 - random-target contains exactly 16 selected target entries and five cases per
   entry;
+- every random-target ID is less than `unembedding_weight.shape[0]`;
 - sampled target vectors equal `jlens_vector(lens, unembedding_weight, layer,
   sampled_token_id)` before entering the common executor;
 - real aggregates use the five existing real `alpha=1` ranks;
 - both percentile comparisons are strict.
+- repeated-result payloads contain ranks, gains, top-1 diagnostics where
+  required, and no logits tensors or logits arrays.
 
 - [ ] **Step 2: Run integration tests and verify RED**
 
@@ -628,14 +674,19 @@ Expected: failures because the three controls are not orchestrated.
 For every condition record `key`, clean rank, intervened rank, and
 `log_rank_gain`. Compute the real per-case payload once from the existing
 `swaps[*].clean.target_rank` and `swaps[*].interventions["1.0"].target_rank`.
-Its aggregate is `mean` across exactly the five cases.
+Validate its keys against the exact existing five-case tuple; its aggregate is
+`mean` across exactly those five cases. Apply the same validation independently
+to identity, every seed, wrong-concept, and every sampled target.
 
 - [ ] **Step 4: Add matched random-vector execution**
 
 For each `CONTROL_SEEDS` entry and each context, call
 `matched_random_vectors(context.real_vectors, base_seed=seed)`, then call the
 shared executor at `alpha=1`. Record per-layer role norms, per-case gains, and
-seed means. Pass the 16 means and real mean to `strict_percentile_gate`.
+seed means. Convert each returned logits tensor immediately into its rank/gain
+payload and discard it before the next case. Pass the 16 means and real mean to
+`strict_percentile_gate`, whose metadata labels the result a deterministic
+sanity check rather than statistical significance.
 
 - [ ] **Step 5: Add wrong-concept execution**
 
@@ -648,20 +699,25 @@ payloads to `summarize_wrong_concept`.
 - [ ] **Step 6: Add random-target execution**
 
 Build categorized exclusions from all configured source/target surfaces,
-every accepted target-answer surface variant, observed formatting-prefix IDs,
-tokenizer reserved/special IDs, whitespace-only IDs, and existing filter IDs.
-Select exactly 16 targets with `CONTROL_SEEDS`. For each target and context,
+every accepted clean-answer and target-answer surface variant, observed
+formatting-prefix IDs, tokenizer reserved/special IDs, whitespace-only IDs,
+and existing filter IDs, using the existing decode convention consistently.
+Select exactly 16 targets with `CONTROL_SEEDS` from IDs below
+`unembedding_weight.shape[0]`. For each target and context,
 construct the target vector with `jlens_vector` at every workspace layer, pair
 it with the context's real source vector, and call the shared executor at
 `alpha=1`. Record token IDs/strings, five per-case gains, means, exclusions,
-and the strict percentile gate.
+and the strict percentile gate. Consume and release each target's logits before
+executing the next case so 80 random-target logits are never retained.
 
 - [ ] **Step 7: Assemble the complete controls schema**
 
 Add top-level `controls` with shared seeds, definitions, thresholds,
 tolerances, four payloads, and `passed`. Call `aggregate_all_checks` once with
 the unchanged output from `aggregate_capability_checks`; use its returned
-checks, failures, and passed values as the only global aggregation path.
+checks, failures, and passed values as the only global aggregation path. Set
+`controls["passed"]` only from the four control payloads. Set top-level
+`result["passed"]` from existing checks plus those four control checks.
 
 - [ ] **Step 8: Run focused tests and verify GREEN**
 
@@ -693,7 +749,10 @@ git commit -m "feat: gate J-Lens sanity with negative controls"
 Serialize a complete small control result twice with `write_results`; assert
 byte-for-byte equality after stable JSON writing and verify `controls` contains
 the seed list, definitions, thresholds, tolerances, per-case results, repeated
-results, individual gates, and overall gate.
+results, individual gates, non-significance interpretation, model
+output-vocabulary bound, and control-only overall gate. Assert a fixture with
+all controls passing but one existing check failing serializes
+`controls["passed"] is True` and top-level `result["passed"] is False`.
 
 In `tests/test_notebooks.py`, assert the notebook source contains labels for:
 
@@ -722,8 +781,9 @@ Expected: notebook reporting assertions fail.
 
 After saving `result.json`, print one line per requested control with observed
 values and pass/fail, plus `overall_controls`. Do not print the 16-entry arrays
-on success. Preserve all existing reporting and the final `result["passed"]`
-failure behavior.
+on success or describe the percentile checks as statistically significant.
+Preserve all existing reporting and the final `result["passed"]` failure
+behavior.
 
 Use `nbformat` or a JSON-aware formatter to edit the notebook, then run Ruff's
 notebook formatting so source cells remain canonical.
@@ -793,8 +853,10 @@ appear.
 
 Confirm exact prompts/cases, existing alphas/gates, all four controls, 16
 recorded seeds, strict percentile behavior, exact J-Lens token-vector path,
-five-case arithmetic means, strict wrong-concept wins, one gate aggregation
-path, actionable failures, stable JSON, and concise notebook output.
+five-case arithmetic means and missing-case rejection, output-vocabulary token
+bounds, same-device/dtype random vectors, strict wrong-concept wins, distinct
+control/global pass semantics, one gate aggregation path, actionable failures,
+transient control logits, stable JSON, and concise notebook output.
 
 - [ ] **Step 6: Request code review**
 
