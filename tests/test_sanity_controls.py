@@ -1,6 +1,7 @@
 import math
 
 import pytest
+import torch
 
 from jlens_reasoning.experiments.sanity_controls import (
     CONTROL_SEEDS,
@@ -8,6 +9,7 @@ from jlens_reasoning.experiments.sanity_controls import (
     IDENTITY_RTOL,
     derive_subseed,
     log_rank_gain,
+    matched_random_vectors,
     percentile,
     strict_percentile_gate,
 )
@@ -77,3 +79,57 @@ def test_subseeds_are_stable_layer_and_role_specific() -> None:
 def test_subseed_rejects_unknown_role() -> None:
     with pytest.raises(ValueError, match="Role"):
         derive_subseed(11, 7, "other")
+
+
+def test_random_vectors_are_deterministic_for_seed_and_order_independent() -> None:
+    real = {
+        7: (torch.tensor([3.0, 4.0]), torch.tensor([0.0, 2.0])),
+        9: (torch.tensor([1.0, 0.0]), torch.tensor([5.0, 12.0])),
+    }
+
+    first, _ = matched_random_vectors(real, base_seed=CONTROL_SEEDS[0])
+    second, _ = matched_random_vectors(
+        dict(reversed(list(real.items()))), base_seed=CONTROL_SEEDS[0]
+    )
+    different, _ = matched_random_vectors(real, base_seed=CONTROL_SEEDS[1])
+
+    for layer in real:
+        assert torch.equal(first[layer][0], second[layer][0])
+        assert torch.equal(first[layer][1], second[layer][1])
+    assert not torch.equal(first[7][0], different[7][0])
+
+
+def test_random_vectors_match_each_per_layer_role_norm() -> None:
+    real = {
+        2: (torch.tensor([3.0, 4.0]), torch.tensor([0.0, 2.0])),
+        3: (torch.zeros(2), torch.tensor([5.0, 12.0])),
+    }
+
+    generated, norms = matched_random_vectors(real, base_seed=CONTROL_SEEDS[1])
+
+    for layer in sorted(real):
+        for role_index, role in enumerate(("source", "target")):
+            real_vector = real[layer][role_index]
+            random_vector = generated[layer][role_index]
+            assert torch.linalg.vector_norm(random_vector).item() == pytest.approx(
+                torch.linalg.vector_norm(real_vector).item(), abs=1e-6, rel=1e-5
+            )
+            assert norms[str(layer)][role]["matched"] is True
+    assert torch.equal(generated[3][0], torch.zeros(2))
+
+
+def test_random_vectors_restore_real_device_and_dtype() -> None:
+    real = {
+        2: (
+            torch.tensor([3.0, 4.0], dtype=torch.bfloat16),
+            torch.tensor([0.0, 2.0], dtype=torch.bfloat16),
+        )
+    }
+
+    generated, norms = matched_random_vectors(real, base_seed=CONTROL_SEEDS[2])
+
+    for role_index, role in enumerate(("source", "target")):
+        assert generated[2][role_index].device == real[2][role_index].device
+        assert generated[2][role_index].dtype == real[2][role_index].dtype
+        assert norms["2"][role]["device_matches"] is True
+        assert norms["2"][role]["dtype_matches"] is True
