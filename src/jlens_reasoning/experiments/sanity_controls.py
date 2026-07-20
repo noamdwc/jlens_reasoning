@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 import torch
@@ -177,3 +177,99 @@ def matched_random_vectors(
                 "dtype_matches": random_vector.dtype == real_vector.dtype,
             }
     return generated, report
+
+
+def decode_token(tokenizer: Any, token_id: int) -> str:
+    return tokenizer.decode(
+        [int(token_id)],
+        clean_up_tokenization_spaces=False,
+    )
+
+
+def _encoded_ids(tokenizer: Any, surfaces: Sequence[str]) -> set[int]:
+    return {
+        int(token_id)
+        for surface in surfaces
+        for token_id in tokenizer.encode(surface, add_special_tokens=False)
+    }
+
+
+def build_random_target_exclusions(
+    tokenizer: Any,
+    *,
+    source_surfaces: Sequence[str],
+    target_surfaces: Sequence[str],
+    clean_answer_surfaces: Sequence[str],
+    intended_answer_surfaces: Sequence[str],
+    formatting_token_ids: Iterable[int],
+    existing_excluded_ids: Iterable[int] = (),
+) -> dict[str, list[int]]:
+    vocabulary_ids = sorted({int(token_id) for token_id in tokenizer.get_vocab().values()})
+    added_special_ids = {
+        int(token_id)
+        for token_id, token in getattr(tokenizer, "added_tokens_decoder", {}).items()
+        if getattr(token, "special", False)
+    }
+    categories = {
+        "sources": _encoded_ids(tokenizer, source_surfaces),
+        "targets": _encoded_ids(tokenizer, target_surfaces),
+        "clean_answers": _encoded_ids(tokenizer, clean_answer_surfaces),
+        "intended_answers": _encoded_ids(tokenizer, intended_answer_surfaces),
+        "formatting": {int(token_id) for token_id in formatting_token_ids},
+        "reserved_special": {
+            int(token_id) for token_id in getattr(tokenizer, "all_special_ids", ())
+        }
+        | added_special_ids,
+        "decoded_formatting": {
+            token_id
+            for token_id in vocabulary_ids
+            if not decode_token(tokenizer, token_id).strip()
+        },
+        "existing_filter": {int(token_id) for token_id in existing_excluded_ids},
+    }
+    all_ids: set[int] = set()
+    for token_ids in categories.values():
+        all_ids.update(token_ids)
+    return {
+        **{name: sorted(token_ids) for name, token_ids in categories.items()},
+        "all": sorted(all_ids),
+    }
+
+
+def select_random_targets(
+    tokenizer: Any,
+    *,
+    excluded_ids: Iterable[int],
+    seeds: Sequence[int],
+    output_vocab_size: int,
+) -> list[dict[str, Any]]:
+    if output_vocab_size < 1:
+        raise ValueError("Model output vocabulary must contain at least one token")
+    excluded = {int(token_id) for token_id in excluded_ids}
+    eligible = sorted(
+        {
+            int(token_id)
+            for token_id in tokenizer.get_vocab().values()
+            if 0 <= int(token_id) < output_vocab_size
+            and int(token_id) not in excluded
+        }
+    )
+    if not eligible:
+        raise ValueError("No eligible random-target tokens remain")
+
+    remaining = list(eligible)
+    selected = []
+    for seed in seeds:
+        if not remaining:
+            remaining = list(eligible)
+        digest = hashlib.sha256(f"jlens-random-target-v1:{seed}".encode()).digest()
+        index = int.from_bytes(digest[:8], "big") % len(remaining)
+        token_id = remaining.pop(index)
+        selected.append(
+            {
+                "seed": int(seed),
+                "token_id": token_id,
+                "token": decode_token(tokenizer, token_id),
+            }
+        )
+    return selected

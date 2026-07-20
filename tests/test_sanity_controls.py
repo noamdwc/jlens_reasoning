@@ -1,4 +1,5 @@
 import math
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -7,10 +8,12 @@ from jlens_reasoning.experiments.sanity_controls import (
     CONTROL_SEEDS,
     IDENTITY_ATOL,
     IDENTITY_RTOL,
+    build_random_target_exclusions,
     derive_subseed,
     log_rank_gain,
     matched_random_vectors,
     percentile,
+    select_random_targets,
     strict_percentile_gate,
 )
 
@@ -133,3 +136,123 @@ def test_random_vectors_restore_real_device_and_dtype() -> None:
         assert generated[2][role_index].dtype == real[2][role_index].dtype
         assert norms["2"][role]["device_matches"] is True
         assert norms["2"][role]["dtype_matches"] is True
+
+
+class VocabularyTokenizer:
+    def __init__(self) -> None:
+        self.vocab = {f"token-{token_id}": token_id for token_id in range(40)}
+        self.pieces = {
+            "spider": [1],
+            "France": [2],
+            "ant": [3],
+            "China": [4],
+            "8": [5],
+            "Paris": [6],
+            "six": [7],
+            "New Yuan": [10, 11],
+        }
+        self.all_special_ids = [0, 13, 14]
+        self.added_tokens_decoder = {15: SimpleNamespace(special=True)}
+        self.decode_calls: list[tuple[tuple[int, ...], bool]] = []
+
+    def encode(self, text: str, *, add_special_tokens: bool = False) -> list[int]:
+        assert add_special_tokens is False
+        return self.pieces[text]
+
+    def decode(
+        self,
+        token_ids: list[int],
+        *,
+        clean_up_tokenization_spaces: bool = False,
+    ) -> str:
+        self.decode_calls.append(
+            (tuple(token_ids), clean_up_tokenization_spaces)
+        )
+        token_id = token_ids[0]
+        if token_id == 8:
+            return " "
+        if token_id == 12:
+            return "\n"
+        return f"token-{token_id}"
+
+    def get_vocab(self) -> dict[str, int]:
+        return dict(self.vocab)
+
+
+def test_random_target_exclusions_are_token_id_based_and_complete() -> None:
+    tokenizer = VocabularyTokenizer()
+
+    exclusions = build_random_target_exclusions(
+        tokenizer,
+        source_surfaces=("spider", "France"),
+        target_surfaces=("ant", "China"),
+        clean_answer_surfaces=("8", "Paris"),
+        intended_answer_surfaces=("six", "New Yuan"),
+        formatting_token_ids=(8,),
+        existing_excluded_ids=(9,),
+    )
+
+    assert exclusions == {
+        "sources": [1, 2],
+        "targets": [3, 4],
+        "clean_answers": [5, 6],
+        "intended_answers": [7, 10, 11],
+        "formatting": [8],
+        "reserved_special": [0, 13, 14, 15],
+        "decoded_formatting": [8, 12],
+        "existing_filter": [9],
+        "all": list(range(16)),
+    }
+    assert all(cleanup is False for _, cleanup in tokenizer.decode_calls)
+
+
+def test_random_target_selection_is_exact_deterministic_unique_and_bounded() -> None:
+    tokenizer = VocabularyTokenizer()
+    excluded_ids = range(16)
+
+    first = select_random_targets(
+        tokenizer,
+        excluded_ids=excluded_ids,
+        seeds=CONTROL_SEEDS,
+        output_vocab_size=32,
+    )
+    second = select_random_targets(
+        tokenizer,
+        excluded_ids=reversed(list(excluded_ids)),
+        seeds=CONTROL_SEEDS,
+        output_vocab_size=32,
+    )
+
+    assert [item["token_id"] for item in first] == [
+        20,
+        26,
+        21,
+        18,
+        19,
+        28,
+        30,
+        27,
+        22,
+        17,
+        25,
+        16,
+        24,
+        29,
+        31,
+        23,
+    ]
+    assert first == second
+    assert len({item["token_id"] for item in first}) == 16
+    assert all(0 <= item["token_id"] < 32 for item in first)
+    assert all(item["token_id"] != 35 for item in first)
+    assert all(item["token"] == f"token-{item['token_id']}" for item in first)
+
+
+def test_random_target_selection_rejects_empty_eligible_vocabulary() -> None:
+    with pytest.raises(ValueError, match="eligible"):
+        select_random_targets(
+            VocabularyTokenizer(),
+            excluded_ids=range(32),
+            seeds=CONTROL_SEEDS,
+            output_vocab_size=32,
+        )
