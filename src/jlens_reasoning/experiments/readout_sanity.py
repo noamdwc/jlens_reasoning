@@ -13,6 +13,11 @@ import torch
 from jlens.hooks import ActivationRecorder
 from torch import nn
 
+from jlens_reasoning.experiments.sanity_controls import (
+    IDENTITY_ATOL,
+    IDENTITY_RTOL,
+)
+
 MODEL_NAME = "Qwen/Qwen3.5-4B"
 LENS_REPO = "neuronpedia/jacobian-lens"
 LENS_REVISION = "qwen-n1000"
@@ -259,6 +264,21 @@ class LensCoordinateSwapper:
         self._remove()
 
 
+def execute_intervention(
+    *,
+    model: Any,
+    forward_next_token: Callable[[torch.Tensor], torch.Tensor],
+    scoring_input: torch.Tensor,
+    vectors_by_layer: Mapping[int, tuple[torch.Tensor, torch.Tensor]],
+    alpha: float,
+) -> torch.Tensor:
+    with (
+        torch.inference_mode(),
+        LensCoordinateSwapper(model.layers, vectors_by_layer, alpha=alpha),
+    ):
+        return forward_next_token(scoring_input)
+
+
 def find_last_subsequence(
     sequence: Sequence[int], patterns: Iterable[Sequence[int]]
 ) -> tuple[int, int]:
@@ -347,6 +367,62 @@ def _next_token_payload(
         "top1_token": tokenizer.decode([top1_id], clean_up_tokenization_spaces=False),
         "target_rank": best_target_rank(logits, target_ids),
         "top_tokens": top_tokens(logits, tokenizer, k=top_k),
+    }
+
+
+def analyze_identity_case(
+    *,
+    key: str,
+    clean_logits: torch.Tensor,
+    scoring_input: torch.Tensor,
+    model: Any,
+    forward_next_token: Callable[[torch.Tensor], torch.Tensor],
+    real_vectors_by_layer: Mapping[int, tuple[torch.Tensor, torch.Tensor]],
+    target_ids: Sequence[int],
+) -> dict[str, Any]:
+    identity_vectors = {
+        layer: (source_vector, source_vector)
+        for layer, (source_vector, _) in sorted(real_vectors_by_layer.items())
+    }
+    intervened_logits = execute_intervention(
+        model=model,
+        forward_next_token=forward_next_token,
+        scoring_input=scoring_input,
+        vectors_by_layer=identity_vectors,
+        alpha=1.0,
+    )
+    clean = clean_logits.detach().float().cpu()
+    intervened = intervened_logits.detach().float().cpu()
+    clean_top1_id = int(clean.argmax().item())
+    intervened_top1_id = int(intervened.argmax().item())
+    clean_target_rank = best_target_rank(clean, target_ids)
+    intervened_target_rank = best_target_rank(intervened, target_ids)
+    maximum_difference = float((clean - intervened).abs().max().item())
+    top1_unchanged = clean_top1_id == intervened_top1_id
+    target_rank_unchanged = clean_target_rank == intervened_target_rank
+    logits_close = bool(
+        torch.allclose(
+            clean,
+            intervened,
+            atol=IDENTITY_ATOL,
+            rtol=IDENTITY_RTOL,
+        )
+    )
+    return {
+        "key": key,
+        "workspace_layers": sorted(identity_vectors),
+        "alpha": 1.0,
+        "atol": IDENTITY_ATOL,
+        "rtol": IDENTITY_RTOL,
+        "clean_top1_id": clean_top1_id,
+        "intervened_top1_id": intervened_top1_id,
+        "top1_unchanged": top1_unchanged,
+        "clean_target_rank": clean_target_rank,
+        "intervened_target_rank": intervened_target_rank,
+        "target_rank_unchanged": target_rank_unchanged,
+        "logits_close": logits_close,
+        "maximum_absolute_logit_difference": maximum_difference,
+        "passed": top1_unchanged and target_rank_unchanged and logits_close,
     }
 
 
@@ -689,10 +765,16 @@ def analyze_swap_case(
         )
     with torch.inference_mode():
         clean_logits = forward_next_token(scoring_input)
-        intervened_logits: dict[float, torch.Tensor] = {}
-        for alpha in alphas:
-            with LensCoordinateSwapper(model.layers, vectors_by_layer, alpha=alpha):
-                intervened_logits[alpha] = forward_next_token(scoring_input)
+    intervened_logits = {
+        alpha: execute_intervention(
+            model=model,
+            forward_next_token=forward_next_token,
+            scoring_input=scoring_input,
+            vectors_by_layer=vectors_by_layer,
+            alpha=alpha,
+        )
+        for alpha in alphas
+    }
 
     summary = summarize_swap_logits(
         clean_logits,
