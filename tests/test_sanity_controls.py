@@ -5,6 +5,7 @@ import pytest
 import torch
 
 from jlens_reasoning.experiments.sanity_controls import (
+    CONTROL_CASE_KEYS,
     CONTROL_SEEDS,
     IDENTITY_ATOL,
     IDENTITY_RTOL,
@@ -291,7 +292,8 @@ def _gain_cases(gains: list[float]) -> list[dict[str, float | str]]:
 
 def test_exact_case_validation_rejects_missing_duplicate_extra_and_order() -> None:
     complete = _gain_cases([1.0] * 5)
-    require_exact_cases(complete, expected_keys=EXPECTED_CASE_KEYS)
+    assert CONTROL_CASE_KEYS == EXPECTED_CASE_KEYS
+    require_exact_cases(complete)
 
     malformed = (
         complete[:-1],
@@ -301,14 +303,13 @@ def test_exact_case_validation_rejects_missing_duplicate_extra_and_order() -> No
     )
     for cases in malformed:
         with pytest.raises(ValueError, match="exact case keys"):
-            require_exact_cases(cases, expected_keys=EXPECTED_CASE_KEYS)
+            require_exact_cases(cases)
 
 
 def test_wrong_concept_requires_aggregate_and_four_strict_case_wins() -> None:
     result = summarize_wrong_concept(
         _gain_cases([1.0, 1.0, 1.0, 1.0, 0.0]),
         _gain_cases([0.0, 0.0, 0.0, 0.0, 0.0]),
-        expected_keys=EXPECTED_CASE_KEYS,
     )
 
     assert result["matched_mean_log_rank_gain"] == pytest.approx(0.8)
@@ -323,7 +324,6 @@ def test_wrong_concept_ties_do_not_count_and_three_wins_fail() -> None:
     result = summarize_wrong_concept(
         _gain_cases([1.0, 1.0, 1.0, 0.0, 0.0]),
         _gain_cases([0.0, 0.0, 0.0, 0.0, -1.0]),
-        expected_keys=EXPECTED_CASE_KEYS,
     )
 
     assert [case["matched_wins"] for case in result["cases"]] == [
@@ -338,7 +338,6 @@ def test_wrong_concept_ties_do_not_count_and_three_wins_fail() -> None:
     three_wins = summarize_wrong_concept(
         _gain_cases([1.0, 1.0, 1.0, 0.0, 0.0]),
         _gain_cases([0.0, 0.0, 0.0, 0.0, 0.0]),
-        expected_keys=EXPECTED_CASE_KEYS,
     )
     assert three_wins["matched_winning_case_count"] == 3
     assert three_wins["passed"] is False

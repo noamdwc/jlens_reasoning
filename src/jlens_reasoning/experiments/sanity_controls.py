@@ -27,6 +27,13 @@ CONTROL_SEEDS = (
     547,
     607,
 )
+CONTROL_CASE_KEYS = (
+    "spider",
+    "france_capital",
+    "france_language",
+    "france_continent",
+    "france_currency",
+)
 IDENTITY_ATOL = 1e-6
 IDENTITY_RTOL = 1e-5
 NORM_ATOL = 1e-6
@@ -324,11 +331,9 @@ def select_random_targets(
 
 def require_exact_cases(
     results: Sequence[Mapping[str, Any]],
-    *,
-    expected_keys: Sequence[str],
 ) -> None:
     actual_keys = [str(result["key"]) for result in results]
-    expected = list(expected_keys)
+    expected = list(CONTROL_CASE_KEYS)
     if actual_keys != expected:
         raise ValueError(f"Expected exact case keys {expected!r}, got {actual_keys!r}")
 
@@ -337,11 +342,10 @@ def summarize_wrong_concept(
     matched_cases: Sequence[Mapping[str, Any]],
     mismatched_cases: Sequence[Mapping[str, Any]],
     *,
-    expected_keys: Sequence[str],
     required_winning_case_count: int = 4,
 ) -> dict[str, Any]:
-    require_exact_cases(matched_cases, expected_keys=expected_keys)
-    require_exact_cases(mismatched_cases, expected_keys=expected_keys)
+    require_exact_cases(matched_cases)
+    require_exact_cases(mismatched_cases)
     cases = []
     for matched, mismatched in zip(
         matched_cases,

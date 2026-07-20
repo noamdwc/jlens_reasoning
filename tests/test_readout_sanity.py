@@ -6,6 +6,7 @@ import pytest
 import torch
 from torch import nn
 
+import jlens_reasoning.experiments.readout_sanity as readout_sanity_module
 from jlens_reasoning.experiments.readout_sanity import (
     LENS_FILE,
     LENS_REPO,
@@ -39,7 +40,7 @@ from jlens_reasoning.experiments.readout_sanity import (
     workspace_loading,
     write_results,
 )
-from jlens_reasoning.experiments.sanity_controls import CONTROL_SEEDS
+from jlens_reasoning.experiments.sanity_controls import CONTROL_SEEDS, log_rank_gain
 
 
 def test_released_artifact_coordinates_match_upstream_walkthrough() -> None:
@@ -792,7 +793,9 @@ class FiveCaseLens:
         return {2: readout}, model_logits, input_ids
 
 
-def test_run_readout_sanity_integrates_all_controls_without_storing_logits() -> None:
+def test_run_readout_sanity_integrates_all_controls_without_storing_logits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     model = FiveCaseModel()
     lens = FiveCaseLens()
     tokenizer = FiveCaseTokenizer()
@@ -804,6 +807,29 @@ def test_run_readout_sanity_integrates_all_controls_without_storing_logits() -> 
     key_by_id = {value: key for key, value in model.case_ids.items()}
     clean_ids = dict(zip(key_by_id.values(), (4, 20, 21, 22, 23), strict=True))
     target_ids = dict(zip(key_by_id.values(), (5, 24, 25, 26, 27), strict=True))
+    execution_calls: list[dict[str, object]] = []
+    real_execute_intervention = readout_sanity_module.execute_intervention
+
+    def recording_execute_intervention(**kwargs):
+        execution_calls.append(
+            {
+                "alpha": kwargs["alpha"],
+                "vectors": {
+                    layer: (
+                        pair[0].detach().clone(),
+                        pair[1].detach().clone(),
+                    )
+                    for layer, pair in kwargs["vectors_by_layer"].items()
+                },
+            }
+        )
+        return real_execute_intervention(**kwargs)
+
+    monkeypatch.setattr(
+        readout_sanity_module,
+        "execute_intervention",
+        recording_execute_intervention,
+    )
 
     def forward_next_token(input_ids: torch.Tensor) -> torch.Tensor:
         prompt = key_by_id[int(input_ids[0, 0])]
@@ -844,6 +870,8 @@ def test_run_readout_sanity_integrates_all_controls_without_storing_logits() -> 
         "passed",
     }
     assert controls["identity"]["passed"] is True
+    assert "seeds" not in controls["matched_random_vector"]["configuration"]
+    assert "seeds" not in controls["random_target"]["configuration"]
     assert len(controls["matched_random_vector"]["seeds"]) == 16
     assert len(controls["random_target"]["targets"]) == 16
     assert all(
@@ -854,6 +882,82 @@ def test_run_readout_sanity_integrates_all_controls_without_storing_logits() -> 
         item["token_id"] < unembedding.shape[0]
         for item in controls["random_target"]["targets"]
     )
+    expected_keys = [case.key for case in SWAP_CASES]
+    expected_intended_ids = dict(zip(expected_keys, (5, 24, 25, 26, 27), strict=True))
+    for seed_result in controls["matched_random_vector"]["seeds"]:
+        assert [case["key"] for case in seed_result["cases"]] == expected_keys
+        assert all(
+            case["intended_target_ids"] == [expected_intended_ids[case["key"]]]
+            for case in seed_result["cases"]
+        )
+    for target_result in controls["random_target"]["targets"]:
+        assert [case["key"] for case in target_result["cases"]] == expected_keys
+        assert all(
+            case["intended_target_ids"] == [expected_intended_ids[case["key"]]]
+            for case in target_result["cases"]
+        )
+    assert [case["key"] for case in controls["wrong_concept"]["cases"]] == (
+        expected_keys
+    )
+    assert controls["wrong_concept"]["configuration"]["mismatches"] == [
+        {
+            "key": "spider",
+            "source": {"surface": " France", "token_id": 17},
+            "target": {"surface": " China", "token_id": 18},
+        },
+        *[
+            {
+                "key": key,
+                "source": {"surface": " spider", "token_id": 2},
+                "target": {"surface": " ant", "token_id": 3},
+            }
+            for key in expected_keys[1:]
+        ],
+    ]
+    real_gains = [
+        log_rank_gain(
+            swap["clean"]["target_rank"],
+            swap["interventions"]["1.0"]["target_rank"],
+        )
+        for swap in result["swaps"]
+    ]
+    assert controls["matched_random_vector"][
+        "real_mean_log_rank_gain"
+    ] == pytest.approx(sum(real_gains) / 5)
+    for name in ("matched_random_vector", "random_target"):
+        control = controls[name]
+        assert control["passed"] is (
+            control["real_mean_log_rank_gain"] > control["percentile_95_threshold"]
+        )
+
+    assert [call["alpha"] for call in execution_calls[:10]] == [1.0, 2.0] * 5
+    assert all(call["alpha"] == 1.0 for call in execution_calls[10:])
+    assert len(execution_calls) == 180
+    for call in execution_calls[10:15]:
+        source_vector, target_vector = call["vectors"][2]
+        assert torch.equal(source_vector, target_vector)
+    wrong_targets = [torch.tensor([0.0, 0.0, 0.0, 1.0])] + [
+        torch.tensor([0.0, 1.0, 0.0, 0.0]) for _ in range(4)
+    ]
+    for call, expected_target in zip(
+        execution_calls[95:100], wrong_targets, strict=True
+    ):
+        assert torch.equal(call["vectors"][2][1], expected_target)
+    first_random_target_id = controls["random_target"]["targets"][0]["token_id"]
+    expected_random_vectors = [
+        _token_vectors_by_layer(
+            lens=lens,
+            unembedding_weight=unembedding,
+            layers=[2],
+            source_token_id=source_id,
+            target_token_id=first_random_target_id,
+        )[2][1]
+        for source_id in (2, 17, 17, 17, 17)
+    ]
+    for call, expected_vector in zip(
+        execution_calls[100:105], expected_random_vectors, strict=True
+    ):
+        assert torch.equal(call["vectors"][2][1], expected_vector)
     assert set(result["checks"]) >= {
         "identity_control",
         "matched_random_vector_control",

@@ -14,6 +14,7 @@ from jlens.hooks import ActivationRecorder
 from torch import nn
 
 from jlens_reasoning.experiments.sanity_controls import (
+    CONTROL_CASE_KEYS,
     CONTROL_SEEDS,
     IDENTITY_ATOL,
     IDENTITY_RTOL,
@@ -825,6 +826,7 @@ def _rank_gain_payload(
     intervened_rank = best_target_rank(intervened, context.target_ids)
     return {
         "key": context.resolved.case.key,
+        "intended_target_ids": list(context.target_ids),
         "clean_rank": clean_rank,
         "intervened_rank": intervened_rank,
         "intervened_top1_id": int(intervened.argmax().item()),
@@ -907,8 +909,9 @@ def _run_negative_controls(
     forward_next_token: Callable[[torch.Tensor], torch.Tensor],
     layers: Sequence[int],
 ) -> dict[str, Any]:
-    expected_keys = tuple(context.resolved.case.key for context in contexts)
-    require_exact_cases(swap_results, expected_keys=expected_keys)
+    require_exact_cases([{"key": context.resolved.case.key} for context in contexts])
+    expected_keys = CONTROL_CASE_KEYS
+    require_exact_cases(swap_results)
     real_cases = [
         {
             "key": result["key"],
@@ -922,7 +925,7 @@ def _run_negative_controls(
         }
         for result in swap_results
     ]
-    require_exact_cases(real_cases, expected_keys=expected_keys)
+    require_exact_cases(real_cases)
     real_mean = mean([case["log_rank_gain"] for case in real_cases])
 
     identity_cases = [
@@ -937,7 +940,7 @@ def _run_negative_controls(
         )
         for context in contexts
     ]
-    require_exact_cases(identity_cases, expected_keys=expected_keys)
+    require_exact_cases(identity_cases)
     identity_passed_count = sum(bool(case["passed"]) for case in identity_cases)
     identity = {
         "configuration": {
@@ -974,7 +977,7 @@ def _run_negative_controls(
             )
             seed_cases.append(_rank_gain_payload(context, intervened_logits))
             del intervened_logits, random_vectors
-        require_exact_cases(seed_cases, expected_keys=expected_keys)
+        require_exact_cases(seed_cases)
         random_vector_seed_results.append(
             {
                 "seed": seed,
@@ -992,7 +995,6 @@ def _run_negative_controls(
     matched_random_vector = {
         "configuration": {
             "alpha": 1.0,
-            "seeds": list(CONTROL_SEEDS),
             "workspace_layers": list(layers),
             "activation_positions": "all",
             "generation_device": "cpu",
@@ -1035,11 +1037,10 @@ def _run_negative_controls(
             }
         )
         del intervened_logits
-    require_exact_cases(mismatched_cases, expected_keys=expected_keys)
+    require_exact_cases(mismatched_cases)
     wrong_summary = summarize_wrong_concept(
         real_cases,
         mismatched_cases,
-        expected_keys=expected_keys,
     )
     wrong_concept = {
         "configuration": {
@@ -1113,7 +1114,7 @@ def _run_negative_controls(
             )
             target_cases.append(_rank_gain_payload(context, intervened_logits))
             del intervened_logits, vectors_by_layer
-        require_exact_cases(target_cases, expected_keys=expected_keys)
+        require_exact_cases(target_cases)
         random_target_results.append(
             {
                 **selected,
@@ -1130,7 +1131,6 @@ def _run_negative_controls(
     random_target = {
         "configuration": {
             "alpha": 1.0,
-            "seeds": list(CONTROL_SEEDS),
             "workspace_layers": list(layers),
             "activation_positions": "all",
             "selection": "SHA-256 index into ascending eligible token IDs",
