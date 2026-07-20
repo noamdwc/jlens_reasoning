@@ -17,6 +17,7 @@ from jlens_reasoning.experiments.readout_sanity import (
     ReadoutCase,
     SwapCase,
     TokenVariant,
+    _token_vectors_by_layer,
     aggregate_capability_checks,
     analyze_case,
     analyze_identity_case,
@@ -38,6 +39,7 @@ from jlens_reasoning.experiments.readout_sanity import (
     workspace_loading,
     write_results,
 )
+from jlens_reasoning.experiments.sanity_controls import CONTROL_SEEDS
 
 
 def test_released_artifact_coordinates_match_upstream_walkthrough() -> None:
@@ -137,6 +139,25 @@ def test_jlens_vector_composes_jacobian_and_unembedding() -> None:
         jlens_vector(lens, unembedding, layer=1, token_id=1),
         torch.tensor([23.0, 34.0]),
     )
+
+
+def test_sampled_target_uses_the_real_jlens_vector_construction_path() -> None:
+    lens = SimpleNamespace(jacobians={2: torch.tensor([[1.0, 2.0], [3.0, 4.0]])})
+    unembedding = torch.tensor([[0.0, 0.0], [1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+
+    vectors = _token_vectors_by_layer(
+        lens=lens,
+        unembedding_weight=unembedding,
+        layers=[2],
+        source_token_id=1,
+        target_token_id=3,
+    )
+
+    assert torch.equal(
+        vectors[2][1],
+        jlens_vector(lens, unembedding, layer=2, token_id=3),
+    )
+    assert not torch.equal(vectors[2][1], unembedding[3])
 
 
 @pytest.mark.parametrize(
@@ -672,7 +693,187 @@ class TinyCompleteLens:
         return {2: readout}, model_logits, input_ids
 
 
-def test_run_readout_sanity_combines_read_and_change_checks() -> None:
+class FiveCaseTokenizer:
+    def __init__(self) -> None:
+        self.pieces: dict[str, list[int]] = {}
+        self._register_variants("spider", 2)
+        self.pieces[" spider"] = [2]
+        self.pieces[" ant"] = [3]
+        self._register_variants("8", 4)
+        self._register_variants("eight", 4)
+        self._register_variants("6", 5)
+        self._register_variants("six", 5)
+        self._register_variants("France", 17)
+        self.pieces[" France"] = [17]
+        self.pieces[" China"] = [18]
+        for surface, token_id in {
+            "Paris": 20,
+            "French": 21,
+            "Europe": 22,
+            "Euro": 23,
+            "Beijing": 24,
+            "Chinese": 25,
+            "Asia": 26,
+            "Yuan": 27,
+        }.items():
+            self._register_variants(surface, token_id)
+        self.all_special_ids = [60, 61, 62, 63]
+        self.added_tokens_decoder: dict[int, object] = {}
+
+    def _register_variants(self, surface: str, token_id: int) -> None:
+        for variant in {
+            surface,
+            surface.lower(),
+            surface.capitalize(),
+            surface.upper(),
+        }:
+            self.pieces[variant] = [token_id]
+            self.pieces[f" {variant}"] = [token_id]
+
+    def encode(self, text: str, *, add_special_tokens: bool = False) -> list[int]:
+        assert add_special_tokens is False
+        return self.pieces.get(text, [58, 59])
+
+    def decode(
+        self,
+        token_ids: list[int],
+        *,
+        clean_up_tokenization_spaces: bool = False,
+    ) -> str:
+        assert clean_up_tokenization_spaces is False
+        return " " if token_ids[0] == 0 else f"token-{token_ids[0]}"
+
+    def get_vocab(self) -> dict[str, int]:
+        return {f"token-{token_id}": token_id for token_id in range(64)}
+
+
+class FiveCaseModel:
+    n_layers = 4
+    d_model = 4
+
+    def __init__(self) -> None:
+        self.layers = nn.ModuleList([TensorBlock() for _ in range(self.n_layers)])
+        self.case_ids = {
+            case.prompt: 10 + index for index, case in enumerate(READOUT_CASES)
+        }
+
+    def encode(self, prompt: str, *, max_length: int = 512) -> torch.Tensor:
+        del max_length
+        case_id = self.case_ids[prompt]
+        if prompt == READOUT_CASES[0].prompt:
+            return torch.tensor([[case_id, 1]])
+        return torch.tensor([[case_id, 17, 1]])
+
+
+class FiveCaseLens:
+    d_model = 4
+    source_layers = [2]
+    n_prompts = 1000
+
+    def __init__(self) -> None:
+        self.jacobians = {2: torch.eye(4)}
+        self.clean_answer_ids = {
+            case.prompt: token_id
+            for case, token_id in zip(
+                READOUT_CASES,
+                (4, 20, 21, 22, 23),
+                strict=True,
+            )
+        }
+
+    def apply(self, model, prompt, *, use_jacobian=True, **kwargs):
+        del kwargs
+        input_ids = model.encode(prompt)
+        model_logits = torch.zeros(input_ids.shape[1], 64)
+        model_logits[-1, self.clean_answer_ids[prompt]] = 5.0
+        readout = torch.zeros(input_ids.shape[1], 64)
+        concept_id = 2 if prompt == READOUT_CASES[0].prompt else 17
+        readout[:, concept_id] = 4.0 if use_jacobian else -1.0
+        return {2: readout}, model_logits, input_ids
+
+
+def test_run_readout_sanity_integrates_all_controls_without_storing_logits() -> None:
+    model = FiveCaseModel()
+    lens = FiveCaseLens()
+    tokenizer = FiveCaseTokenizer()
+    unembedding = torch.zeros(64, 4)
+    unembedding[2] = torch.tensor([1.0, 0.0, 0.0, 0.0])
+    unembedding[3] = torch.tensor([0.0, 1.0, 0.0, 0.0])
+    unembedding[17] = torch.tensor([0.0, 0.0, 1.0, 0.0])
+    unembedding[18] = torch.tensor([0.0, 0.0, 0.0, 1.0])
+    key_by_id = {value: key for key, value in model.case_ids.items()}
+    clean_ids = dict(zip(key_by_id.values(), (4, 20, 21, 22, 23), strict=True))
+    target_ids = dict(zip(key_by_id.values(), (5, 24, 25, 26, 27), strict=True))
+
+    def forward_next_token(input_ids: torch.Tensor) -> torch.Tensor:
+        prompt = key_by_id[int(input_ids[0, 0])]
+        base_length = 2 if prompt == READOUT_CASES[0].prompt else 3
+        source = (
+            torch.tensor([1.0, 0.0, 0.0, 0.0])
+            if prompt == READOUT_CASES[0].prompt
+            else torch.tensor([0.0, 0.0, 1.0, 0.0])
+        )
+        hidden = source.view(1, 1, 4).expand(1, input_ids.shape[1], 4)
+        for block in model.layers:
+            hidden = block(hidden)
+        logits = torch.zeros(64)
+        if input_ids.shape[1] == base_length:
+            logits[0] = 10.0
+            return logits
+        logits[clean_ids[prompt]] = 5.0
+        target_coordinate = 1 if prompt == READOUT_CASES[0].prompt else 3
+        logits[target_ids[prompt]] = hidden[0, -1, target_coordinate] * 10.0
+        return logits
+
+    result = run_readout_sanity(
+        model=model,
+        lens=lens,
+        tokenizer=tokenizer,
+        unembedding_weight=unembedding,
+        forward_next_token=forward_next_token,
+        top_k=3,
+    )
+
+    controls = result["controls"]
+    assert controls["seeds"] == list(CONTROL_SEEDS)
+    assert set(controls) >= {
+        "identity",
+        "matched_random_vector",
+        "wrong_concept",
+        "random_target",
+        "passed",
+    }
+    assert controls["identity"]["passed"] is True
+    assert len(controls["matched_random_vector"]["seeds"]) == 16
+    assert len(controls["random_target"]["targets"]) == 16
+    assert all(
+        len(item["cases"]) == 5 for item in controls["matched_random_vector"]["seeds"]
+    )
+    assert all(len(item["cases"]) == 5 for item in controls["random_target"]["targets"])
+    assert all(
+        item["token_id"] < unembedding.shape[0]
+        for item in controls["random_target"]["targets"]
+    )
+    assert set(result["checks"]) >= {
+        "identity_control",
+        "matched_random_vector_control",
+        "wrong_concept_control",
+        "random_target_control",
+    }
+
+    def contains_tensor(value: object) -> bool:
+        if torch.is_tensor(value):
+            return True
+        if isinstance(value, dict):
+            return any(contains_tensor(item) for item in value.values())
+        if isinstance(value, list):
+            return any(contains_tensor(item) for item in value)
+        return False
+
+    assert contains_tensor(controls) is False
+
+
+def test_run_readout_sanity_rejects_missing_control_cases() -> None:
     model = TinySwapModel()
     lens = TinyCompleteLens()
     tokenizer = FormattingSwapTokenizer()
@@ -693,40 +894,25 @@ def test_run_readout_sanity_combines_read_and_change_checks() -> None:
         logits[5] = hidden[0, -1, 1]
         return logits
 
-    result = run_readout_sanity(
-        model=model,
-        lens=lens,
-        tokenizer=tokenizer,
-        unembedding_weight=unembedding,
-        forward_next_token=forward_next_token,
-        cases=(
-            ReadoutCase(
-                key="spider",
-                prompt="prompt",
-                expected_answers=("8", "eight"),
-                target_concepts=("spider",),
+    with pytest.raises(ValueError, match="exact five"):
+        run_readout_sanity(
+            model=model,
+            lens=lens,
+            tokenizer=tokenizer,
+            unembedding_weight=unembedding,
+            forward_next_token=forward_next_token,
+            cases=(
+                ReadoutCase(
+                    key="spider",
+                    prompt="prompt",
+                    expected_answers=("8", "eight"),
+                    target_concepts=("spider",),
+                ),
             ),
-        ),
-        swap_cases=(SwapCase("spider", " spider", " ant", ("6", "six")),),
-        minimum_improvements=1,
-        top_k=3,
-    )
-
-    assert result["checks"] == {
-        "clean_baselines": True,
-        "spider_read": True,
-        "swap_rank_improvements": True,
-        "swap_target_top1": True,
-    }
-    assert result["cases"][0]["checks"]["baseline_top1"] is True
-    assert result["cases"][0]["baseline"]["top1_id"] == 4
-    assert result["cases"][0]["baseline"]["top1_token"] == "token-4"
-    assert result["cases"][0]["baseline"]["formatting_prefix"] == [
-        {"token_id": 0, "token": " "}
-    ]
-    assert result["cases"][0]["baseline"]["unformatted_prompt"]["top1_id"] == 0
-    assert result["swaps"][0]["target_top1"] is True
-    assert result["passed"] is True
+            swap_cases=(SwapCase("spider", " spider", " ant", ("6", "six")),),
+            minimum_improvements=1,
+            top_k=3,
+        )
 
 
 def test_run_validates_swap_surfaces_before_lens_forwards() -> None:

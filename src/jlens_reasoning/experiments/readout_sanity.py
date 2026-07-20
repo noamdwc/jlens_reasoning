@@ -14,8 +14,23 @@ from jlens.hooks import ActivationRecorder
 from torch import nn
 
 from jlens_reasoning.experiments.sanity_controls import (
+    CONTROL_SEEDS,
     IDENTITY_ATOL,
     IDENTITY_RTOL,
+    NORM_ATOL,
+    NORM_RTOL,
+    PERCENTILE_INTERPRETATION,
+    PERCENTILE_QUANTILE,
+    aggregate_all_checks,
+    build_random_target_exclusions,
+    controls_passed,
+    log_rank_gain,
+    matched_random_vectors,
+    mean,
+    require_exact_cases,
+    select_random_targets,
+    strict_percentile_gate,
+    summarize_wrong_concept,
 )
 
 MODEL_NAME = "Qwen/Qwen3.5-4B"
@@ -101,6 +116,18 @@ class ResolvedSwapCase:
     read_case: ReadoutCase
     source: TokenVariant
     target: TokenVariant
+
+
+@dataclass(slots=True)
+class InterventionContext:
+    resolved: ResolvedSwapCase
+    input_ids: torch.Tensor
+    scoring_input: torch.Tensor
+    formatting_prefix: list[dict[str, Any]]
+    clean_logits: torch.Tensor
+    target_ids: tuple[int, ...]
+    real_vectors_by_layer: dict[int, tuple[torch.Tensor, torch.Tensor]]
+    workspace_loading: float | None
 
 
 def single_token_surface(tokenizer: Any, surface: str) -> TokenVariant:
@@ -704,6 +731,107 @@ def analyze_case(
     }
 
 
+def _token_vectors_by_layer(
+    *,
+    lens: Any,
+    unembedding_weight: torch.Tensor,
+    layers: Sequence[int],
+    source_token_id: int,
+    target_token_id: int,
+) -> dict[int, tuple[torch.Tensor, torch.Tensor]]:
+    return {
+        layer: (
+            jlens_vector(
+                lens,
+                unembedding_weight,
+                layer=layer,
+                token_id=source_token_id,
+            ),
+            jlens_vector(
+                lens,
+                unembedding_weight,
+                layer=layer,
+                token_id=target_token_id,
+            ),
+        )
+        for layer in layers
+    }
+
+
+def _prepare_intervention_context(
+    resolved: ResolvedSwapCase,
+    *,
+    model: Any,
+    lens: Any,
+    tokenizer: Any,
+    unembedding_weight: torch.Tensor,
+    forward_next_token: Callable[[torch.Tensor], torch.Tensor],
+    layers: Sequence[int],
+) -> InterventionContext:
+    input_ids = model.encode(resolved.read_case.prompt)
+    scoring_input, formatting_prefix = prepare_scoring_input(
+        input_ids,
+        forward_next_token=forward_next_token,
+        tokenizer=tokenizer,
+    )
+    vectors_by_layer = _token_vectors_by_layer(
+        lens=lens,
+        unembedding_weight=unembedding_weight,
+        layers=layers,
+        source_token_id=resolved.source.token_id,
+        target_token_id=resolved.target.token_id,
+    )
+    loading = None
+    if resolved.read_case.literal_argument is not None:
+        with (
+            torch.inference_mode(),
+            ActivationRecorder(model.layers, at=layers) as recorder,
+        ):
+            forward_next_token(input_ids)
+        loading = workspace_loading(
+            recorder.activations,
+            {layer: vectors_by_layer[layer][0] for layer in layers},
+            positions=positions_from_literal(
+                tokenizer,
+                input_ids,
+                resolved.read_case.literal_argument,
+            ),
+        )
+    target_variants = concept_token_variants(
+        tokenizer,
+        resolved.case.target_answers,
+    )
+    with torch.inference_mode():
+        clean_logits = forward_next_token(scoring_input)
+    return InterventionContext(
+        resolved=resolved,
+        input_ids=input_ids,
+        scoring_input=scoring_input,
+        formatting_prefix=formatting_prefix,
+        clean_logits=clean_logits,
+        target_ids=tuple(variant.token_id for variant in target_variants),
+        real_vectors_by_layer=vectors_by_layer,
+        workspace_loading=loading,
+    )
+
+
+def _rank_gain_payload(
+    context: InterventionContext,
+    intervened_logits: torch.Tensor,
+) -> dict[str, Any]:
+    clean = context.clean_logits.detach().float().cpu()
+    intervened = intervened_logits.detach().float().cpu()
+    clean_rank = best_target_rank(clean, context.target_ids)
+    intervened_rank = best_target_rank(intervened, context.target_ids)
+    return {
+        "key": context.resolved.case.key,
+        "clean_rank": clean_rank,
+        "intervened_rank": intervened_rank,
+        "intervened_top1_id": int(intervened.argmax().item()),
+        "log_rank_gain": log_rank_gain(clean_rank, intervened_rank),
+    }
+
+
 def analyze_swap_case(
     case: SwapCase,
     *,
@@ -718,66 +846,38 @@ def analyze_swap_case(
     top_k: int,
     source: TokenVariant | None = None,
     target: TokenVariant | None = None,
+    context: InterventionContext | None = None,
 ) -> dict[str, Any]:
     source = source or single_token_surface(tokenizer, case.source_surface)
     target = target or single_token_surface(tokenizer, case.target_surface)
-    input_ids = model.encode(read_case.prompt)
-    scoring_input, formatting_prefix = prepare_scoring_input(
-        input_ids,
-        forward_next_token=forward_next_token,
-        tokenizer=tokenizer,
-    )
-    vectors_by_layer = {
-        layer: (
-            jlens_vector(
-                lens,
-                unembedding_weight,
-                layer=layer,
-                token_id=source.token_id,
+    if context is None:
+        context = _prepare_intervention_context(
+            ResolvedSwapCase(
+                case=case,
+                read_case=read_case,
+                source=source,
+                target=target,
             ),
-            jlens_vector(
-                lens,
-                unembedding_weight,
-                layer=layer,
-                token_id=target.token_id,
-            ),
+            model=model,
+            lens=lens,
+            tokenizer=tokenizer,
+            unembedding_weight=unembedding_weight,
+            forward_next_token=forward_next_token,
+            layers=layers,
         )
-        for layer in layers
-    }
-    loading = None
-    if read_case.literal_argument is not None:
-        with (
-            torch.inference_mode(),
-            ActivationRecorder(
-                model.layers,
-                at=layers,
-            ) as recorder,
-        ):
-            forward_next_token(input_ids)
-        loading = workspace_loading(
-            recorder.activations,
-            {layer: vectors_by_layer[layer][0] for layer in layers},
-            positions=positions_from_literal(
-                tokenizer,
-                input_ids,
-                read_case.literal_argument,
-            ),
-        )
-    with torch.inference_mode():
-        clean_logits = forward_next_token(scoring_input)
     intervened_logits = {
         alpha: execute_intervention(
             model=model,
             forward_next_token=forward_next_token,
-            scoring_input=scoring_input,
-            vectors_by_layer=vectors_by_layer,
+            scoring_input=context.scoring_input,
+            vectors_by_layer=context.real_vectors_by_layer,
             alpha=alpha,
         )
         for alpha in alphas
     }
 
     summary = summarize_swap_logits(
-        clean_logits,
+        context.clean_logits,
         intervened_logits,
         clean_answers=read_case.expected_answers,
         target_answers=case.target_answers,
@@ -789,10 +889,300 @@ def analyze_swap_case(
         "prompt": read_case.prompt,
         "source": asdict(source),
         "target": asdict(target),
-        "formatting_prefix": formatting_prefix,
-        "workspace_loading": loading,
+        "formatting_prefix": context.formatting_prefix,
+        "workspace_loading": context.workspace_loading,
         "workspace_layers": list(layers),
         **summary,
+    }
+
+
+def _run_negative_controls(
+    *,
+    contexts: Sequence[InterventionContext],
+    swap_results: Sequence[Mapping[str, Any]],
+    model: Any,
+    lens: Any,
+    tokenizer: Any,
+    unembedding_weight: torch.Tensor,
+    forward_next_token: Callable[[torch.Tensor], torch.Tensor],
+    layers: Sequence[int],
+) -> dict[str, Any]:
+    expected_keys = tuple(context.resolved.case.key for context in contexts)
+    require_exact_cases(swap_results, expected_keys=expected_keys)
+    real_cases = [
+        {
+            "key": result["key"],
+            "clean_rank": result["clean"]["target_rank"],
+            "intervened_rank": result["interventions"]["1.0"]["target_rank"],
+            "intervened_top1_id": result["interventions"]["1.0"]["top1_id"],
+            "log_rank_gain": log_rank_gain(
+                result["clean"]["target_rank"],
+                result["interventions"]["1.0"]["target_rank"],
+            ),
+        }
+        for result in swap_results
+    ]
+    require_exact_cases(real_cases, expected_keys=expected_keys)
+    real_mean = mean([case["log_rank_gain"] for case in real_cases])
+
+    identity_cases = [
+        analyze_identity_case(
+            key=context.resolved.case.key,
+            clean_logits=context.clean_logits,
+            scoring_input=context.scoring_input,
+            model=model,
+            forward_next_token=forward_next_token,
+            real_vectors_by_layer=context.real_vectors_by_layer,
+            target_ids=context.target_ids,
+        )
+        for context in contexts
+    ]
+    require_exact_cases(identity_cases, expected_keys=expected_keys)
+    identity_passed_count = sum(bool(case["passed"]) for case in identity_cases)
+    identity = {
+        "configuration": {
+            "alpha": 1.0,
+            "operation": "source concept to the same source concept",
+            "workspace_layers": list(layers),
+            "activation_positions": "all",
+        },
+        "cases": identity_cases,
+        "passed_case_count": identity_passed_count,
+        "required_case_count": len(expected_keys),
+        "maximum_absolute_logit_difference": max(
+            case["maximum_absolute_logit_difference"] for case in identity_cases
+        ),
+        "passed": identity_passed_count == len(expected_keys),
+    }
+
+    random_vector_seed_results = []
+    for seed in CONTROL_SEEDS:
+        seed_cases = []
+        norms_by_case = {}
+        for context in contexts:
+            random_vectors, norm_report = matched_random_vectors(
+                context.real_vectors_by_layer,
+                base_seed=seed,
+            )
+            norms_by_case[context.resolved.case.key] = norm_report
+            intervened_logits = execute_intervention(
+                model=model,
+                forward_next_token=forward_next_token,
+                scoring_input=context.scoring_input,
+                vectors_by_layer=random_vectors,
+                alpha=1.0,
+            )
+            seed_cases.append(_rank_gain_payload(context, intervened_logits))
+            del intervened_logits, random_vectors
+        require_exact_cases(seed_cases, expected_keys=expected_keys)
+        random_vector_seed_results.append(
+            {
+                "seed": seed,
+                "cases": seed_cases,
+                "mean_log_rank_gain": mean(
+                    [case["log_rank_gain"] for case in seed_cases]
+                ),
+                "norms_by_case": norms_by_case,
+            }
+        )
+    random_vector_means = [
+        result["mean_log_rank_gain"] for result in random_vector_seed_results
+    ]
+    random_vector_gate = strict_percentile_gate(real_mean, random_vector_means)
+    matched_random_vector = {
+        "configuration": {
+            "alpha": 1.0,
+            "seeds": list(CONTROL_SEEDS),
+            "workspace_layers": list(layers),
+            "activation_positions": "all",
+            "generation_device": "cpu",
+            "generation_dtype": "torch.float32",
+            "output_device_dtype": "same as corresponding real vector",
+        },
+        "real_cases": real_cases,
+        "real_mean_log_rank_gain": real_mean,
+        "seeds": random_vector_seed_results,
+        "control_mean_log_rank_gains": random_vector_means,
+        "percentile_95_threshold": random_vector_gate["threshold"],
+        "gate": random_vector_gate,
+        "passed": random_vector_gate["passed"],
+    }
+
+    contexts_by_key = {context.resolved.case.key: context for context in contexts}
+    spider_context = contexts_by_key["spider"]
+    france_reference = contexts_by_key["france_capital"]
+    mismatched_cases = []
+    mismatch_config = []
+    for context in contexts:
+        wrong_reference = (
+            france_reference
+            if context.resolved.case.key == "spider"
+            else spider_context
+        )
+        intervened_logits = execute_intervention(
+            model=model,
+            forward_next_token=forward_next_token,
+            scoring_input=context.scoring_input,
+            vectors_by_layer=wrong_reference.real_vectors_by_layer,
+            alpha=1.0,
+        )
+        mismatched_cases.append(_rank_gain_payload(context, intervened_logits))
+        mismatch_config.append(
+            {
+                "key": context.resolved.case.key,
+                "source": asdict(wrong_reference.resolved.source),
+                "target": asdict(wrong_reference.resolved.target),
+            }
+        )
+        del intervened_logits
+    require_exact_cases(mismatched_cases, expected_keys=expected_keys)
+    wrong_summary = summarize_wrong_concept(
+        real_cases,
+        mismatched_cases,
+        expected_keys=expected_keys,
+    )
+    wrong_concept = {
+        "configuration": {
+            "alpha": 1.0,
+            "workspace_layers": list(layers),
+            "activation_positions": "all",
+            "mismatches": mismatch_config,
+        },
+        "matched_cases": real_cases,
+        "mismatched_cases": mismatched_cases,
+        **wrong_summary,
+    }
+
+    source_surfaces = tuple(
+        surface
+        for case in SWAP_CASES
+        for surface in _concept_surfaces(case.source_surface.strip())
+    )
+    target_surfaces = tuple(
+        surface
+        for case in SWAP_CASES
+        for surface in _concept_surfaces(case.target_surface.strip())
+    )
+    clean_answer_surfaces = tuple(
+        surface
+        for case in READOUT_CASES
+        for answer in case.expected_answers
+        for surface in _concept_surfaces(answer)
+    )
+    intended_answer_surfaces = tuple(
+        surface
+        for case in SWAP_CASES
+        for answer in case.target_answers
+        for surface in _concept_surfaces(answer)
+    )
+    formatting_token_ids = tuple(
+        item["token_id"] for context in contexts for item in context.formatting_prefix
+    )
+    exclusions = build_random_target_exclusions(
+        tokenizer,
+        source_surfaces=source_surfaces,
+        target_surfaces=target_surfaces,
+        clean_answer_surfaces=clean_answer_surfaces,
+        intended_answer_surfaces=intended_answer_surfaces,
+        formatting_token_ids=formatting_token_ids,
+    )
+    output_vocab_size = int(unembedding_weight.shape[0])
+    selected_targets = select_random_targets(
+        tokenizer,
+        excluded_ids=exclusions["all"],
+        seeds=CONTROL_SEEDS,
+        output_vocab_size=output_vocab_size,
+    )
+    random_target_results = []
+    for selected in selected_targets:
+        target_cases = []
+        for context in contexts:
+            vectors_by_layer = _token_vectors_by_layer(
+                lens=lens,
+                unembedding_weight=unembedding_weight,
+                layers=layers,
+                source_token_id=context.resolved.source.token_id,
+                target_token_id=selected["token_id"],
+            )
+            intervened_logits = execute_intervention(
+                model=model,
+                forward_next_token=forward_next_token,
+                scoring_input=context.scoring_input,
+                vectors_by_layer=vectors_by_layer,
+                alpha=1.0,
+            )
+            target_cases.append(_rank_gain_payload(context, intervened_logits))
+            del intervened_logits, vectors_by_layer
+        require_exact_cases(target_cases, expected_keys=expected_keys)
+        random_target_results.append(
+            {
+                **selected,
+                "cases": target_cases,
+                "mean_log_rank_gain": mean(
+                    [case["log_rank_gain"] for case in target_cases]
+                ),
+            }
+        )
+    random_target_means = [
+        result["mean_log_rank_gain"] for result in random_target_results
+    ]
+    random_target_gate = strict_percentile_gate(real_mean, random_target_means)
+    random_target = {
+        "configuration": {
+            "alpha": 1.0,
+            "seeds": list(CONTROL_SEEDS),
+            "workspace_layers": list(layers),
+            "activation_positions": "all",
+            "selection": "SHA-256 index into ascending eligible token IDs",
+            "output_vocab_size": output_vocab_size,
+        },
+        "exclusions": exclusions,
+        "real_cases": real_cases,
+        "real_mean_log_rank_gain": real_mean,
+        "targets": random_target_results,
+        "control_mean_log_rank_gains": random_target_means,
+        "percentile_95_threshold": random_target_gate["threshold"],
+        "gate": random_target_gate,
+        "passed": random_target_gate["passed"],
+    }
+
+    control_results = {
+        "identity": identity,
+        "matched_random_vector": matched_random_vector,
+        "wrong_concept": wrong_concept,
+        "random_target": random_target,
+    }
+    return {
+        "seeds": list(CONTROL_SEEDS),
+        "definitions": {
+            "log_rank_gain": "log(clean_rank) - log(intervened_rank)",
+            "logarithm": "natural",
+            "aggregate": "arithmetic mean across exactly five cases",
+            "expected_case_keys": list(expected_keys),
+            "percentile": ("sort ascending; linear interpolation at (n - 1) * 0.95"),
+            "percentile_interpretation": PERCENTILE_INTERPRETATION,
+            "comparison": "strictly greater than",
+        },
+        "thresholds": {
+            "percentile_quantile": PERCENTILE_QUANTILE,
+            "wrong_concept_required_case_wins": 4,
+        },
+        "tolerances": {
+            "identity_logits": {
+                "atol": IDENTITY_ATOL,
+                "rtol": IDENTITY_RTOL,
+            },
+            "random_vector_norm_float32": {
+                "atol": NORM_ATOL,
+                "rtol": NORM_RTOL,
+            },
+            "random_vector_norm_low_precision": {
+                "atol": 1e-2,
+                "rtol": 1e-2,
+            },
+        },
+        **control_results,
+        "passed": controls_passed(control_results),
     }
 
 
@@ -814,10 +1204,28 @@ def run_readout_sanity(
     if not layers:
         raise ValueError("No fitted layers fall inside the workspace range")
     resolved_swaps = resolve_swap_cases(cases, swap_cases, tokenizer)
+    if tuple(cases) != READOUT_CASES or tuple(swap_cases) != SWAP_CASES:
+        raise ValueError(
+            "Negative controls require the exact five configured readout and swap cases"
+        )
+    if 1.0 not in alphas:
+        raise ValueError("Negative controls require the existing alpha=1 intervention")
 
     read_results = [
         analyze_case(case, model=model, lens=lens, tokenizer=tokenizer, top_k=top_k)
         for case in cases
+    ]
+    contexts = [
+        _prepare_intervention_context(
+            resolved,
+            model=model,
+            lens=lens,
+            tokenizer=tokenizer,
+            unembedding_weight=unembedding_weight,
+            forward_next_token=forward_next_token,
+            layers=layers,
+        )
+        for resolved in resolved_swaps
     ]
     swap_results = [
         analyze_swap_case(
@@ -833,8 +1241,9 @@ def run_readout_sanity(
             top_k=top_k,
             source=resolved.source,
             target=resolved.target,
+            context=context,
         )
-        for resolved in resolved_swaps
+        for resolved, context in zip(resolved_swaps, contexts, strict=True)
     ]
     swaps_by_key = {case["key"]: case for case in swap_results}
     for read_result in read_results:
@@ -850,10 +1259,25 @@ def run_readout_sanity(
         ]
         read_result["passed"] = all(read_result["checks"].values())
 
-    checks, failures = aggregate_capability_checks(
+    existing_checks, existing_failures = aggregate_capability_checks(
         read_results,
         swap_results,
         minimum_improvements=minimum_improvements,
+    )
+    controls = _run_negative_controls(
+        contexts=contexts,
+        swap_results=swap_results,
+        model=model,
+        lens=lens,
+        tokenizer=tokenizer,
+        unembedding_weight=unembedding_weight,
+        forward_next_token=forward_next_token,
+        layers=layers,
+    )
+    checks, failures, passed = aggregate_all_checks(
+        existing_checks,
+        existing_failures,
+        controls,
     )
     return {
         "model": MODEL_NAME,
@@ -871,7 +1295,8 @@ def run_readout_sanity(
         "intervention_strengths": list(alphas),
         "cases": read_results,
         "swaps": swap_results,
+        "controls": controls,
         "checks": checks,
         "failures": failures,
-        "passed": all(checks.values()),
+        "passed": passed,
     }
