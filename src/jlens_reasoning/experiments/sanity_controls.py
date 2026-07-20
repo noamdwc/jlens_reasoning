@@ -32,9 +32,7 @@ IDENTITY_RTOL = 1e-5
 NORM_ATOL = 1e-6
 NORM_RTOL = 1e-5
 PERCENTILE_QUANTILE = 0.95
-PERCENTILE_INTERPRETATION = (
-    "deterministic sanity check; not statistical significance"
-)
+PERCENTILE_INTERPRETATION = "deterministic sanity check; not statistical significance"
 
 
 def log_rank_gain(clean_rank: int, intervened_rank: int) -> float:
@@ -98,10 +96,12 @@ def _matched_random_vector(
         raise ValueError("Cannot match the norm of an empty vector")
     real_norm = torch.linalg.vector_norm(real_cpu)
     if real_norm.item() == 0.0:
-        matched_cpu = torch.zeros_like(real_cpu)
-    else:
-        generator = torch.Generator(device="cpu")
-        generator.manual_seed(derive_subseed(base_seed, layer_index, role))
+        return torch.zeros_like(real_vector)
+
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(derive_subseed(base_seed, layer_index, role))
+    atol, rtol = _norm_tolerances(real_vector.dtype)
+    for _ in range(1024):
         random_vector = torch.randn(
             real_cpu.shape,
             generator=generator,
@@ -113,7 +113,47 @@ def _matched_random_vector(
             random_vector.reshape(-1)[0] = 1.0
             random_norm = torch.linalg.vector_norm(random_vector)
         matched_cpu = random_vector * (real_norm / random_norm)
-    return matched_cpu.to(device=real_vector.device, dtype=real_vector.dtype)
+        converted = matched_cpu.to(
+            device=real_vector.device,
+            dtype=real_vector.dtype,
+        )
+        converted_norm = torch.linalg.vector_norm(converted.detach().float())
+        if torch.isfinite(converted).all() and math.isclose(
+            real_norm.item(),
+            converted_norm.item(),
+            abs_tol=atol,
+            rel_tol=rtol,
+        ):
+            return converted
+
+    permutation = torch.randperm(real_cpu.numel(), generator=generator)
+    signs = (
+        torch.randint(
+            0,
+            2,
+            (real_cpu.numel(),),
+            generator=generator,
+            dtype=torch.int64,
+        )
+        .mul(2)
+        .sub(1)
+    )
+    fallback_cpu = real_cpu.reshape(-1)[permutation] * signs
+    fallback = fallback_cpu.reshape(real_cpu.shape).to(
+        device=real_vector.device,
+        dtype=real_vector.dtype,
+    )
+    fallback_norm = torch.linalg.vector_norm(fallback.detach().float())
+    if torch.isfinite(fallback).all() and math.isclose(
+        real_norm.item(),
+        fallback_norm.item(),
+        abs_tol=atol,
+        rel_tol=rtol,
+    ):
+        return fallback
+    raise RuntimeError(
+        "Unable to generate a finite norm-matched random vector after conversion"
+    )
 
 
 def _norm_tolerances(dtype: torch.dtype) -> tuple[float, float]:
@@ -204,7 +244,9 @@ def build_random_target_exclusions(
     formatting_token_ids: Iterable[int],
     existing_excluded_ids: Iterable[int] = (),
 ) -> dict[str, list[int]]:
-    vocabulary_ids = sorted({int(token_id) for token_id in tokenizer.get_vocab().values()})
+    vocabulary_ids = sorted(
+        {int(token_id) for token_id in tokenizer.get_vocab().values()}
+    )
     added_special_ids = {
         int(token_id)
         for token_id, token in getattr(tokenizer, "added_tokens_decoder", {}).items()
@@ -250,8 +292,7 @@ def select_random_targets(
         {
             int(token_id)
             for token_id in tokenizer.get_vocab().values()
-            if 0 <= int(token_id) < output_vocab_size
-            and int(token_id) not in excluded
+            if 0 <= int(token_id) < output_vocab_size and int(token_id) not in excluded
         }
     )
     if not eligible:

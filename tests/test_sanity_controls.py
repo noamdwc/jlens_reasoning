@@ -138,6 +138,20 @@ def test_random_vectors_restore_real_device_and_dtype() -> None:
         assert norms["2"][role]["dtype_matches"] is True
 
 
+def test_random_vectors_remain_finite_and_matched_after_low_precision_cast() -> None:
+    real = {
+        0: (
+            torch.tensor([60000.0, 60000.0], dtype=torch.float16),
+            torch.tensor([1.0, 2.0], dtype=torch.float16),
+        )
+    }
+
+    generated, norms = matched_random_vectors(real, base_seed=29)
+
+    assert torch.isfinite(generated[0][0]).all()
+    assert norms["0"]["source"]["matched"] is True
+
+
 class VocabularyTokenizer:
     def __init__(self) -> None:
         self.vocab = {f"token-{token_id}": token_id for token_id in range(40)}
@@ -165,9 +179,7 @@ class VocabularyTokenizer:
         *,
         clean_up_tokenization_spaces: bool = False,
     ) -> str:
-        self.decode_calls.append(
-            (tuple(token_ids), clean_up_tokenization_spaces)
-        )
+        self.decode_calls.append((tuple(token_ids), clean_up_tokenization_spaces))
         token_id = token_ids[0]
         if token_id == 8:
             return " "
