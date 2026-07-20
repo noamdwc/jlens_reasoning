@@ -793,8 +793,10 @@ class FiveCaseLens:
         return {2: readout}, model_logits, input_ids
 
 
+@pytest.mark.parametrize("alphas", [(1.0, 2.0), (1, 2)])
 def test_run_readout_sanity_integrates_all_controls_without_storing_logits(
     monkeypatch: pytest.MonkeyPatch,
+    alphas: tuple[float, float],
 ) -> None:
     model = FiveCaseModel()
     lens = FiveCaseLens()
@@ -857,6 +859,7 @@ def test_run_readout_sanity_integrates_all_controls_without_storing_logits(
         tokenizer=tokenizer,
         unembedding_weight=unembedding,
         forward_next_token=forward_next_token,
+        alphas=alphas,
         top_k=3,
     )
 
@@ -914,13 +917,19 @@ def test_run_readout_sanity_integrates_all_controls_without_storing_logits(
             for key in expected_keys[1:]
         ],
     ]
-    real_gains = [
-        log_rank_gain(
-            swap["clean"]["target_rank"],
-            swap["interventions"]["1.0"]["target_rank"],
+    real_gains = []
+    for swap in result["swaps"]:
+        alpha_one = next(
+            payload
+            for alpha, payload in swap["interventions"].items()
+            if float(alpha) == 1.0
         )
-        for swap in result["swaps"]
-    ]
+        real_gains.append(
+            log_rank_gain(
+                swap["clean"]["target_rank"],
+                alpha_one["target_rank"],
+            )
+        )
     assert controls["matched_random_vector"][
         "real_mean_log_rank_gain"
     ] == pytest.approx(sum(real_gains) / 5)

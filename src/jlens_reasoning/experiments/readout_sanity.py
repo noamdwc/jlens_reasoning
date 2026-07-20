@@ -834,6 +834,18 @@ def _rank_gain_payload(
     }
 
 
+def _intervention_payload_at_alpha(
+    interventions: Mapping[str, Mapping[str, Any]],
+    alpha: float,
+) -> Mapping[str, Any]:
+    matches = [
+        payload for key, payload in interventions.items() if float(key) == float(alpha)
+    ]
+    if len(matches) != 1:
+        raise ValueError(f"Expected exactly one intervention payload for alpha={alpha}")
+    return matches[0]
+
+
 def analyze_swap_case(
     case: SwapCase,
     *,
@@ -912,19 +924,21 @@ def _run_negative_controls(
     require_exact_cases([{"key": context.resolved.case.key} for context in contexts])
     expected_keys = CONTROL_CASE_KEYS
     require_exact_cases(swap_results)
-    real_cases = [
-        {
-            "key": result["key"],
-            "clean_rank": result["clean"]["target_rank"],
-            "intervened_rank": result["interventions"]["1.0"]["target_rank"],
-            "intervened_top1_id": result["interventions"]["1.0"]["top1_id"],
-            "log_rank_gain": log_rank_gain(
-                result["clean"]["target_rank"],
-                result["interventions"]["1.0"]["target_rank"],
-            ),
-        }
-        for result in swap_results
-    ]
+    real_cases = []
+    for result in swap_results:
+        alpha_one = _intervention_payload_at_alpha(result["interventions"], 1.0)
+        real_cases.append(
+            {
+                "key": result["key"],
+                "clean_rank": result["clean"]["target_rank"],
+                "intervened_rank": alpha_one["target_rank"],
+                "intervened_top1_id": alpha_one["top1_id"],
+                "log_rank_gain": log_rank_gain(
+                    result["clean"]["target_rank"],
+                    alpha_one["target_rank"],
+                ),
+            }
+        )
     require_exact_cases(real_cases)
     real_mean = mean([case["log_rank_gain"] for case in real_cases])
 

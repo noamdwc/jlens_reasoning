@@ -139,31 +139,6 @@ def _matched_random_vector(
         ):
             return converted
 
-    permutation = torch.randperm(real_cpu.numel(), generator=generator)
-    signs = (
-        torch.randint(
-            0,
-            2,
-            (real_cpu.numel(),),
-            generator=generator,
-            dtype=torch.int64,
-        )
-        .mul(2)
-        .sub(1)
-    )
-    fallback_cpu = real_cpu.reshape(-1)[permutation] * signs
-    fallback = fallback_cpu.reshape(real_cpu.shape).to(
-        device=real_vector.device,
-        dtype=real_vector.dtype,
-    )
-    fallback_norm = torch.linalg.vector_norm(fallback.detach().float())
-    if torch.isfinite(fallback).all() and math.isclose(
-        real_norm.item(),
-        fallback_norm.item(),
-        abs_tol=atol,
-        rel_tol=rtol,
-    ):
-        return fallback
     raise RuntimeError(
         "Unable to generate a finite norm-matched random vector after conversion"
     )
