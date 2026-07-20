@@ -33,6 +33,12 @@ NORM_ATOL = 1e-6
 NORM_RTOL = 1e-5
 PERCENTILE_QUANTILE = 0.95
 PERCENTILE_INTERPRETATION = "deterministic sanity check; not statistical significance"
+CONTROL_CHECK_MAP = (
+    ("identity", "identity_control"),
+    ("matched_random_vector", "matched_random_vector_control"),
+    ("wrong_concept", "wrong_concept_control"),
+    ("random_target", "random_target_control"),
+)
 
 
 def log_rank_gain(clean_rank: int, intervened_rank: int) -> float:
@@ -314,3 +320,117 @@ def select_random_targets(
             }
         )
     return selected
+
+
+def require_exact_cases(
+    results: Sequence[Mapping[str, Any]],
+    *,
+    expected_keys: Sequence[str],
+) -> None:
+    actual_keys = [str(result["key"]) for result in results]
+    expected = list(expected_keys)
+    if actual_keys != expected:
+        raise ValueError(f"Expected exact case keys {expected!r}, got {actual_keys!r}")
+
+
+def summarize_wrong_concept(
+    matched_cases: Sequence[Mapping[str, Any]],
+    mismatched_cases: Sequence[Mapping[str, Any]],
+    *,
+    expected_keys: Sequence[str],
+    required_winning_case_count: int = 4,
+) -> dict[str, Any]:
+    require_exact_cases(matched_cases, expected_keys=expected_keys)
+    require_exact_cases(mismatched_cases, expected_keys=expected_keys)
+    cases = []
+    for matched, mismatched in zip(
+        matched_cases,
+        mismatched_cases,
+        strict=True,
+    ):
+        matched_gain = float(matched["log_rank_gain"])
+        mismatched_gain = float(mismatched["log_rank_gain"])
+        cases.append(
+            {
+                "key": matched["key"],
+                "matched_log_rank_gain": matched_gain,
+                "mismatched_log_rank_gain": mismatched_gain,
+                "comparison": "matched_log_rank_gain > mismatched_log_rank_gain",
+                "matched_wins": matched_gain > mismatched_gain,
+            }
+        )
+    matched_mean = mean([float(case["log_rank_gain"]) for case in matched_cases])
+    mismatched_mean = mean([float(case["log_rank_gain"]) for case in mismatched_cases])
+    winning_case_count = sum(bool(case["matched_wins"]) for case in cases)
+    aggregate_condition = matched_mean > mismatched_mean
+    case_condition = winning_case_count >= required_winning_case_count
+    return {
+        "cases": cases,
+        "matched_mean_log_rank_gain": matched_mean,
+        "mismatched_mean_log_rank_gain": mismatched_mean,
+        "aggregate_comparison": (
+            "matched_mean_log_rank_gain > mismatched_mean_log_rank_gain"
+        ),
+        "aggregate_condition": aggregate_condition,
+        "matched_winning_case_count": winning_case_count,
+        "required_winning_case_count": required_winning_case_count,
+        "case_condition": case_condition,
+        "passed": aggregate_condition and case_condition,
+    }
+
+
+def controls_passed(controls: Mapping[str, Mapping[str, Any]]) -> bool:
+    return all(bool(controls[name]["passed"]) for name, _ in CONTROL_CHECK_MAP)
+
+
+def _control_failure(name: str, control: Mapping[str, Any]) -> str:
+    if name == "identity":
+        return (
+            "identity control failed: "
+            f"{control.get('passed_case_count', 0)}/"
+            f"{control.get('required_case_count', 5)} cases passed; "
+            "required every identity comparison to pass; "
+            "maximum absolute logit difference="
+            f"{control.get('maximum_absolute_logit_difference')!r}"
+        )
+    if name == "matched_random_vector":
+        return (
+            "matched random vector control failed: real mean log-rank gain="
+            f"{control.get('real_mean_log_rank_gain')!r}; required strictly > "
+            "95th-percentile sanity threshold="
+            f"{control.get('percentile_95_threshold')!r}"
+        )
+    if name == "wrong_concept":
+        return (
+            "wrong concept control failed: matched mean log-rank gain="
+            f"{control.get('matched_mean_log_rank_gain')!r}, mismatched mean="
+            f"{control.get('mismatched_mean_log_rank_gain')!r}; matched wins="
+            f"{control.get('matched_winning_case_count')!r}; required matched "
+            "mean > mismatched mean and at least "
+            f"{control.get('required_winning_case_count', 4)} strict case wins"
+        )
+    if name == "random_target":
+        return (
+            "random target control failed: real mean log-rank gain="
+            f"{control.get('real_mean_log_rank_gain')!r}; required strictly > "
+            "95th-percentile sanity threshold="
+            f"{control.get('percentile_95_threshold')!r}"
+        )
+    raise KeyError(f"Unknown control: {name}")
+
+
+def aggregate_all_checks(
+    existing_checks: Mapping[str, bool],
+    existing_failures: Sequence[str],
+    controls: Mapping[str, Mapping[str, Any]],
+) -> tuple[dict[str, bool], list[str], bool]:
+    checks = dict(existing_checks)
+    failures = list(existing_failures)
+    for control_name, check_name in CONTROL_CHECK_MAP:
+        if control_name not in controls:
+            raise KeyError(f"Missing control payload: {control_name}")
+        passed = bool(controls[control_name]["passed"])
+        checks[check_name] = passed
+        if not passed:
+            failures.append(_control_failure(control_name, controls[control_name]))
+    return checks, failures, all(checks.values())

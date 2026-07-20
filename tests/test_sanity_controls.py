@@ -8,13 +8,25 @@ from jlens_reasoning.experiments.sanity_controls import (
     CONTROL_SEEDS,
     IDENTITY_ATOL,
     IDENTITY_RTOL,
+    aggregate_all_checks,
     build_random_target_exclusions,
+    controls_passed,
     derive_subseed,
     log_rank_gain,
     matched_random_vectors,
     percentile,
+    require_exact_cases,
     select_random_targets,
     strict_percentile_gate,
+    summarize_wrong_concept,
+)
+
+EXPECTED_CASE_KEYS = (
+    "spider",
+    "france_capital",
+    "france_language",
+    "france_continent",
+    "france_currency",
 )
 
 
@@ -268,3 +280,154 @@ def test_random_target_selection_rejects_empty_eligible_vocabulary() -> None:
             seeds=CONTROL_SEEDS,
             output_vocab_size=32,
         )
+
+
+def _gain_cases(gains: list[float]) -> list[dict[str, float | str]]:
+    return [
+        {"key": key, "log_rank_gain": gain}
+        for key, gain in zip(EXPECTED_CASE_KEYS, gains, strict=True)
+    ]
+
+
+def test_exact_case_validation_rejects_missing_duplicate_extra_and_order() -> None:
+    complete = _gain_cases([1.0] * 5)
+    require_exact_cases(complete, expected_keys=EXPECTED_CASE_KEYS)
+
+    malformed = (
+        complete[:-1],
+        [*complete[:-1], complete[0]],
+        [*complete, {"key": "extra", "log_rank_gain": 1.0}],
+        list(reversed(complete)),
+    )
+    for cases in malformed:
+        with pytest.raises(ValueError, match="exact case keys"):
+            require_exact_cases(cases, expected_keys=EXPECTED_CASE_KEYS)
+
+
+def test_wrong_concept_requires_aggregate_and_four_strict_case_wins() -> None:
+    result = summarize_wrong_concept(
+        _gain_cases([1.0, 1.0, 1.0, 1.0, 0.0]),
+        _gain_cases([0.0, 0.0, 0.0, 0.0, 0.0]),
+        expected_keys=EXPECTED_CASE_KEYS,
+    )
+
+    assert result["matched_mean_log_rank_gain"] == pytest.approx(0.8)
+    assert result["mismatched_mean_log_rank_gain"] == 0.0
+    assert result["matched_winning_case_count"] == 4
+    assert result["aggregate_condition"] is True
+    assert result["case_condition"] is True
+    assert result["passed"] is True
+
+
+def test_wrong_concept_ties_do_not_count_and_three_wins_fail() -> None:
+    result = summarize_wrong_concept(
+        _gain_cases([1.0, 1.0, 1.0, 0.0, 0.0]),
+        _gain_cases([0.0, 0.0, 0.0, 0.0, -1.0]),
+        expected_keys=EXPECTED_CASE_KEYS,
+    )
+
+    assert [case["matched_wins"] for case in result["cases"]] == [
+        True,
+        True,
+        True,
+        False,
+        True,
+    ]
+    assert result["matched_winning_case_count"] == 4
+
+    three_wins = summarize_wrong_concept(
+        _gain_cases([1.0, 1.0, 1.0, 0.0, 0.0]),
+        _gain_cases([0.0, 0.0, 0.0, 0.0, 0.0]),
+        expected_keys=EXPECTED_CASE_KEYS,
+    )
+    assert three_wins["matched_winning_case_count"] == 3
+    assert three_wins["passed"] is False
+
+
+def _passing_controls() -> dict[str, dict[str, object]]:
+    return {
+        "identity": {
+            "passed": True,
+            "passed_case_count": 5,
+            "required_case_count": 5,
+            "maximum_absolute_logit_difference": 0.0,
+        },
+        "matched_random_vector": {
+            "passed": True,
+            "real_mean_log_rank_gain": 1.0,
+            "percentile_95_threshold": 0.5,
+        },
+        "wrong_concept": {
+            "passed": True,
+            "matched_mean_log_rank_gain": 1.0,
+            "mismatched_mean_log_rank_gain": 0.0,
+            "matched_winning_case_count": 5,
+            "required_winning_case_count": 4,
+        },
+        "random_target": {
+            "passed": True,
+            "real_mean_log_rank_gain": 1.0,
+            "percentile_95_threshold": 0.5,
+        },
+    }
+
+
+def test_all_four_controls_are_integrated_into_global_checks() -> None:
+    controls = _passing_controls()
+
+    checks, failures, passed = aggregate_all_checks(
+        {"clean_baselines": True}, [], controls
+    )
+
+    assert checks == {
+        "clean_baselines": True,
+        "identity_control": True,
+        "matched_random_vector_control": True,
+        "wrong_concept_control": True,
+        "random_target_control": True,
+    }
+    assert failures == []
+    assert controls_passed(controls) is True
+    assert passed is True
+
+
+def test_control_and_global_pass_scopes_are_separate() -> None:
+    controls = _passing_controls()
+
+    _, failures, global_passed = aggregate_all_checks(
+        {"clean_baselines": False}, ["existing failure"], controls
+    )
+
+    assert controls_passed(controls) is True
+    assert global_passed is False
+    assert failures == ["existing failure"]
+
+
+@pytest.mark.parametrize(
+    "control_name",
+    ["identity", "matched_random_vector", "wrong_concept", "random_target"],
+)
+def test_each_failed_control_forces_global_failure_and_actionable_failure(
+    control_name: str,
+) -> None:
+    controls = _passing_controls()
+    controls[control_name]["passed"] = False
+
+    checks, failures, passed = aggregate_all_checks(
+        {"clean_baselines": True}, [], controls
+    )
+
+    assert checks[f"{control_name}_control"] is False
+    assert controls_passed(controls) is False
+    assert passed is False
+    assert len(failures) == 1
+    assert control_name.replace("_", " ") in failures[0]
+    assert "required" in failures[0]
+
+
+def test_missing_control_payload_is_rejected() -> None:
+    controls = _passing_controls()
+    del controls["identity"]
+
+    with pytest.raises(KeyError, match="identity"):
+        aggregate_all_checks({"clean_baselines": True}, [], controls)
