@@ -6,42 +6,75 @@ import pytest
 import torch
 from torch import nn
 
-import jlens_reasoning.experiments.intervention_utils as intervention_utils_module
-import jlens_reasoning.experiments.readout_sanity as readout_sanity_module
-from jlens_reasoning.experiments.readout_sanity import (
+import experiments.jlens_readout_sanity.controls as controls_module
+import experiments.jlens_readout_sanity.runner as runner_module
+import jlens_reasoning.experiments_utils.interventions as intervention_utils_module
+from experiments.jlens_readout_sanity.constants import (
+    CONTROL_SEEDS,
     LENS_FILE,
     LENS_REPO,
     LENS_REVISION,
     MODEL_NAME,
     READOUT_CASES,
     SWAP_CASES,
-    LensCoordinateSwapper,
-    ReadoutCase,
-    SwapCase,
-    TokenVariant,
-    _token_vectors_by_layer,
+    WORKSPACE_LAYER_LOWER_FRACTION,
+    WORKSPACE_LAYER_UPPER_FRACTION,
+)
+from experiments.jlens_readout_sanity.controls import (
+    analyze_identity_case,
+)
+from experiments.jlens_readout_sanity.runner import (
     aggregate_capability_checks,
     analyze_case,
-    analyze_identity_case,
     analyze_swap_case,
-    best_target_rank,
-    concept_token_variants,
+    run_readout_sanity,
+    summarize_swap_logits,
+)
+from experiments.jlens_readout_sanity.types import ReadoutCase, SwapCase
+from jlens_reasoning.experiments_utils.artifacts import write_results
+from jlens_reasoning.experiments_utils.controls import log_rank_gain
+from jlens_reasoning.experiments_utils.interventions import (
+    LensCoordinateSwapper,
     coordinate_swap,
     execute_intervention,
-    find_last_subsequence,
     jlens_vector,
-    positions_after_literal,
-    prepare_scoring_input,
-    run_readout_sanity,
-    single_token_surface,
-    summarize_swap_logits,
-    top_tokens,
-    validate_model_lens,
-    workspace_layers,
-    workspace_loading,
-    write_results,
 )
-from jlens_reasoning.experiments.sanity_controls import CONTROL_SEEDS, log_rank_gain
+from jlens_reasoning.experiments_utils.interventions import (
+    token_vectors_by_layer as _token_vectors_by_layer,
+)
+from jlens_reasoning.experiments_utils.tokens import (
+    TokenVariant,
+    best_target_rank,
+    concept_token_variants,
+    find_last_subsequence,
+    positions_after_literal,
+    single_token_surface,
+    top_tokens,
+)
+from jlens_reasoning.experiments_utils.tokens import (
+    prepare_scoring_input as _prepare_scoring_input,
+)
+from jlens_reasoning.experiments_utils.validation import (
+    validate_model_lens,
+    workspace_loading,
+)
+from jlens_reasoning.experiments_utils.validation import (
+    workspace_layers as _workspace_layers,
+)
+
+
+def workspace_layers(n_layers, source_layers):
+    return _workspace_layers(
+        n_layers,
+        source_layers,
+        lower_fraction=WORKSPACE_LAYER_LOWER_FRACTION,
+        upper_fraction=WORKSPACE_LAYER_UPPER_FRACTION,
+    )
+
+
+def prepare_scoring_input(*args, **kwargs):
+    kwargs.setdefault("max_formatting_tokens", 2)
+    return _prepare_scoring_input(*args, **kwargs)
 
 
 def test_released_artifact_coordinates_match_upstream_walkthrough() -> None:
@@ -850,6 +883,16 @@ def test_run_readout_sanity_integrates_all_controls_without_storing_logits(
         "execute_intervention",
         recording_execute_intervention,
     )
+    monkeypatch.setattr(
+        runner_module,
+        "execute_intervention",
+        recording_execute_intervention,
+    )
+    monkeypatch.setattr(
+        controls_module,
+        "execute_intervention",
+        recording_execute_intervention,
+    )
 
     def forward_next_token(input_ids: torch.Tensor) -> torch.Tensor:
         prompt = key_by_id[int(input_ids[0, 0])]
@@ -1058,9 +1101,9 @@ def test_run_readout_sanity_rejects_missing_control_cases() -> None:
 def test_run_requires_configured_control_alpha(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(readout_sanity_module, "CONTROL_ALPHA", 2.0, raising=False)
+    monkeypatch.setattr(runner_module, "CONTROL_ALPHA", 2.0, raising=False)
     monkeypatch.setattr(
-        readout_sanity_module,
+        runner_module,
         "resolve_swap_cases",
         lambda *args, **kwargs: (),
     )
@@ -1068,7 +1111,7 @@ def test_run_requires_configured_control_alpha(
     lens = SimpleNamespace(d_model=2, source_layers=(2,))
 
     with pytest.raises(ValueError, match="alpha=2"):
-        readout_sanity_module.run_readout_sanity(
+        runner_module.run_readout_sanity(
             model=model,
             lens=lens,
             tokenizer=SimpleNamespace(),

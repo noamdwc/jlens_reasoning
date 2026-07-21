@@ -6,25 +6,79 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from jlens_reasoning.experiments.readout_sanity import write_results
-from jlens_reasoning.experiments.sanity_controls import (
+from experiments.jlens_readout_sanity.constants import (
     CONTROL_CASE_KEYS,
     CONTROL_SEEDS,
     IDENTITY_ATOL,
     IDENTITY_RTOL,
+    PERCENTILE_INTERPRETATION,
+    RANDOM_TARGET_NAMESPACE,
+    RANDOM_VECTOR_NAMESPACE,
+)
+from experiments.jlens_readout_sanity.controls import (
     aggregate_all_checks,
-    build_random_target_exclusions,
     controls_passed,
-    derive_subseed,
-    log_rank_gain,
-    matched_random_vectors,
-    percentile,
-    percentile_label,
     require_exact_cases,
-    select_random_targets,
-    strict_percentile_gate,
     summarize_wrong_concept,
 )
+from jlens_reasoning.experiments_utils.artifacts import write_results
+from jlens_reasoning.experiments_utils.controls import (
+    build_random_target_exclusions,
+    log_rank_gain,
+    percentile,
+    percentile_label,
+)
+from jlens_reasoning.experiments_utils.controls import (
+    derive_subseed as _derive_subseed,
+)
+from jlens_reasoning.experiments_utils.controls import (
+    matched_random_vectors as _matched_random_vectors,
+)
+from jlens_reasoning.experiments_utils.controls import (
+    select_random_targets as _select_random_targets,
+)
+from jlens_reasoning.experiments_utils.controls import (
+    strict_percentile_gate as _strict_percentile_gate,
+)
+
+
+def derive_subseed(base_seed, layer_index, role):
+    return _derive_subseed(
+        base_seed,
+        layer_index,
+        role,
+        namespace=RANDOM_VECTOR_NAMESPACE,
+    )
+
+
+def matched_random_vectors(real_vectors, *, base_seed):
+    return _matched_random_vectors(
+        real_vectors,
+        base_seed=base_seed,
+        namespace=RANDOM_VECTOR_NAMESPACE,
+        norm_atol=1e-6,
+        norm_rtol=1e-5,
+        low_precision_norm_atol=1e-2,
+        low_precision_norm_rtol=1e-2,
+        max_attempts=1024,
+    )
+
+
+def strict_percentile_gate(real_score, control_scores, *, quantile=0.95):
+    return _strict_percentile_gate(
+        real_score,
+        control_scores,
+        quantile=quantile,
+        interpretation=PERCENTILE_INTERPRETATION,
+    )
+
+
+def select_random_targets(tokenizer, **kwargs):
+    return _select_random_targets(
+        tokenizer,
+        namespace=RANDOM_TARGET_NAMESPACE,
+        **kwargs,
+    )
 
 EXPECTED_CASE_KEYS = (
     "spider",
