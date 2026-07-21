@@ -95,7 +95,7 @@ does not download a model or benchmark.
 
 ## J-Lens read-and-change sanity experiment
 
-`notebooks/01_jlens_readout_sanity.ipynb` is the first model-backed experiment.
+`experiments/jlens_readout_sanity/jlens_readout_sanity.ipynb` is the first model-backed experiment.
 Open it through the IDE's Colab integration with a GPU runtime and run all cells.
 It uses the released `Qwen/Qwen3.5-4B` Jacobian lens, disables W&B, and writes
 results beneath:

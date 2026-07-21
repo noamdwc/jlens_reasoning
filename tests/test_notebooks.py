@@ -2,11 +2,12 @@ from pathlib import Path
 
 import nbformat
 
-NOTEBOOKS = [
+SHARED_NOTEBOOKS = [
     Path("notebooks/_template.ipynb"),
     Path("notebooks/00_environment_check.ipynb"),
-    Path("notebooks/01_jlens_readout_sanity.ipynb"),
 ]
+EXPERIMENT_NOTEBOOKS = sorted(Path("experiments").glob("*/*.ipynb"))
+NOTEBOOKS = [*SHARED_NOTEBOOKS, *EXPERIMENT_NOTEBOOKS]
 
 
 def load_notebook(path: Path) -> nbformat.NotebookNode:
@@ -49,13 +50,23 @@ def test_notebooks_use_the_colab_environment_module() -> None:
         assert "context = initialize_colab(" in source
 
 
+def test_experiment_notebooks_are_discovered_without_a_registry() -> None:
+    assert EXPERIMENT_NOTEBOOKS == [
+        Path("experiments/jlens_readout_sanity/jlens_readout_sanity.ipynb")
+    ]
+    assert not Path("notebooks/01_jlens_readout_sanity.ipynb").exists()
+
+
 def test_readout_sanity_notebook_has_pinned_gpu_workflow() -> None:
-    notebook = load_notebook(Path("notebooks/01_jlens_readout_sanity.ipynb"))
+    notebook = load_notebook(
+        Path("experiments/jlens_readout_sanity/jlens_readout_sanity.ipynb")
+    )
     source = "\n".join(cell.source for cell in notebook.cells)
 
     assert "initialize_colab(enable_wandb=False, require_cuda=True)" in source
     assert 'MODEL_NAME = "Qwen/Qwen3.5-4B"' not in source
-    assert "from jlens_reasoning.experiments.readout_sanity import" in source
+    assert "from experiments.jlens_readout_sanity.constants import" in source
+    assert "from experiments.jlens_readout_sanity.utils import" in source
     assert "JacobianLens.from_pretrained" in source
     assert "run_readout_sanity" in source
     assert "write_results" in source
