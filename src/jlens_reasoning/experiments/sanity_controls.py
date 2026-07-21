@@ -236,8 +236,7 @@ def build_random_target_exclusions(
         {int(token_id) for token_id in tokenizer.get_vocab().values()}
     )
     added_control_ids = {
-        int(token_id)
-        for token_id in getattr(tokenizer, "added_tokens_decoder", {})
+        int(token_id) for token_id in getattr(tokenizer, "added_tokens_decoder", {})
     }
     categories = {
         "sources": _encoded_ids(tokenizer, source_surfaces),

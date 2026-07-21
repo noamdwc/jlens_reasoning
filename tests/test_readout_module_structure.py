@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from jlens_reasoning.experiments import (
     intervention_utils,
     readout_cases,
@@ -52,6 +54,13 @@ def test_intervention_mechanics_are_reexported_from_facade() -> None:
 def test_negative_control_orchestration_has_a_focused_module() -> None:
     assert callable(readout_controls.run_negative_controls)
     assert (
-        readout_sanity._run_negative_controls
-        is readout_controls.run_negative_controls
+        readout_sanity._run_negative_controls is readout_controls.run_negative_controls
+    )
+
+
+def test_readout_sanity_is_a_small_stable_facade() -> None:
+    facade = Path(readout_sanity.__file__)
+    assert len(facade.read_text(encoding="utf-8").splitlines()) < 500
+    assert readout_sanity.run_readout_sanity.__module__ == (
+        "jlens_reasoning.experiments.readout_sanity"
     )
