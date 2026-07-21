@@ -12,8 +12,13 @@ from typing import Any
 import torch
 
 from jlens_reasoning.experiments.readout_cases import _concept_surfaces
-
-TOP_K = 25
+from jlens_reasoning.experiments.readout_constants import (
+    DEFAULT_MAX_FORMATTING_TOKENS,
+    DEFAULT_MINIMUM_IMPROVEMENTS,
+    TOP_K,
+    WORKSPACE_LAYER_LOWER_FRACTION,
+    WORKSPACE_LAYER_UPPER_FRACTION,
+)
 
 
 def find_last_subsequence(
@@ -95,7 +100,7 @@ def prepare_scoring_input(
     *,
     forward_next_token: Callable[[torch.Tensor], torch.Tensor],
     tokenizer: Any,
-    max_formatting_tokens: int = 2,
+    max_formatting_tokens: int = DEFAULT_MAX_FORMATTING_TOKENS,
 ) -> tuple[torch.Tensor, list[dict[str, Any]]]:
     scoring_input = input_ids
     prefix: list[dict[str, Any]] = []
@@ -119,7 +124,7 @@ def aggregate_capability_checks(
     read_results: Sequence[Mapping[str, Any]],
     swap_results: Sequence[Mapping[str, Any]],
     *,
-    minimum_improvements: int = 3,
+    minimum_improvements: int = DEFAULT_MINIMUM_IMPROVEMENTS,
 ) -> tuple[dict[str, bool], list[str]]:
     clean_baselines = all(
         bool(case["checks"]["baseline_top1"]) for case in read_results
@@ -166,8 +171,8 @@ def workspace_loading(
 
 
 def workspace_layers(n_layers: int, source_layers: Iterable[int]) -> list[int]:
-    lower = math.ceil(0.35 * n_layers)
-    upper = math.floor(0.80 * n_layers)
+    lower = math.ceil(WORKSPACE_LAYER_LOWER_FRACTION * n_layers)
+    upper = math.floor(WORKSPACE_LAYER_UPPER_FRACTION * n_layers)
     return [layer for layer in source_layers if lower <= layer <= upper]
 
 

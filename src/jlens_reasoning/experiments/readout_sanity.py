@@ -53,11 +53,20 @@ from jlens_reasoning.experiments.readout_cases import (
 from jlens_reasoning.experiments.readout_cases import (
     single_token_surface as single_token_surface,
 )
+from jlens_reasoning.experiments.readout_constants import (
+    DEFAULT_INTERVENTION_STRENGTHS,
+    DEFAULT_MINIMUM_IMPROVEMENTS,
+    LENS_FILE,
+    LENS_REPO,
+    LENS_REVISION,
+    MODEL_NAME,
+    SPIDER_READ_MAX_RANK,
+    TOP_K,
+)
 from jlens_reasoning.experiments.readout_controls import (
     run_negative_controls as _run_negative_controls,
 )
 from jlens_reasoning.experiments.readout_utils import (
-    TOP_K,
     aggregate_capability_checks,
     best_target_rank,
     positions_after_literal,
@@ -83,11 +92,6 @@ from jlens_reasoning.experiments.readout_utils import (
 from jlens_reasoning.experiments.sanity_controls import (
     aggregate_all_checks,
 )
-
-MODEL_NAME = "Qwen/Qwen3.5-4B"
-LENS_REPO = "neuronpedia/jacobian-lens"
-LENS_REVISION = "qwen-n1000"
-LENS_FILE = "qwen3.5-4b/jlens/Salesforce-wikitext/Qwen3.5-4B_jacobian_lens_n1000.pt"
 
 
 def _summarize_lens(
@@ -182,7 +186,9 @@ def analyze_case(
         jacobian_rank = summaries["jacobian_lens"]["best_rank"]
         logit_rank = summaries["logit_lens"]["best_rank"]
         diagnostics["paper_top1_hit"] = jacobian_rank == 1
-        checks["read_capability"] = jacobian_rank <= 5 and jacobian_rank < logit_rank
+        checks["read_capability"] = (
+            jacobian_rank <= SPIDER_READ_MAX_RANK and jacobian_rank < logit_rank
+        )
     return {
         "key": case.key,
         "prompt": case.prompt,
@@ -227,8 +233,8 @@ def run_readout_sanity(
     forward_next_token: Callable[[torch.Tensor], torch.Tensor],
     cases: Sequence[ReadoutCase] = READOUT_CASES,
     swap_cases: Sequence[SwapCase] = SWAP_CASES,
-    alphas: Sequence[float] = (1.0, 2.0),
-    minimum_improvements: int = 3,
+    alphas: Sequence[float] = DEFAULT_INTERVENTION_STRENGTHS,
+    minimum_improvements: int = DEFAULT_MINIMUM_IMPROVEMENTS,
     top_k: int = TOP_K,
 ) -> dict[str, Any]:
     validate_model_lens(model, lens)
