@@ -37,8 +37,7 @@ def test_artifact_coordinates_and_readout_policy_are_fixed() -> None:
     assert LENS_REPO == "neuronpedia/jacobian-lens"
     assert LENS_REVISION == "qwen-n1000"
     assert LENS_FILE == (
-        "qwen3.5-4b/jlens/Salesforce-wikitext/"
-        "Qwen3.5-4B_jacobian_lens_n1000.pt"
+        "qwen3.5-4b/jlens/Salesforce-wikitext/Qwen3.5-4B_jacobian_lens_n1000.pt"
     )
     assert TOP_K == 25
     assert WORKSPACE_LAYER_LOWER_FRACTION == 0.35

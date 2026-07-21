@@ -164,9 +164,7 @@ def summarize_wrong_concept(
             }
         )
     matched_mean = mean([float(case["log_rank_gain"]) for case in matched_cases])
-    mismatched_mean = mean(
-        [float(case["log_rank_gain"]) for case in mismatched_cases]
-    )
+    mismatched_mean = mean([float(case["log_rank_gain"]) for case in mismatched_cases])
     winning_case_count = sum(bool(case["matched_wins"]) for case in cases)
     aggregate_condition = matched_mean > mismatched_mean
     case_condition = winning_case_count >= required_winning_case_count
@@ -380,7 +378,9 @@ def run_negative_controls(
     mismatch_config = []
     for context in contexts:
         wrong_reference = (
-            france_reference if context.resolved.case.key == "spider" else spider_context
+            france_reference
+            if context.resolved.case.key == "spider"
+            else spider_context
         )
         intervened_logits = execute_intervention(
             model=model,

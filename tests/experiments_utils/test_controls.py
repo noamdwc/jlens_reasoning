@@ -112,9 +112,7 @@ def test_random_vectors_are_deterministic_and_order_independent() -> None:
         base_seed=SEEDS[0],
         **VECTOR_OPTIONS,
     )
-    different, _ = matched_random_vectors(
-        real, base_seed=SEEDS[1], **VECTOR_OPTIONS
-    )
+    different, _ = matched_random_vectors(real, base_seed=SEEDS[1], **VECTOR_OPTIONS)
 
     for layer in real:
         assert torch.equal(first[layer][0], second[layer][0])

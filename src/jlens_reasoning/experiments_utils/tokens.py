@@ -144,9 +144,7 @@ def next_token_payload(
     top1_id = int(normalized.argmax().item())
     return {
         "top1_id": top1_id,
-        "top1_token": tokenizer.decode(
-            [top1_id], clean_up_tokenization_spaces=False
-        ),
+        "top1_token": tokenizer.decode([top1_id], clean_up_tokenization_spaces=False),
         "target_rank": best_target_rank(normalized, target_ids),
         "top_tokens": top_tokens(normalized, tokenizer, k=top_k),
     }
@@ -164,9 +162,7 @@ def prepare_scoring_input(
     for _ in range(max_formatting_tokens):
         logits = forward_next_token(scoring_input)
         token_id = int(logits.argmax().item())
-        surface = tokenizer.decode(
-            [token_id], clean_up_tokenization_spaces=False
-        )
+        surface = tokenizer.decode([token_id], clean_up_tokenization_spaces=False)
         if surface.strip():
             break
         prefix.append({"token_id": token_id, "token": surface})

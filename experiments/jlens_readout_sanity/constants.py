@@ -5,10 +5,7 @@ from experiments.jlens_readout_sanity.types import ReadoutCase, SwapCase
 MODEL_NAME = "Qwen/Qwen3.5-4B"
 LENS_REPO = "neuronpedia/jacobian-lens"
 LENS_REVISION = "qwen-n1000"
-LENS_FILE = (
-    "qwen3.5-4b/jlens/Salesforce-wikitext/"
-    "Qwen3.5-4B_jacobian_lens_n1000.pt"
-)
+LENS_FILE = "qwen3.5-4b/jlens/Salesforce-wikitext/Qwen3.5-4B_jacobian_lens_n1000.pt"
 
 TOP_K = 25
 WORKSPACE_LAYER_LOWER_FRACTION = 0.35
@@ -91,9 +88,7 @@ NORM_RTOL = 1e-5
 LOW_PRECISION_NORM_ATOL = 1e-2
 LOW_PRECISION_NORM_RTOL = 1e-2
 PERCENTILE_QUANTILE = 0.95
-PERCENTILE_INTERPRETATION = (
-    "deterministic sanity check; not statistical significance"
-)
+PERCENTILE_INTERPRETATION = "deterministic sanity check; not statistical significance"
 WRONG_CONCEPT_REQUIRED_CASE_WINS = 4
 MAX_RANDOM_VECTOR_ATTEMPTS = 1024
 

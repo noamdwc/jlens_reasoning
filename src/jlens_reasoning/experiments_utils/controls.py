@@ -320,8 +320,7 @@ def select_random_targets(
         {
             int(token_id)
             for token_id in tokenizer.get_vocab().values()
-            if 0 <= int(token_id) < output_vocab_size
-            and int(token_id) not in excluded
+            if 0 <= int(token_id) < output_vocab_size and int(token_id) not in excluded
         }
     )
     if not eligible:

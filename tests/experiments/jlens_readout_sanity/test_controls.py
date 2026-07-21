@@ -80,6 +80,7 @@ def select_random_targets(tokenizer, **kwargs):
         **kwargs,
     )
 
+
 EXPECTED_CASE_KEYS = (
     "spider",
     "france_capital",
