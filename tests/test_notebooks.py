@@ -85,3 +85,29 @@ def test_readout_sanity_notebook_has_pinned_gpu_workflow() -> None:
     assert "causal_lm.generate" not in source
     assert "SimpleFactualEvaluator" not in source
     assert "max_new_tokens" not in source
+
+
+def test_readout_execution_saving_and_reporting_are_separate_cells() -> None:
+    notebook = load_notebook(
+        Path("experiments/jlens_readout_sanity/jlens_readout_sanity.ipynb")
+    )
+    cells_by_id = {cell.id: cell.source for cell in notebook.cells}
+
+    run_source = cells_by_id["run-experiment"]
+    assert "forward_next_token" in run_source
+    assert "run_readout_sanity" in run_source
+    assert "write_results" not in run_source
+    assert 'result["provenance"]' not in run_source
+
+    save_source = cells_by_id["save-result"]
+    assert 'result["provenance"]' in save_source
+    assert "write_results" in save_source
+    assert "run_readout_sanity" not in save_source
+    assert 'result["cases"]' not in save_source
+
+    report_source = cells_by_id["report-results"]
+    assert 'result["cases"]' in report_source
+    assert 'result["swaps"]' in report_source
+    assert 'result["controls"]' in report_source
+    assert "write_results" not in report_source
+    assert "run_readout_sanity" not in report_source
