@@ -89,6 +89,7 @@ from jlens_reasoning.experiments.readout_utils import (
 from jlens_reasoning.experiments.readout_utils import (
     write_results as write_results,
 )
+from jlens_reasoning.experiments.sanity_constants import CONTROL_ALPHA
 from jlens_reasoning.experiments.sanity_controls import (
     aggregate_all_checks,
 )
@@ -246,8 +247,11 @@ def run_readout_sanity(
         raise ValueError(
             "Negative controls require the exact five configured readout and swap cases"
         )
-    if 1.0 not in alphas:
-        raise ValueError("Negative controls require the existing alpha=1 intervention")
+    if CONTROL_ALPHA not in alphas:
+        raise ValueError(
+            "Negative controls require the existing "
+            f"alpha={CONTROL_ALPHA:g} intervention"
+        )
 
     read_results = [
         analyze_case(case, model=model, lens=lens, tokenizer=tokenizer, top_k=top_k)

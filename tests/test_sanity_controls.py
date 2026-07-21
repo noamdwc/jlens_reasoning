@@ -19,6 +19,7 @@ from jlens_reasoning.experiments.sanity_controls import (
     log_rank_gain,
     matched_random_vectors,
     percentile,
+    percentile_label,
     require_exact_cases,
     select_random_targets,
     strict_percentile_gate,
@@ -74,6 +75,11 @@ def test_log_rank_gain_requires_positive_ranks(
 def test_percentile_uses_documented_linear_interpolation() -> None:
     values = [float(value) for value in range(16)]
     assert percentile(values, 0.95) == pytest.approx(14.25)
+
+
+def test_percentile_label_is_derived_from_quantile() -> None:
+    assert percentile_label(0.95) == "95th-percentile"
+    assert percentile_label(0.9) == "90th-percentile"
 
 
 def test_percentile_gate_is_strict_and_not_significance_claim() -> None:

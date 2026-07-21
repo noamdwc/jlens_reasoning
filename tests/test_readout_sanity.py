@@ -7,6 +7,7 @@ import torch
 from torch import nn
 
 import jlens_reasoning.experiments.intervention_utils as intervention_utils_module
+import jlens_reasoning.experiments.readout_sanity as readout_sanity_module
 from jlens_reasoning.experiments.readout_sanity import (
     LENS_FILE,
     LENS_REPO,
@@ -1051,6 +1052,29 @@ def test_run_readout_sanity_rejects_missing_control_cases() -> None:
             swap_cases=(SwapCase("spider", " spider", " ant", ("6", "six")),),
             minimum_improvements=1,
             top_k=3,
+        )
+
+
+def test_run_requires_configured_control_alpha(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(readout_sanity_module, "CONTROL_ALPHA", 2.0, raising=False)
+    monkeypatch.setattr(
+        readout_sanity_module,
+        "resolve_swap_cases",
+        lambda *args, **kwargs: (),
+    )
+    model = SimpleNamespace(d_model=2, n_layers=4)
+    lens = SimpleNamespace(d_model=2, source_layers=(2,))
+
+    with pytest.raises(ValueError, match="alpha=2"):
+        readout_sanity_module.run_readout_sanity(
+            model=model,
+            lens=lens,
+            tokenizer=SimpleNamespace(),
+            unembedding_weight=torch.zeros(6, 2),
+            forward_next_token=lambda input_ids: torch.zeros(6),
+            alphas=(1.0,),
         )
 
 

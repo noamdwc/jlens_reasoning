@@ -57,6 +57,10 @@ def percentile(values: Sequence[float], quantile: float) -> float:
     return ordered[lower] + fraction * (ordered[upper] - ordered[lower])
 
 
+def percentile_label(quantile: float) -> str:
+    return f"{quantile * 100:g}th-percentile"
+
+
 def strict_percentile_gate(
     real_score: float,
     control_scores: Sequence[float],
@@ -359,7 +363,7 @@ def _control_failure(name: str, control: Mapping[str, Any]) -> str:
         return (
             "matched random vector control failed: real mean log-rank gain="
             f"{control.get('real_mean_log_rank_gain')!r}; required strictly > "
-            "95th-percentile sanity threshold="
+            f"{percentile_label(PERCENTILE_QUANTILE)} sanity threshold="
             f"{control.get('percentile_95_threshold')!r}"
         )
     if name == "wrong_concept":
@@ -376,7 +380,7 @@ def _control_failure(name: str, control: Mapping[str, Any]) -> str:
         return (
             "random target control failed: real mean log-rank gain="
             f"{control.get('real_mean_log_rank_gain')!r}; required strictly > "
-            "95th-percentile sanity threshold="
+            f"{percentile_label(PERCENTILE_QUANTILE)} sanity threshold="
             f"{control.get('percentile_95_threshold')!r}"
         )
     raise KeyError(f"Unknown control: {name}")

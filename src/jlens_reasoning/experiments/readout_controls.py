@@ -34,6 +34,7 @@ from jlens_reasoning.experiments.sanity_controls import (
     log_rank_gain,
     matched_random_vectors,
     mean,
+    percentile_label,
     require_exact_cases,
     select_random_targets,
     strict_percentile_gate,
@@ -319,7 +320,11 @@ def run_negative_controls(
             "logarithm": "natural",
             "aggregate": "arithmetic mean across exactly five cases",
             "expected_case_keys": list(expected_keys),
-            "percentile": "sort ascending; linear interpolation at (n - 1) * 0.95",
+            "percentile": (
+                "sort ascending; linear interpolation at "
+                f"(n - 1) * {PERCENTILE_QUANTILE:g} "
+                f"({percentile_label(PERCENTILE_QUANTILE)})"
+            ),
             "percentile_interpretation": PERCENTILE_INTERPRETATION,
             "comparison": "strictly greater than",
         },
