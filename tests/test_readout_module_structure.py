@@ -1,6 +1,7 @@
 from jlens_reasoning.experiments import (
     intervention_utils,
     readout_cases,
+    readout_controls,
     readout_sanity,
     readout_utils,
 )
@@ -46,3 +47,11 @@ def test_intervention_mechanics_are_reexported_from_facade() -> None:
     )
     for name in exported_names:
         assert getattr(readout_sanity, name) is getattr(intervention_utils, name)
+
+
+def test_negative_control_orchestration_has_a_focused_module() -> None:
+    assert callable(readout_controls.run_negative_controls)
+    assert (
+        readout_sanity._run_negative_controls
+        is readout_controls.run_negative_controls
+    )

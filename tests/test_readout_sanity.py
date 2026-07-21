@@ -7,7 +7,6 @@ import torch
 from torch import nn
 
 import jlens_reasoning.experiments.intervention_utils as intervention_utils_module
-import jlens_reasoning.experiments.readout_sanity as readout_sanity_module
 from jlens_reasoning.experiments.readout_sanity import (
     LENS_FILE,
     LENS_REPO,
@@ -830,11 +829,6 @@ def test_run_readout_sanity_integrates_all_controls_without_storing_logits(
 
     monkeypatch.setattr(
         intervention_utils_module,
-        "execute_intervention",
-        recording_execute_intervention,
-    )
-    monkeypatch.setattr(
-        readout_sanity_module,
         "execute_intervention",
         recording_execute_intervention,
     )
