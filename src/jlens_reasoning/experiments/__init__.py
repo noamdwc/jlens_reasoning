@@ -1,1 +1,0 @@
-"""Reproducible Jacobian Lens experiments."""
