@@ -235,10 +235,9 @@ def build_random_target_exclusions(
     vocabulary_ids = sorted(
         {int(token_id) for token_id in tokenizer.get_vocab().values()}
     )
-    added_special_ids = {
+    added_control_ids = {
         int(token_id)
-        for token_id, token in getattr(tokenizer, "added_tokens_decoder", {}).items()
-        if getattr(token, "special", False)
+        for token_id in getattr(tokenizer, "added_tokens_decoder", {})
     }
     categories = {
         "sources": _encoded_ids(tokenizer, source_surfaces),
@@ -249,7 +248,7 @@ def build_random_target_exclusions(
         "reserved_special": {
             int(token_id) for token_id in getattr(tokenizer, "all_special_ids", ())
         }
-        | added_special_ids,
+        | added_control_ids,
         "decoded_formatting": {
             token_id
             for token_id in vocabulary_ids

@@ -182,7 +182,10 @@ class VocabularyTokenizer:
             "New Yuan": [10, 11],
         }
         self.all_special_ids = [0, 13, 14]
-        self.added_tokens_decoder = {15: SimpleNamespace(special=True)}
+        self.added_tokens_decoder = {
+            15: SimpleNamespace(special=True),
+            16: SimpleNamespace(special=False),
+        }
         self.decode_calls: list[tuple[tuple[int, ...], bool]] = []
 
     def encode(self, text: str, *, add_special_tokens: bool = False) -> list[int]:
@@ -226,10 +229,10 @@ def test_random_target_exclusions_are_token_id_based_and_complete() -> None:
         "clean_answers": [5, 6],
         "intended_answers": [7, 10, 11],
         "formatting": [8],
-        "reserved_special": [0, 13, 14, 15],
+        "reserved_special": [0, 13, 14, 15, 16],
         "decoded_formatting": [8, 12],
         "existing_filter": [9],
-        "all": list(range(16)),
+        "all": list(range(17)),
     }
     assert all(cleanup is False for _, cleanup in tokenizer.decode_calls)
 
