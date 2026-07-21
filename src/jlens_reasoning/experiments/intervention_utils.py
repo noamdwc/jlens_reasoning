@@ -299,9 +299,7 @@ def _token_vectors_by_layer(
         layers=layers,
         token_id=target_token_id,
     )
-    return {
-        layer: (source_vectors[layer], target_vectors[layer]) for layer in layers
-    }
+    return {layer: (source_vectors[layer], target_vectors[layer]) for layer in layers}
 
 
 def _prepare_intervention_context(

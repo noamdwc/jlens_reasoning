@@ -34,9 +34,7 @@ NORM_RTOL = 1e-5
 LOW_PRECISION_NORM_ATOL = 1e-2
 LOW_PRECISION_NORM_RTOL = 1e-2
 PERCENTILE_QUANTILE = 0.95
-PERCENTILE_INTERPRETATION = (
-    "deterministic sanity check; not statistical significance"
-)
+PERCENTILE_INTERPRETATION = "deterministic sanity check; not statistical significance"
 WRONG_CONCEPT_REQUIRED_CASE_WINS = 4
 MAX_RANDOM_VECTOR_ATTEMPTS = 1024
 
