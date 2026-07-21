@@ -258,6 +258,24 @@ def summarize_swap_logits(
     }
 
 
+def _single_token_vectors_by_layer(
+    *,
+    lens: Any,
+    unembedding_weight: torch.Tensor,
+    layers: Sequence[int],
+    token_id: int,
+) -> dict[int, torch.Tensor]:
+    return {
+        layer: jlens_vector(
+            lens,
+            unembedding_weight,
+            layer=layer,
+            token_id=token_id,
+        )
+        for layer in layers
+    }
+
+
 def _token_vectors_by_layer(
     *,
     lens: Any,
@@ -266,22 +284,20 @@ def _token_vectors_by_layer(
     source_token_id: int,
     target_token_id: int,
 ) -> dict[int, tuple[torch.Tensor, torch.Tensor]]:
+    source_vectors = _single_token_vectors_by_layer(
+        lens=lens,
+        unembedding_weight=unembedding_weight,
+        layers=layers,
+        token_id=source_token_id,
+    )
+    target_vectors = _single_token_vectors_by_layer(
+        lens=lens,
+        unembedding_weight=unembedding_weight,
+        layers=layers,
+        token_id=target_token_id,
+    )
     return {
-        layer: (
-            jlens_vector(
-                lens,
-                unembedding_weight,
-                layer=layer,
-                token_id=source_token_id,
-            ),
-            jlens_vector(
-                lens,
-                unembedding_weight,
-                layer=layer,
-                token_id=target_token_id,
-            ),
-        )
-        for layer in layers
+        layer: (source_vectors[layer], target_vectors[layer]) for layer in layers
     }
 
 

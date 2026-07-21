@@ -241,15 +241,21 @@ def run_negative_controls(
     )
     random_target_results = []
     for selected in selected_targets:
+        target_vectors_by_layer = interventions._single_token_vectors_by_layer(
+            lens=lens,
+            unembedding_weight=unembedding_weight,
+            layers=layers,
+            token_id=selected["token_id"],
+        )
         target_cases = []
         for context in contexts:
-            vectors_by_layer = interventions._token_vectors_by_layer(
-                lens=lens,
-                unembedding_weight=unembedding_weight,
-                layers=layers,
-                source_token_id=context.resolved.source.token_id,
-                target_token_id=selected["token_id"],
-            )
+            vectors_by_layer = {
+                layer: (
+                    context.real_vectors_by_layer[layer][0],
+                    target_vectors_by_layer[layer],
+                )
+                for layer in layers
+            }
             intervened_logits = interventions.execute_intervention(
                 model=model,
                 forward_next_token=forward_next_token,

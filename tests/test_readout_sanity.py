@@ -811,6 +811,23 @@ def test_run_readout_sanity_integrates_all_controls_without_storing_logits(
     target_ids = dict(zip(key_by_id.values(), (5, 24, 25, 26, 27), strict=True))
     execution_calls: list[dict[str, object]] = []
     real_execute_intervention = intervention_utils_module.execute_intervention
+    vector_calls: list[dict[str, int]] = []
+    real_jlens_vector = intervention_utils_module.jlens_vector
+
+    def recording_jlens_vector(*args, **kwargs):
+        vector_calls.append(
+            {
+                "layer": kwargs["layer"],
+                "token_id": kwargs["token_id"],
+            }
+        )
+        return real_jlens_vector(*args, **kwargs)
+
+    monkeypatch.setattr(
+        intervention_utils_module,
+        "jlens_vector",
+        recording_jlens_vector,
+    )
 
     def recording_execute_intervention(**kwargs):
         execution_calls.append(
@@ -864,6 +881,15 @@ def test_run_readout_sanity_integrates_all_controls_without_storing_logits(
     )
 
     controls = result["controls"]
+    selected_target_ids = {
+        target["token_id"] for target in controls["random_target"]["targets"]
+    }
+    assert len(selected_target_ids) == len(CONTROL_SEEDS)
+    assert len(vector_calls) == 10 + len(CONTROL_SEEDS)
+    assert all(
+        sum(call["token_id"] == token_id for call in vector_calls) == 1
+        for token_id in selected_target_ids
+    )
     assert controls["seeds"] == list(CONTROL_SEEDS)
     assert set(controls) >= {
         "identity",
