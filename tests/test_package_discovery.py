@@ -1,8 +1,7 @@
-from pathlib import Path
 import tomllib
+from pathlib import Path
 
 from setuptools.config.expand import find_packages
-
 
 ROOT = Path(__file__).resolve().parents[1]
 
