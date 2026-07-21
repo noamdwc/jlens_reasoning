@@ -14,15 +14,21 @@ from jlens_reasoning.experiments.readout_cases import (
     SWAP_CASES,
     _concept_surfaces,
 )
-from jlens_reasoning.experiments.sanity_controls import (
+from jlens_reasoning.experiments.sanity_constants import (
+    CONTROL_ALPHA,
     CONTROL_CASE_KEYS,
     CONTROL_SEEDS,
     IDENTITY_ATOL,
     IDENTITY_RTOL,
+    LOW_PRECISION_NORM_ATOL,
+    LOW_PRECISION_NORM_RTOL,
     NORM_ATOL,
     NORM_RTOL,
     PERCENTILE_INTERPRETATION,
     PERCENTILE_QUANTILE,
+    WRONG_CONCEPT_REQUIRED_CASE_WINS,
+)
+from jlens_reasoning.experiments.sanity_controls import (
     build_random_target_exclusions,
     controls_passed,
     log_rank_gain,
@@ -52,7 +58,7 @@ def run_negative_controls(
     real_cases = []
     for result in swap_results:
         alpha_one = interventions._intervention_payload_at_alpha(
-            result["interventions"], 1.0
+            result["interventions"], CONTROL_ALPHA
         )
         real_cases.append(
             {
@@ -85,7 +91,7 @@ def run_negative_controls(
     identity_passed_count = sum(bool(case["passed"]) for case in identity_cases)
     identity = {
         "configuration": {
-            "alpha": 1.0,
+            "alpha": CONTROL_ALPHA,
             "operation": "source concept to the same source concept",
             "workspace_layers": list(layers),
             "activation_positions": "all",
@@ -114,7 +120,7 @@ def run_negative_controls(
                 forward_next_token=forward_next_token,
                 scoring_input=context.scoring_input,
                 vectors_by_layer=random_vectors,
-                alpha=1.0,
+                alpha=CONTROL_ALPHA,
             )
             seed_cases.append(
                 interventions._rank_gain_payload(context, intervened_logits)
@@ -137,7 +143,7 @@ def run_negative_controls(
     random_vector_gate = strict_percentile_gate(real_mean, random_vector_means)
     matched_random_vector = {
         "configuration": {
-            "alpha": 1.0,
+            "alpha": CONTROL_ALPHA,
             "workspace_layers": list(layers),
             "activation_positions": "all",
             "generation_device": "cpu",
@@ -169,7 +175,7 @@ def run_negative_controls(
             forward_next_token=forward_next_token,
             scoring_input=context.scoring_input,
             vectors_by_layer=wrong_reference.real_vectors_by_layer,
-            alpha=1.0,
+            alpha=CONTROL_ALPHA,
         )
         mismatched_cases.append(
             interventions._rank_gain_payload(context, intervened_logits)
@@ -186,10 +192,11 @@ def run_negative_controls(
     wrong_summary = summarize_wrong_concept(
         real_cases,
         mismatched_cases,
+        required_winning_case_count=WRONG_CONCEPT_REQUIRED_CASE_WINS,
     )
     wrong_concept = {
         "configuration": {
-            "alpha": 1.0,
+            "alpha": CONTROL_ALPHA,
             "workspace_layers": list(layers),
             "activation_positions": "all",
             "mismatches": mismatch_config,
@@ -261,7 +268,7 @@ def run_negative_controls(
                 forward_next_token=forward_next_token,
                 scoring_input=context.scoring_input,
                 vectors_by_layer=vectors_by_layer,
-                alpha=1.0,
+                alpha=CONTROL_ALPHA,
             )
             target_cases.append(
                 interventions._rank_gain_payload(context, intervened_logits)
@@ -283,7 +290,7 @@ def run_negative_controls(
     random_target_gate = strict_percentile_gate(real_mean, random_target_means)
     random_target = {
         "configuration": {
-            "alpha": 1.0,
+            "alpha": CONTROL_ALPHA,
             "workspace_layers": list(layers),
             "activation_positions": "all",
             "selection": "SHA-256 index into ascending eligible token IDs",
@@ -318,7 +325,7 @@ def run_negative_controls(
         },
         "thresholds": {
             "percentile_quantile": PERCENTILE_QUANTILE,
-            "wrong_concept_required_case_wins": 4,
+            "wrong_concept_required_case_wins": WRONG_CONCEPT_REQUIRED_CASE_WINS,
         },
         "tolerances": {
             "identity_logits": {
@@ -330,8 +337,8 @@ def run_negative_controls(
                 "rtol": NORM_RTOL,
             },
             "random_vector_norm_low_precision": {
-                "atol": 1e-2,
-                "rtol": 1e-2,
+                "atol": LOW_PRECISION_NORM_ATOL,
+                "rtol": LOW_PRECISION_NORM_RTOL,
             },
         },
         **control_results,

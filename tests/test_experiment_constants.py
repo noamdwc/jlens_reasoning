@@ -4,6 +4,8 @@ from jlens_reasoning.experiments import (
     readout_constants,
     readout_sanity,
     readout_utils,
+    sanity_constants,
+    sanity_controls,
 )
 
 
@@ -40,3 +42,38 @@ def test_readout_constants_have_focused_ownership_and_legacy_aliases() -> None:
         run_defaults["minimum_improvements"].default
         is readout_constants.DEFAULT_MINIMUM_IMPROVEMENTS
     )
+
+
+def test_sanity_constants_have_focused_ownership_and_legacy_aliases() -> None:
+    assert len(sanity_constants.CONTROL_SEEDS) == 16
+    assert sanity_constants.CONTROL_CASE_KEYS == (
+        "spider",
+        "france_capital",
+        "france_language",
+        "france_continent",
+        "france_currency",
+    )
+    assert sanity_constants.IDENTITY_ATOL == 1e-6
+    assert sanity_constants.IDENTITY_RTOL == 1e-5
+    assert sanity_constants.NORM_ATOL == 1e-6
+    assert sanity_constants.NORM_RTOL == 1e-5
+    assert sanity_constants.LOW_PRECISION_NORM_ATOL == 1e-2
+    assert sanity_constants.LOW_PRECISION_NORM_RTOL == 1e-2
+    assert sanity_constants.PERCENTILE_QUANTILE == 0.95
+    assert sanity_constants.CONTROL_ALPHA == 1.0
+    assert sanity_constants.WRONG_CONCEPT_REQUIRED_CASE_WINS == 4
+    assert sanity_constants.MAX_RANDOM_VECTOR_ATTEMPTS == 1024
+
+    legacy_names = (
+        "CONTROL_SEEDS",
+        "CONTROL_CASE_KEYS",
+        "IDENTITY_ATOL",
+        "IDENTITY_RTOL",
+        "NORM_ATOL",
+        "NORM_RTOL",
+        "PERCENTILE_QUANTILE",
+        "PERCENTILE_INTERPRETATION",
+        "CONTROL_CHECK_MAP",
+    )
+    for name in legacy_names:
+        assert getattr(sanity_controls, name) is getattr(sanity_constants, name)

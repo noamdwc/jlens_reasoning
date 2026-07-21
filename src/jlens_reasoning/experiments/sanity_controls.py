@@ -9,42 +9,26 @@ from typing import Any
 
 import torch
 
-CONTROL_SEEDS = (
-    11,
-    29,
-    47,
-    71,
-    101,
-    131,
-    167,
-    199,
-    239,
-    281,
-    331,
-    379,
-    431,
-    487,
-    547,
-    607,
+from jlens_reasoning.experiments.sanity_constants import (
+    CONTROL_CASE_KEYS,
+    CONTROL_CHECK_MAP,
+    LOW_PRECISION_NORM_ATOL,
+    LOW_PRECISION_NORM_RTOL,
+    MAX_RANDOM_VECTOR_ATTEMPTS,
+    NORM_ATOL,
+    NORM_RTOL,
+    PERCENTILE_INTERPRETATION,
+    PERCENTILE_QUANTILE,
+    WRONG_CONCEPT_REQUIRED_CASE_WINS,
 )
-CONTROL_CASE_KEYS = (
-    "spider",
-    "france_capital",
-    "france_language",
-    "france_continent",
-    "france_currency",
+from jlens_reasoning.experiments.sanity_constants import (
+    CONTROL_SEEDS as CONTROL_SEEDS,
 )
-IDENTITY_ATOL = 1e-6
-IDENTITY_RTOL = 1e-5
-NORM_ATOL = 1e-6
-NORM_RTOL = 1e-5
-PERCENTILE_QUANTILE = 0.95
-PERCENTILE_INTERPRETATION = "deterministic sanity check; not statistical significance"
-CONTROL_CHECK_MAP = (
-    ("identity", "identity_control"),
-    ("matched_random_vector", "matched_random_vector_control"),
-    ("wrong_concept", "wrong_concept_control"),
-    ("random_target", "random_target_control"),
+from jlens_reasoning.experiments.sanity_constants import (
+    IDENTITY_ATOL as IDENTITY_ATOL,
+)
+from jlens_reasoning.experiments.sanity_constants import (
+    IDENTITY_RTOL as IDENTITY_RTOL,
 )
 
 
@@ -114,7 +98,7 @@ def _matched_random_vector(
     generator = torch.Generator(device="cpu")
     generator.manual_seed(derive_subseed(base_seed, layer_index, role))
     atol, rtol = _norm_tolerances(real_vector.dtype)
-    for _ in range(1024):
+    for _ in range(MAX_RANDOM_VECTOR_ATTEMPTS):
         random_vector = torch.randn(
             real_cpu.shape,
             generator=generator,
@@ -140,13 +124,14 @@ def _matched_random_vector(
             return converted
 
     raise RuntimeError(
-        "Unable to generate a finite norm-matched random vector after conversion"
+        "Unable to generate a finite norm-matched random vector after "
+        f"{MAX_RANDOM_VECTOR_ATTEMPTS} conversion attempts"
     )
 
 
 def _norm_tolerances(dtype: torch.dtype) -> tuple[float, float]:
     if dtype in {torch.float16, torch.bfloat16}:
-        return 1e-2, 1e-2
+        return LOW_PRECISION_NORM_ATOL, LOW_PRECISION_NORM_RTOL
     return NORM_ATOL, NORM_RTOL
 
 
@@ -315,7 +300,7 @@ def summarize_wrong_concept(
     matched_cases: Sequence[Mapping[str, Any]],
     mismatched_cases: Sequence[Mapping[str, Any]],
     *,
-    required_winning_case_count: int = 4,
+    required_winning_case_count: int = WRONG_CONCEPT_REQUIRED_CASE_WINS,
 ) -> dict[str, Any]:
     require_exact_cases(matched_cases)
     require_exact_cases(mismatched_cases)
@@ -384,7 +369,8 @@ def _control_failure(name: str, control: Mapping[str, Any]) -> str:
             f"{control.get('mismatched_mean_log_rank_gain')!r}; matched wins="
             f"{control.get('matched_winning_case_count')!r}; required matched "
             "mean > mismatched mean and at least "
-            f"{control.get('required_winning_case_count', 4)} strict case wins"
+            f"{control.get('required_winning_case_count', WRONG_CONCEPT_REQUIRED_CASE_WINS)} "
+            "strict case wins"
         )
     if name == "random_target":
         return (

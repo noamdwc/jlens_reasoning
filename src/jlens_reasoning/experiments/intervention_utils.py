@@ -25,9 +25,12 @@ from jlens_reasoning.experiments.readout_utils import (
     top_tokens,
     workspace_loading,
 )
-from jlens_reasoning.experiments.sanity_controls import (
+from jlens_reasoning.experiments.sanity_constants import (
+    CONTROL_ALPHA,
     IDENTITY_ATOL,
     IDENTITY_RTOL,
+)
+from jlens_reasoning.experiments.sanity_controls import (
     log_rank_gain,
 )
 
@@ -186,7 +189,7 @@ def analyze_identity_case(
         forward_next_token=forward_next_token,
         scoring_input=scoring_input,
         vectors_by_layer=identity_vectors,
-        alpha=1.0,
+        alpha=CONTROL_ALPHA,
     )
     clean = clean_logits.detach().float().cpu()
     intervened = intervened_logits.detach().float().cpu()
@@ -208,7 +211,7 @@ def analyze_identity_case(
     return {
         "key": key,
         "workspace_layers": sorted(identity_vectors),
-        "alpha": 1.0,
+        "alpha": CONTROL_ALPHA,
         "atol": IDENTITY_ATOL,
         "rtol": IDENTITY_RTOL,
         "clean_top1_id": clean_top1_id,
