@@ -6,6 +6,7 @@ import pytest
 import torch
 from torch import nn
 
+import jlens_reasoning.experiments.intervention_utils as intervention_utils_module
 import jlens_reasoning.experiments.readout_sanity as readout_sanity_module
 from jlens_reasoning.experiments.readout_sanity import (
     LENS_FILE,
@@ -810,7 +811,7 @@ def test_run_readout_sanity_integrates_all_controls_without_storing_logits(
     clean_ids = dict(zip(key_by_id.values(), (4, 20, 21, 22, 23), strict=True))
     target_ids = dict(zip(key_by_id.values(), (5, 24, 25, 26, 27), strict=True))
     execution_calls: list[dict[str, object]] = []
-    real_execute_intervention = readout_sanity_module.execute_intervention
+    real_execute_intervention = intervention_utils_module.execute_intervention
 
     def recording_execute_intervention(**kwargs):
         execution_calls.append(
@@ -827,6 +828,11 @@ def test_run_readout_sanity_integrates_all_controls_without_storing_logits(
         )
         return real_execute_intervention(**kwargs)
 
+    monkeypatch.setattr(
+        intervention_utils_module,
+        "execute_intervention",
+        recording_execute_intervention,
+    )
     monkeypatch.setattr(
         readout_sanity_module,
         "execute_intervention",

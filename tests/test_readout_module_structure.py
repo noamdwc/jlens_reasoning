@@ -1,4 +1,9 @@
-from jlens_reasoning.experiments import readout_cases, readout_sanity, readout_utils
+from jlens_reasoning.experiments import (
+    intervention_utils,
+    readout_cases,
+    readout_sanity,
+    readout_utils,
+)
 
 
 def test_case_definitions_live_in_focused_module_and_are_reexported() -> None:
@@ -26,3 +31,18 @@ def test_stateless_utilities_are_reexported_from_facade() -> None:
     )
     for name in exported_names:
         assert getattr(readout_sanity, name) is getattr(readout_utils, name)
+
+
+def test_intervention_mechanics_are_reexported_from_facade() -> None:
+    exported_names = (
+        "LensCoordinateSwapper",
+        "jlens_vector",
+        "coordinate_swap",
+        "execute_intervention",
+        "analyze_identity_case",
+        "summarize_swap_logits",
+        "analyze_swap_case",
+        "_token_vectors_by_layer",
+    )
+    for name in exported_names:
+        assert getattr(readout_sanity, name) is getattr(intervention_utils, name)
