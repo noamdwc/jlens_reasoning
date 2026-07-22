@@ -16,6 +16,7 @@ from experiments.jlens_readout_sanity.constants import (
     RANDOM_VECTOR_NAMESPACE,
 )
 from experiments.jlens_readout_sanity.controls import (
+    _wrong_reference_contexts,
     aggregate_all_checks,
     controls_passed,
     require_exact_cases,
@@ -88,6 +89,36 @@ EXPECTED_CASE_KEYS = (
     "france_continent",
     "france_currency",
 )
+
+
+def _direction_context(key: str, source_id: int, target_id: int) -> SimpleNamespace:
+    return SimpleNamespace(
+        resolved=SimpleNamespace(
+            case=SimpleNamespace(key=key),
+            source=SimpleNamespace(token_id=source_id),
+            target=SimpleNamespace(token_id=target_id),
+        )
+    )
+
+
+def test_wrong_concept_references_derive_from_directions_not_case_names() -> None:
+    first = _direction_context("alpha", 1, 2)
+    second = _direction_context("beta", 3, 4)
+    third = _direction_context("gamma", 3, 4)
+
+    references = _wrong_reference_contexts((first, second, third))
+
+    assert references == (second, first, first)
+
+
+def test_wrong_concept_requires_two_distinct_directions() -> None:
+    contexts = (
+        _direction_context("alpha", 1, 2),
+        _direction_context("beta", 1, 2),
+    )
+
+    with pytest.raises(ValueError, match="two distinct swap directions"):
+        _wrong_reference_contexts(contexts)
 
 
 def test_shared_control_definitions_are_fixed() -> None:
@@ -360,7 +391,7 @@ def _gain_cases(gains: list[float]) -> list[dict[str, float | str]]:
 def test_exact_case_validation_rejects_missing_duplicate_extra_and_order() -> None:
     complete = _gain_cases([1.0] * 5)
     assert CONTROL_CASE_KEYS == EXPECTED_CASE_KEYS
-    require_exact_cases(complete)
+    require_exact_cases(complete, expected_keys=EXPECTED_CASE_KEYS)
 
     malformed = (
         complete[:-1],
@@ -370,13 +401,14 @@ def test_exact_case_validation_rejects_missing_duplicate_extra_and_order() -> No
     )
     for cases in malformed:
         with pytest.raises(ValueError, match="exact case keys"):
-            require_exact_cases(cases)
+            require_exact_cases(cases, expected_keys=EXPECTED_CASE_KEYS)
 
 
 def test_wrong_concept_requires_aggregate_and_four_strict_case_wins() -> None:
     result = summarize_wrong_concept(
         _gain_cases([1.0, 1.0, 1.0, 1.0, 0.0]),
         _gain_cases([0.0, 0.0, 0.0, 0.0, 0.0]),
+        expected_keys=EXPECTED_CASE_KEYS,
     )
 
     assert result["matched_mean_log_rank_gain"] == pytest.approx(0.8)
@@ -391,6 +423,7 @@ def test_wrong_concept_ties_do_not_count_and_three_wins_fail() -> None:
     result = summarize_wrong_concept(
         _gain_cases([1.0, 1.0, 1.0, 0.0, 0.0]),
         _gain_cases([0.0, 0.0, 0.0, 0.0, -1.0]),
+        expected_keys=EXPECTED_CASE_KEYS,
     )
 
     assert [case["matched_wins"] for case in result["cases"]] == [
@@ -405,6 +438,7 @@ def test_wrong_concept_ties_do_not_count_and_three_wins_fail() -> None:
     three_wins = summarize_wrong_concept(
         _gain_cases([1.0, 1.0, 1.0, 0.0, 0.0]),
         _gain_cases([0.0, 0.0, 0.0, 0.0, 0.0]),
+        expected_keys=EXPECTED_CASE_KEYS,
     )
     assert three_wins["matched_winning_case_count"] == 3
     assert three_wins["passed"] is False

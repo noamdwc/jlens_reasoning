@@ -10,8 +10,8 @@ import torch
 
 from experiments.jlens_readout_sanity.constants import (
     CONTROL_ALPHA,
-    CONTROL_CASE_KEYS,
     CONTROL_CHECK_MAP,
+    CONTROL_REQUIRED_CASE_COUNT,
     CONTROL_SEEDS,
     IDENTITY_ATOL,
     IDENTITY_RTOL,
@@ -24,8 +24,6 @@ from experiments.jlens_readout_sanity.constants import (
     PERCENTILE_QUANTILE,
     RANDOM_TARGET_NAMESPACE,
     RANDOM_VECTOR_NAMESPACE,
-    READOUT_CASES,
-    SWAP_CASES,
     WRONG_CONCEPT_REQUIRED_CASE_WINS,
 )
 from experiments.jlens_readout_sanity.types import InterventionContext
@@ -136,20 +134,54 @@ def _intervention_payload_at_alpha(
     return matches[0]
 
 
-def require_exact_cases(results: Sequence[Mapping[str, Any]]) -> None:
-    """Require the experiment's fixed five case keys in their fixed order."""
-    require_exact_case_keys(results, expected_keys=CONTROL_CASE_KEYS)
+def require_exact_cases(
+    results: Sequence[Mapping[str, Any]],
+    *,
+    expected_keys: Sequence[str],
+) -> None:
+    """Require caller-owned case keys in their supplied order."""
+    require_exact_case_keys(results, expected_keys=expected_keys)
+
+
+def _wrong_reference_contexts(
+    contexts: Sequence[InterventionContext],
+) -> tuple[InterventionContext, ...]:
+    references = []
+    for context in contexts:
+        direction = (
+            context.resolved.source.token_id,
+            context.resolved.target.token_id,
+        )
+        reference = next(
+            (
+                candidate
+                for candidate in contexts
+                if (
+                    candidate.resolved.source.token_id,
+                    candidate.resolved.target.token_id,
+                )
+                != direction
+            ),
+            None,
+        )
+        if reference is None:
+            raise ValueError(
+                "Wrong-concept control requires at least two distinct swap directions"
+            )
+        references.append(reference)
+    return tuple(references)
 
 
 def summarize_wrong_concept(
     matched_cases: Sequence[Mapping[str, Any]],
     mismatched_cases: Sequence[Mapping[str, Any]],
     *,
+    expected_keys: Sequence[str],
     required_winning_case_count: int = WRONG_CONCEPT_REQUIRED_CASE_WINS,
 ) -> dict[str, Any]:
     """Compare matched direction swaps against deliberately mismatched swaps."""
-    require_exact_cases(matched_cases)
-    require_exact_cases(mismatched_cases)
+    require_exact_cases(matched_cases, expected_keys=expected_keys)
+    require_exact_cases(mismatched_cases, expected_keys=expected_keys)
     cases = []
     for matched, mismatched in zip(matched_cases, mismatched_cases, strict=True):
         matched_gain = float(matched["log_rank_gain"])
@@ -255,9 +287,13 @@ def run_negative_controls(
     layers: Sequence[int],
 ) -> dict[str, Any]:
     """Run the four fixed deterministic controls and assemble their report."""
-    require_exact_cases([{"key": context.resolved.case.key} for context in contexts])
-    expected_keys = CONTROL_CASE_KEYS
-    require_exact_cases(swap_results)
+    if len(contexts) != CONTROL_REQUIRED_CASE_COUNT:
+        raise ValueError(
+            f"Negative controls require exactly {CONTROL_REQUIRED_CASE_COUNT} cases"
+        )
+    expected_keys = tuple(context.resolved.case.key for context in contexts)
+    wrong_references = _wrong_reference_contexts(contexts)
+    require_exact_cases(swap_results, expected_keys=expected_keys)
     real_cases = []
     for result in swap_results:
         alpha_one = _intervention_payload_at_alpha(
@@ -275,7 +311,7 @@ def run_negative_controls(
                 ),
             }
         )
-    require_exact_cases(real_cases)
+    require_exact_cases(real_cases, expected_keys=expected_keys)
     real_mean = mean([case["log_rank_gain"] for case in real_cases])
 
     identity_cases = [
@@ -290,7 +326,7 @@ def run_negative_controls(
         )
         for context in contexts
     ]
-    require_exact_cases(identity_cases)
+    require_exact_cases(identity_cases, expected_keys=expected_keys)
     identity_passed_count = sum(bool(case["passed"]) for case in identity_cases)
     identity = {
         "configuration": {
@@ -333,7 +369,7 @@ def run_negative_controls(
             )
             seed_cases.append(_rank_gain_payload(context, intervened_logits))
             del intervened_logits, random_vectors
-        require_exact_cases(seed_cases)
+        require_exact_cases(seed_cases, expected_keys=expected_keys)
         random_vector_seed_results.append(
             {
                 "seed": seed,
@@ -371,17 +407,9 @@ def run_negative_controls(
         "passed": random_vector_gate["passed"],
     }
 
-    contexts_by_key = {context.resolved.case.key: context for context in contexts}
-    spider_context = contexts_by_key["spider"]
-    france_reference = contexts_by_key["france_capital"]
     mismatched_cases = []
     mismatch_config = []
-    for context in contexts:
-        wrong_reference = (
-            france_reference
-            if context.resolved.case.key == "spider"
-            else spider_context
-        )
+    for context, wrong_reference in zip(contexts, wrong_references, strict=True):
         intervened_logits = execute_intervention(
             model=model,
             forward_next_token=forward_next_token,
@@ -398,10 +426,11 @@ def run_negative_controls(
             }
         )
         del intervened_logits
-    require_exact_cases(mismatched_cases)
+    require_exact_cases(mismatched_cases, expected_keys=expected_keys)
     wrong_summary = summarize_wrong_concept(
         real_cases,
         mismatched_cases,
+        expected_keys=expected_keys,
         required_winning_case_count=WRONG_CONCEPT_REQUIRED_CASE_WINS,
     )
     wrong_concept = {
@@ -418,24 +447,24 @@ def run_negative_controls(
 
     source_surfaces = tuple(
         surface
-        for case in SWAP_CASES
-        for surface in concept_surfaces(case.source_surface.strip())
+        for context in contexts
+        for surface in concept_surfaces(context.resolved.case.source_surface.strip())
     )
     target_surfaces = tuple(
         surface
-        for case in SWAP_CASES
-        for surface in concept_surfaces(case.target_surface.strip())
+        for context in contexts
+        for surface in concept_surfaces(context.resolved.case.target_surface.strip())
     )
     clean_answer_surfaces = tuple(
         surface
-        for case in READOUT_CASES
-        for answer in case.expected_answers
+        for context in contexts
+        for answer in context.resolved.read_case.expected_answers
         for surface in concept_surfaces(answer)
     )
     intended_answer_surfaces = tuple(
         surface
-        for case in SWAP_CASES
-        for answer in case.target_answers
+        for context in contexts
+        for answer in context.resolved.case.target_answers
         for surface in concept_surfaces(answer)
     )
     formatting_token_ids = tuple(
@@ -483,7 +512,7 @@ def run_negative_controls(
             )
             target_cases.append(_rank_gain_payload(context, intervened_logits))
             del intervened_logits, vectors_by_layer
-        require_exact_cases(target_cases)
+        require_exact_cases(target_cases, expected_keys=expected_keys)
         random_target_results.append(
             {
                 **selected,
@@ -531,7 +560,7 @@ def run_negative_controls(
         "definitions": {
             "log_rank_gain": "log(clean_rank) - log(intervened_rank)",
             "logarithm": "natural",
-            "aggregate": "arithmetic mean across exactly five cases",
+            "aggregate": (f"arithmetic mean across exactly {len(expected_keys)} cases"),
             "expected_case_keys": list(expected_keys),
             "percentile": (
                 "sort ascending; linear interpolation at "
