@@ -201,6 +201,7 @@ def _readout_diagnostics(
     *,
     top_k: int,
 ) -> dict[str, object]:
+    """Collect per-layer target ranks and top-token diagnostics."""
     return {
         str(layer): tuple(
             {
@@ -493,10 +494,10 @@ def run_experiment(
     top_k: int = TOP_K,
 ) -> ExperimentResult:
     """Run the complete configured J-Lens readout sanity experiment."""
-    from experiments.jlens_readout_sanity.control_analysis import (
+    from experiments.jlens_readout_sanity.controls import (
         aggregate_all_checks,
+        run_control_suite,
     )
-    from experiments.jlens_readout_sanity.controls import run_control_suite
 
     validate_cases(cases)
     validate_model_lens(runtime.model, runtime.lens)

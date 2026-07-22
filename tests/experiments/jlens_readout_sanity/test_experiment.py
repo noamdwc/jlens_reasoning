@@ -5,13 +5,21 @@ import pytest
 import torch
 from torch import nn
 
+import experiments.jlens_readout_sanity.controls as controls_module
+import experiments.jlens_readout_sanity.experiment as experiment_module
 from experiments.jlens_readout_sanity.experiment import (
     Case,
+    CaseResult,
     ExperimentRuntime,
+    InterventionCondition,
+    InterventionResult,
     InterventionSpec,
+    LensLocation,
+    ReadoutResult,
     ReadoutSpec,
     generate_and_evaluate,
     run_case,
+    run_experiment,
     run_intervention,
     run_readout,
     validate_cases,
@@ -20,7 +28,11 @@ from jlens_reasoning.evaluation import (
     AnswerStatus,
     GenerationStatus,
     ModelOutput,
+    NextTokenEvaluation,
+    RankComparison,
+    evaluate,
 )
+from jlens_reasoning.experiments_utils.tokens import TokenVariant
 
 
 def spider_case() -> Case:
@@ -266,3 +278,138 @@ def test_run_case_executes_only_the_operations_present_on_the_case() -> None:
     assert result.readout is not None
     assert result.intervention is not None
     assert prepared is not None
+
+
+def test_run_experiment_validates_control_alpha_before_model_forwards() -> None:
+    generation_calls: list[str] = []
+    runtime = ExperimentRuntime(
+        model=SimpleNamespace(n_layers=4, d_model=2),
+        lens=SimpleNamespace(source_layers=[2], d_model=2),
+        tokenizer=OperationTokenizer(),
+        unembedding_weight=torch.zeros(6, 2),
+        forward_next_token=lambda _: pytest.fail("model forward should not run"),
+        generate_output=lambda prompt: (
+            generation_calls.append(prompt) or ModelOutput("8")
+        ),
+    )
+    case = Case(
+        "spider",
+        "prompt",
+        ("8",),
+        intervention=InterventionSpec(
+            " spider",
+            " ant",
+            ("6",),
+            alphas=(2.0,),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="control alpha"):
+        run_experiment(cases=(case,), runtime=runtime)
+
+    assert generation_calls == []
+
+
+def test_run_experiment_aggregates_three_improvements_and_one_top1(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cases = tuple(
+        Case(
+            f"case-{index}",
+            "prompt",
+            ("8",),
+            readout=(
+                ReadoutSpec(("spider",), require_capability_gate=True)
+                if index == 0
+                else None
+            ),
+            intervention=InterventionSpec(" spider", " ant", ("6",)),
+        )
+        for index in range(5)
+    )
+    runtime = ExperimentRuntime(
+        model=SimpleNamespace(n_layers=4, d_model=2),
+        lens=SimpleNamespace(source_layers=[2], d_model=2),
+        tokenizer=OperationTokenizer(),
+        unembedding_weight=torch.zeros(6, 2),
+        forward_next_token=lambda _: torch.zeros(6),
+        generate_output=lambda _: ModelOutput("8"),
+    )
+
+    def fake_run_case(
+        case: Case,
+        runtime: ExperimentRuntime,
+        *,
+        layers: tuple[int, ...],
+        top_k: int,
+    ) -> tuple[CaseResult, object]:
+        del runtime, layers, top_k
+        index = int(case.key.rsplit("-", 1)[1])
+        candidate_rank = (1, 5, 5, 10, 10)[index]
+        clean = NextTokenEvaluation(("6",), (5,), 4, "8", 10, ())
+        candidate = NextTokenEvaluation(
+            ("6",),
+            (5,),
+            5 if candidate_rank == 1 else 4,
+            "6" if candidate_rank == 1 else "8",
+            candidate_rank,
+            (),
+        )
+        comparison = RankComparison(
+            10,
+            candidate_rank,
+            10 - candidate_rank,
+            0.0,
+            candidate_rank < 10,
+            candidate_rank == 1,
+        )
+        intervention = InterventionResult(
+            TokenVariant(2, " spider"),
+            TokenVariant(3, " ant"),
+            (),
+            (2,),
+            clean,
+            (InterventionCondition(1.0, candidate, comparison),),
+        )
+        readout = (
+            ReadoutResult(
+                LensLocation(1, 2, 0),
+                LensLocation(2, 2, 0),
+                (2,),
+                (0,),
+                None,
+                True,
+                True,
+                {},
+            )
+            if case.readout is not None
+            else None
+        )
+        result = CaseResult(
+            case,
+            evaluate(ModelOutput("8"), case.expected_answers),
+            readout,
+            intervention,
+        )
+        return result, object()
+
+    passing_controls = {
+        "identity": {"passed": True},
+        "matched_random_vector": {"passed": True},
+        "wrong_concept": {"passed": True},
+        "random_target": {"passed": True},
+    }
+    monkeypatch.setattr(experiment_module, "run_case", fake_run_case)
+    monkeypatch.setattr(
+        controls_module,
+        "run_control_suite",
+        lambda **_: passing_controls,
+    )
+
+    result = run_experiment(cases=cases, runtime=runtime)
+
+    assert result.checks["clean_baselines"] is True
+    assert result.checks["spider_read"] is True
+    assert result.checks["swap_rank_improvements"] is True
+    assert result.checks["swap_target_top1"] is True
+    assert result.passed

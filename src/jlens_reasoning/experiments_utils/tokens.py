@@ -8,8 +8,6 @@ from typing import Any
 
 import torch
 
-from jlens_reasoning.evaluation_utils import best_token_rank, top_token_values
-
 
 @dataclass(frozen=True, slots=True)
 class TokenVariant:
@@ -99,39 +97,6 @@ def positions_from_literal(
     ]
     start, _ = find_last_subsequence(sequence, patterns)
     return list(range(start, len(sequence)))
-
-
-def top_tokens(
-    logits: torch.Tensor,
-    tokenizer: Any,
-    *,
-    k: int,
-) -> list[dict[str, Any]]:
-    return [
-        {
-            "token_id": token_id,
-            "token": token,
-            "logit": logit,
-        }
-        for token_id, token, logit in top_token_values(logits, tokenizer, k=k)
-    ]
-
-
-def next_token_payload(
-    logits: torch.Tensor,
-    target_ids: Sequence[int],
-    tokenizer: Any,
-    *,
-    top_k: int,
-) -> dict[str, Any]:
-    normalized = logits.detach().float().cpu()
-    top1_id = int(normalized.argmax().item())
-    return {
-        "top1_id": top1_id,
-        "top1_token": tokenizer.decode([top1_id], clean_up_tokenization_spaces=False),
-        "target_rank": best_token_rank(normalized, target_ids),
-        "top_tokens": top_tokens(normalized, tokenizer, k=top_k),
-    }
 
 
 def prepare_scoring_input(

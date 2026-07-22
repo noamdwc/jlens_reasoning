@@ -82,14 +82,17 @@ class EvaluationResult:
 
     @property
     def generation_status(self) -> GenerationStatus:
+        """Return the generation status carried by the raw model output."""
         return self.raw_output.generation_status
 
     @property
     def generation_error(self) -> str | None:
+        """Return the generation error carried by the raw model output."""
         return self.raw_output.generation_error
 
     @property
     def passed(self) -> bool:
+        """Return whether generation, reasoning, and answer grading passed."""
         return self.answer_status is AnswerStatus.CORRECT and not (
             self.reasoning_status is ReasoningStatus.MALFORMED
             or self.generation_status is GenerationStatus.GENERATION_ERROR
@@ -143,6 +146,7 @@ class SimpleFactualEvaluator:
     def __call__(
         self, output: ModelOutput, accepted_references: tuple[str, ...]
     ) -> EvaluationResult:
+        """Grade one model output against accepted factual references."""
         if not accepted_references or any(
             not isinstance(reference, str) or not normalize_text(reference)
             for reference in accepted_references
@@ -211,6 +215,7 @@ def evaluate(
     accepted_references: str | Sequence[str],
     evaluator: FactualEvaluator | None = None,
 ) -> EvaluationResult:
+    """Evaluate generated text with the project-standard factual evaluator."""
     model_output = ModelOutput(output) if isinstance(output, str) else output
     if isinstance(accepted_references, str):
         references = (accepted_references,)

@@ -15,6 +15,7 @@ class ReasoningStatus(StrEnum):
 
 
 def no_reasoning(text: str) -> tuple[str, ReasoningStatus]:
+    """Return text unchanged while marking reasoning as absent."""
     return text, ReasoningStatus.NOT_PRESENT
 
 
@@ -23,6 +24,7 @@ _THINK_SPAN = re.compile(r"<think>(?:(?!</?think>).)*</think>", re.DOTALL)
 
 
 def parse_think_tags(text: str) -> tuple[str, ReasoningStatus]:
+    """Remove a valid leading think block and classify its structure."""
     if "<think>" not in text and "</think>" not in text:
         return text, ReasoningStatus.NOT_PRESENT
     visible = _THINK_SPAN.sub("", text)
@@ -32,6 +34,7 @@ def parse_think_tags(text: str) -> tuple[str, ReasoningStatus]:
 
 
 def normalize_text(text: str) -> str:
+    """Normalize answer text for case-insensitive factual comparison."""
     return unicodedata.normalize("NFC", text).strip().casefold().rstrip(".!?")
 
 
@@ -122,14 +125,17 @@ def log_rank_gain(baseline_rank: int, candidate_rank: int) -> float:
 
 
 def extract_answer(evaluation_text: str) -> str | None:
+    """Extract the first sentence-like answer segment from evaluated text."""
     answer = re.split(r"[.!?\n]", evaluation_text, maxsplit=1)[0].strip()
     return answer or None
 
 
 def match_reference(normalized_answer: str, references: tuple[str, ...]) -> str | None:
+    """Return the accepted reference matching a normalized answer, if any."""
     return next((r for r in references if normalize_text(r) == normalized_answer), None)
 
 
 def safe_truncated_text(text: str) -> str | None:
+    """Keep only complete sentence-like text from a truncated generation."""
     boundary = max(text.rfind(character) for character in ".!?\n")
     return None if boundary < 0 else text[: boundary + 1].strip()

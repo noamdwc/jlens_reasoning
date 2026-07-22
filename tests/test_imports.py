@@ -5,7 +5,7 @@ from pathlib import Path
 EXPECTED_MODULES = (
     "experiments.jlens_readout_sanity.constants",
     "experiments.jlens_readout_sanity.controls",
-    "experiments.jlens_readout_sanity.runner",
+    "experiments.jlens_readout_sanity.experiment",
     "experiments.jlens_readout_sanity.utils",
     "jlens_reasoning.experiments_utils.artifacts",
     "jlens_reasoning.experiments_utils.controls",

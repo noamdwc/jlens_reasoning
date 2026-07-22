@@ -16,6 +16,7 @@ def jlens_vector(
     layer: int,
     token_id: int,
 ) -> torch.Tensor:
+    """Project one unembedding row into a fitted J-Lens layer direction."""
     jacobian = lens.jacobians[layer].to(
         device=unembedding_weight.device,
         dtype=torch.float32,
@@ -31,6 +32,7 @@ def coordinate_swap(
     *,
     alpha: float,
 ) -> torch.Tensor:
+    """Swap source and target coordinates in the spanned residual subspace."""
     if hidden.shape[-1] != source_vector.numel():
         raise ValueError("Source vector width does not match hidden width")
     if source_vector.shape != target_vector.shape:
@@ -66,6 +68,7 @@ class LensCoordinateSwapper:
         source_vector, target_vector = self._vectors_by_layer[layer]
 
         def patch(module: nn.Module, inputs: tuple[Any, ...], output: Any) -> Any:
+            """Patch one hooked layer output with the configured coordinate swap."""
             del module, inputs
             hidden = output if torch.is_tensor(output) else output[0]
             patched = coordinate_swap(
@@ -108,6 +111,7 @@ def execute_intervention(
     vectors_by_layer: Mapping[int, tuple[torch.Tensor, torch.Tensor]],
     alpha: float,
 ) -> torch.Tensor:
+    """Patch configured model layers while evaluating one intervention condition."""
     with (
         torch.inference_mode(),
         LensCoordinateSwapper(model.layers, vectors_by_layer, alpha=alpha),
@@ -122,6 +126,7 @@ def single_token_vectors_by_layer(
     layers: Sequence[int],
     token_id: int,
 ) -> dict[int, torch.Tensor]:
+    """Build one token's J-Lens direction for every requested layer."""
     return {
         layer: jlens_vector(
             lens,
@@ -141,6 +146,7 @@ def token_vectors_by_layer(
     source_token_id: int,
     target_token_id: int,
 ) -> dict[int, tuple[torch.Tensor, torch.Tensor]]:
+    """Build paired source and target J-Lens directions by layer."""
     source_vectors = single_token_vectors_by_layer(
         lens=lens,
         unembedding_weight=unembedding_weight,

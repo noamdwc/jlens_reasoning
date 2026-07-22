@@ -19,6 +19,7 @@ def _format_table(headers: tuple[str, ...], rows: tuple[tuple[str, ...], ...]) -
     ]
 
     def format_row(row: tuple[str, ...]) -> str:
+        """Pad one row to the computed display widths."""
         return "  ".join(value.ljust(widths[index]) for index, value in enumerate(row))
 
     separator = tuple("-" * width for width in widths)

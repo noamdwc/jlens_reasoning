@@ -1,9 +1,19 @@
+import ast
+from pathlib import Path
+
 from experiments.jlens_readout_sanity import (
-    control_analysis,
-    control_execution,
     controls,
     experiment,
     utils,
+)
+
+DOCUMENTED_MODULES = (
+    Path("experiments/jlens_readout_sanity/experiment.py"),
+    Path("experiments/jlens_readout_sanity/controls.py"),
+    Path("experiments/jlens_readout_sanity/reporting.py"),
+    Path("src/jlens_reasoning/evaluation.py"),
+    Path("src/jlens_reasoning/evaluation_utils.py"),
+    Path("src/jlens_reasoning/experiments_utils/interventions.py"),
 )
 
 
@@ -21,47 +31,22 @@ def test_utils_is_the_small_notebook_facade() -> None:
 
 
 def test_control_orchestration_remains_experiment_local() -> None:
-    assert controls.run_negative_controls.__module__ == (
+    assert controls.run_control_suite.__module__ == (
         "experiments.jlens_readout_sanity.controls"
     )
 
 
-def test_control_analysis_owns_pure_control_logic() -> None:
-    assert control_analysis._control_metadata.__module__ == (
-        "experiments.jlens_readout_sanity.control_analysis"
-    )
-    assert control_analysis.summarize_wrong_concept.__module__ == (
-        "experiments.jlens_readout_sanity.control_analysis"
-    )
-    assert control_analysis.aggregate_all_checks.__module__ == (
-        "experiments.jlens_readout_sanity.control_analysis"
-    )
+def test_public_and_large_functions_have_responsibility_docstrings() -> None:
+    missing: list[str] = []
+    for path in DOCUMENTED_MODULES:
+        module = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(module):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            body_start = node.body[0].lineno
+            body_lines = node.end_lineno - body_start + 1
+            requires_doc = not node.name.startswith("_") or body_lines >= 20
+            if requires_doc and ast.get_docstring(node, clean=False) is None:
+                missing.append(f"{path}:{node.lineno}:{node.name}")
 
-
-def test_controls_facade_reexports_analysis_api() -> None:
-    assert controls.summarize_wrong_concept is control_analysis.summarize_wrong_concept
-    assert controls.require_exact_cases is control_analysis.require_exact_cases
-    assert controls.controls_passed is control_analysis.controls_passed
-    assert controls.aggregate_all_checks is control_analysis.aggregate_all_checks
-
-
-def test_control_execution_owns_model_backed_logic() -> None:
-    assert control_execution.analyze_identity_case.__module__ == (
-        "experiments.jlens_readout_sanity.control_execution"
-    )
-    assert control_execution.run_identity_control.__module__ == (
-        "experiments.jlens_readout_sanity.control_execution"
-    )
-    assert control_execution.run_matched_random_vector_control.__module__ == (
-        "experiments.jlens_readout_sanity.control_execution"
-    )
-    assert control_execution.run_wrong_concept_control.__module__ == (
-        "experiments.jlens_readout_sanity.control_execution"
-    )
-    assert control_execution.run_random_target_control.__module__ == (
-        "experiments.jlens_readout_sanity.control_execution"
-    )
-
-
-def test_controls_facade_reexports_identity_analyzer() -> None:
-    assert controls.analyze_identity_case is control_execution.analyze_identity_case
+    assert missing == []

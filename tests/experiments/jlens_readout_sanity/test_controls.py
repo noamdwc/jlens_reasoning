@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from torch import nn
 
 import experiments.jlens_readout_sanity.controls as controls_module
 from experiments.jlens_readout_sanity.constants import (
@@ -15,8 +16,24 @@ from experiments.jlens_readout_sanity.constants import (
     RANDOM_TARGET_NAMESPACE,
     RANDOM_VECTOR_NAMESPACE,
 )
-from experiments.jlens_readout_sanity.controls import evaluate_control_condition
-from jlens_reasoning.evaluation import NextTokenEvaluation, evaluate_next_token
+from experiments.jlens_readout_sanity.controls import (
+    _identity_control,
+    aggregate_all_checks,
+    evaluate_control_condition,
+    summarize_wrong_concept,
+)
+from experiments.jlens_readout_sanity.experiment import (
+    Case,
+    ExperimentRuntime,
+    InterventionResult,
+    InterventionSpec,
+    PreparedIntervention,
+)
+from jlens_reasoning.evaluation import (
+    ModelOutput,
+    NextTokenEvaluation,
+    evaluate_next_token,
+)
 from jlens_reasoning.evaluation_utils import log_rank_gain
 from jlens_reasoning.experiments_utils.artifacts import write_results
 from jlens_reasoning.experiments_utils.controls import (
@@ -36,6 +53,7 @@ from jlens_reasoning.experiments_utils.controls import (
 from jlens_reasoning.experiments_utils.controls import (
     strict_percentile_gate as _strict_percentile_gate,
 )
+from jlens_reasoning.experiments_utils.tokens import TokenVariant
 
 
 def derive_subseed(base_seed, layer_index, role):
@@ -164,6 +182,135 @@ def test_control_condition_uses_shared_next_token_evaluation(monkeypatch) -> Non
     assert calls == [("target",)]
     assert result.comparison.baseline_rank == 3
     assert result.comparison.candidate_rank == result.evaluation.target_rank
+
+
+def test_wrong_concept_requires_aggregate_and_four_case_wins() -> None:
+    keys = tuple(f"case-{index}" for index in range(5))
+    matched = [
+        {"key": key, "log_rank_gain": gain}
+        for key, gain in zip(keys, (1.0, 1.0, 1.0, 1.0, 0.0), strict=True)
+    ]
+    mismatched = [{"key": key, "log_rank_gain": 0.0} for key in keys]
+
+    result = summarize_wrong_concept(
+        matched,
+        mismatched,
+        expected_keys=keys,
+    )
+
+    assert result["matched_winning_case_count"] == 4
+    assert result["aggregate_condition"] is True
+    assert result["case_condition"] is True
+    assert result["passed"] is True
+
+
+def test_every_negative_control_is_added_to_global_checks() -> None:
+    controls = {
+        "identity": {"passed": True},
+        "matched_random_vector": {"passed": True},
+        "wrong_concept": {"passed": True},
+        "random_target": {"passed": False},
+    }
+
+    checks, failures, passed = aggregate_all_checks(
+        {"clean_baselines": True},
+        (),
+        controls,
+    )
+
+    assert checks["identity_control"] is True
+    assert checks["matched_random_vector_control"] is True
+    assert checks["wrong_concept_control"] is True
+    assert checks["random_target_control"] is False
+    assert failures == [
+        "random target control failed: real mean log-rank gain=None; required "
+        "strictly > 95th-percentile sanity threshold=None"
+    ]
+    assert passed is False
+
+
+def test_identity_control_preserves_logits_and_evaluated_rank() -> None:
+    class TargetTokenizer:
+        def encode(
+            self,
+            text: str,
+            *,
+            add_special_tokens: bool = False,
+        ) -> list[int]:
+            assert add_special_tokens is False
+            return [2] if text.strip().casefold() == "target" else [0, 1]
+
+        def decode(
+            self,
+            token_ids: list[int],
+            *,
+            clean_up_tokenization_spaces: bool = False,
+        ) -> str:
+            assert clean_up_tokenization_spaces is False
+            return "target" if token_ids[0] == 2 else f"token-{token_ids[0]}"
+
+    class TensorBlock(nn.Module):
+        def forward(self, hidden: torch.Tensor) -> torch.Tensor:
+            return hidden
+
+    model = type("TinyModel", (), {})()
+    model.layers = nn.ModuleList([TensorBlock() for _ in range(3)])
+
+    def forward_next_token(input_ids: torch.Tensor) -> torch.Tensor:
+        del input_ids
+        hidden = torch.tensor([[[1.0, 0.0]]])
+        for block in model.layers:
+            hidden = block(hidden)
+        return torch.tensor([0.0, hidden[0, -1, 0], hidden[0, -1, 1]])
+
+    tokenizer = TargetTokenizer()
+    clean_logits = forward_next_token(torch.tensor([[0]]))
+    clean = evaluate_next_token(clean_logits, ("target",), tokenizer, top_k=3)
+    case = Case(
+        "identity",
+        "prompt",
+        ("answer",),
+        intervention=InterventionSpec(" source", " target", ("target",)),
+    )
+    prepared = PreparedIntervention(
+        case,
+        TokenVariant(1, " source"),
+        TokenVariant(2, " target"),
+        torch.tensor([[0]]),
+        (),
+        clean_logits,
+        {1: (torch.tensor([1.0, 0.0]), torch.tensor([0.0, 1.0]))},
+        None,
+    )
+    intervention = InterventionResult(
+        prepared.source,
+        prepared.target,
+        (),
+        (1,),
+        clean,
+        (),
+    )
+    runtime = ExperimentRuntime(
+        model,
+        object(),
+        tokenizer,
+        torch.zeros(3, 2),
+        forward_next_token,
+        lambda _: ModelOutput("answer"),
+    )
+
+    result = _identity_control(
+        (prepared,),
+        (intervention,),
+        runtime,
+        (1,),
+        top_k=3,
+    )
+
+    assert result["passed"] is True
+    assert result["cases"][0]["target_rank_unchanged"] is True
+    assert result["cases"][0]["logits_close"] is True
+    assert result["maximum_absolute_logit_difference"] == 0.0
 
 
 @pytest.mark.parametrize(("clean_rank", "intervened_rank"), [(0, 1), (1, 0)])
