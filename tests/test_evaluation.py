@@ -1,15 +1,21 @@
+import math
 from dataclasses import FrozenInstanceError, fields, replace
 
 import pytest
+import torch
 
 from jlens_reasoning.evaluation import (
     AnswerStatus,
     EvaluationResult,
     GenerationStatus,
     ModelOutput,
+    NextTokenEvaluation,
+    RankedToken,
     ReasoningStatus,
     SimpleFactualEvaluator,
+    compare_token_ranks,
     evaluate,
+    evaluate_next_token,
 )
 from jlens_reasoning.evaluation_utils import parse_think_tags
 
@@ -371,3 +377,84 @@ def test_runner_accepts_a_custom_factual_evaluator() -> None:
         return expected
 
     assert evaluate("ignored", "unused", evaluator=custom) is expected
+
+
+class RankTokenizer:
+    pieces = {
+        "Paris": [2],
+        " Paris": [4],
+        "paris": [2],
+        " paris": [4],
+        "PARIS": [8, 9],
+        " PARIS": [8, 9],
+    }
+
+    def encode(self, text: str, *, add_special_tokens: bool = False) -> list[int]:
+        assert add_special_tokens is False
+        return self.pieces.get(text, [10, 11])
+
+    def decode(
+        self, token_ids: list[int], *, clean_up_tokenization_spaces: bool = False
+    ) -> str:
+        assert clean_up_tokenization_spaces is False
+        return {0: "zero", 1: "one", 2: "Paris", 3: "three", 4: " Paris"}.get(
+            token_ids[0], f"token-{token_ids[0]}"
+        )
+
+
+def test_next_token_evaluation_resolves_variants_and_stable_ranks() -> None:
+    result = evaluate_next_token(
+        torch.tensor([0.0, 4.0, 3.0, 1.0, 2.0]),
+        ("Paris",),
+        RankTokenizer(),
+        top_k=3,
+    )
+
+    assert result.accepted_references == ("Paris",)
+    assert result.accepted_token_ids == (2, 4)
+    assert result.target_rank == 2
+    assert result.top1_id == 1
+    assert result.top1_token == "one"
+    assert result.top_tokens == (
+        RankedToken(1, "one", 4.0),
+        RankedToken(2, "Paris", 3.0),
+        RankedToken(4, " Paris", 2.0),
+    )
+
+
+def test_rank_comparison_uses_positive_improvement_convention() -> None:
+    baseline = NextTokenEvaluation(
+        accepted_references=("Paris",),
+        accepted_token_ids=(2,),
+        top1_id=1,
+        top1_token="one",
+        target_rank=10,
+        top_tokens=(),
+    )
+    candidate = replace(
+        baseline,
+        top1_id=2,
+        top1_token="Paris",
+        target_rank=1,
+    )
+
+    comparison = compare_token_ranks(baseline, candidate)
+
+    assert comparison.baseline_rank == 10
+    assert comparison.candidate_rank == 1
+    assert comparison.rank_gain == 9
+    assert comparison.log_rank_gain == pytest.approx(math.log(10))
+    assert comparison.improved
+    assert comparison.reached_top1
+
+
+@pytest.mark.parametrize("references", [(), ("",), ("two tokens",)])
+def test_next_token_evaluation_rejects_unscorable_answers(
+    references: tuple[str, ...],
+) -> None:
+    with pytest.raises(ValueError, match="accepted|Accepted|single-token"):
+        evaluate_next_token(
+            torch.tensor([0.0, 1.0, 2.0]),
+            references,
+            RankTokenizer(),
+        )

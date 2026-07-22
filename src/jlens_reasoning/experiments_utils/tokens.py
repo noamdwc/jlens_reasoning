@@ -8,6 +8,8 @@ from typing import Any
 
 import torch
 
+from jlens_reasoning.evaluation_utils import best_token_rank, top_token_values
+
 
 @dataclass(frozen=True, slots=True)
 class TokenVariant:
@@ -100,18 +102,7 @@ def positions_from_literal(
 
 
 def best_target_rank(logits: torch.Tensor, target_ids: Sequence[int]) -> int:
-    if logits.ndim != 1:
-        raise ValueError("best_target_rank expects one logits vector")
-    if not target_ids:
-        raise ValueError("best_target_rank needs at least one target token")
-    token_ids = torch.arange(logits.numel(), device=logits.device)
-    ranks = []
-    for target_id in target_ids:
-        target_logit = logits[target_id]
-        higher = (logits > target_logit).sum()
-        earlier_ties = ((logits == target_logit) & (token_ids < target_id)).sum()
-        ranks.append(1 + int(higher.item()) + int(earlier_ties.item()))
-    return min(ranks)
+    return best_token_rank(logits, target_ids)
 
 
 def top_tokens(
@@ -120,16 +111,13 @@ def top_tokens(
     *,
     k: int,
 ) -> list[dict[str, Any]]:
-    values, indices = torch.topk(logits, k=min(k, logits.numel()))
     return [
         {
-            "token_id": int(token_id),
-            "token": tokenizer.decode(
-                [int(token_id)], clean_up_tokenization_spaces=False
-            ),
-            "logit": float(value),
+            "token_id": token_id,
+            "token": token,
+            "logit": logit,
         }
-        for value, token_id in zip(values.tolist(), indices.tolist(), strict=True)
+        for token_id, token, logit in top_token_values(logits, tokenizer, k=k)
     ]
 
 

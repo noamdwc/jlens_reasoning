@@ -9,12 +9,7 @@ from typing import Any
 
 import torch
 
-
-def log_rank_gain(clean_rank: int, intervened_rank: int) -> float:
-    """Return the natural-log rank improvement after an intervention."""
-    if clean_rank < 1 or intervened_rank < 1:
-        raise ValueError("Ranks must be positive one-based integers")
-    return math.log(clean_rank) - math.log(intervened_rank)
+from jlens_reasoning.evaluation_utils import log_rank_gain as log_rank_gain
 
 
 def mean(values: Sequence[float]) -> float:

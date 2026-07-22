@@ -1,15 +1,21 @@
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol
+from typing import Any, Protocol
+
+import torch
 
 from .evaluation_utils import (
     ReasoningStatus,
+    answer_token_variants,
+    best_token_rank,
     extract_answer,
+    log_rank_gain,
     match_reference,
     no_reasoning,
     normalize_text,
     safe_truncated_text,
+    top_token_values,
 )
 
 
@@ -88,6 +94,40 @@ class EvaluationResult:
             self.reasoning_status is ReasoningStatus.MALFORMED
             or self.generation_status is GenerationStatus.GENERATION_ERROR
         )
+
+
+@dataclass(frozen=True, slots=True)
+class RankedToken:
+    token_id: int
+    token: str
+    logit: float
+
+
+@dataclass(frozen=True, slots=True)
+class NextTokenEvaluation:
+    accepted_references: tuple[str, ...]
+    accepted_token_ids: tuple[int, ...]
+    top1_id: int
+    top1_token: str
+    target_rank: int
+    top_tokens: tuple[RankedToken, ...]
+
+    def __post_init__(self) -> None:
+        """Reject incomplete or invalid next-token evaluation records."""
+        if not self.accepted_references or not self.accepted_token_ids:
+            raise ValueError("Next-token evaluations require accepted answers")
+        if self.target_rank < 1:
+            raise ValueError("Target rank must be a positive one-based integer")
+
+
+@dataclass(frozen=True, slots=True)
+class RankComparison:
+    baseline_rank: int
+    candidate_rank: int
+    rank_gain: int
+    log_rank_gain: float
+    improved: bool
+    reached_top1: bool
 
 
 class FactualEvaluator(Protocol):
@@ -177,3 +217,55 @@ def evaluate(
     else:
         references = tuple(accepted_references)
     return (evaluator or SimpleFactualEvaluator())(model_output, references)
+
+
+def evaluate_next_token(
+    logits: torch.Tensor,
+    accepted_references: str | Sequence[str],
+    tokenizer: Any,
+    *,
+    top_k: int = 25,
+) -> NextTokenEvaluation:
+    """Evaluate a next-token distribution against predefined accepted answers."""
+    references = (
+        (accepted_references,)
+        if isinstance(accepted_references, str)
+        else tuple(accepted_references)
+    )
+    normalized_logits = logits.detach().float().cpu()
+    variants = answer_token_variants(tokenizer, references)
+    accepted_ids = tuple(token_id for token_id, _ in variants)
+    top1_id = int(normalized_logits.argmax().item())
+    return NextTokenEvaluation(
+        accepted_references=references,
+        accepted_token_ids=accepted_ids,
+        top1_id=top1_id,
+        top1_token=tokenizer.decode([top1_id], clean_up_tokenization_spaces=False),
+        target_rank=best_token_rank(normalized_logits, accepted_ids),
+        top_tokens=tuple(
+            RankedToken(token_id, token, logit)
+            for token_id, token, logit in top_token_values(
+                normalized_logits, tokenizer, k=top_k
+            )
+        ),
+    )
+
+
+def compare_token_ranks(
+    baseline: NextTokenEvaluation,
+    candidate: NextTokenEvaluation,
+) -> RankComparison:
+    """Compare a candidate target rank with its clean or real reference rank."""
+    if baseline.accepted_token_ids != candidate.accepted_token_ids:
+        raise ValueError("Rank comparisons require the same accepted token IDs")
+    return RankComparison(
+        baseline_rank=baseline.target_rank,
+        candidate_rank=candidate.target_rank,
+        rank_gain=baseline.target_rank - candidate.target_rank,
+        log_rank_gain=log_rank_gain(
+            baseline.target_rank,
+            candidate.target_rank,
+        ),
+        improved=candidate.target_rank < baseline.target_rank,
+        reached_top1=candidate.target_rank == 1,
+    )

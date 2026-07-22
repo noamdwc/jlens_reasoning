@@ -4,10 +4,10 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from jlens_reasoning.evaluation_utils import log_rank_gain
 from jlens_reasoning.experiments_utils.controls import (
     build_random_target_exclusions,
     derive_subseed,
-    log_rank_gain,
     matched_random_vectors,
     mean,
     percentile,

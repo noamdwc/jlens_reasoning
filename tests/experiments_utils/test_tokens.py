@@ -1,8 +1,8 @@
 import torch
 
+from jlens_reasoning.evaluation_utils import best_token_rank, top_token_values
 from jlens_reasoning.experiments_utils.tokens import (
     TokenVariant,
-    best_target_rank,
     concept_surfaces,
     concept_token_variants,
     find_last_subsequence,
@@ -10,7 +10,6 @@ from jlens_reasoning.experiments_utils.tokens import (
     positions_from_literal,
     prepare_scoring_input,
     single_token_surface,
-    top_tokens,
 )
 
 
@@ -99,19 +98,16 @@ def test_find_last_subsequence_and_literal_positions() -> None:
 def test_rank_is_one_based_best_variant_and_stable_for_ties() -> None:
     logits = torch.tensor([0.0, 3.0, 3.0, 1.0])
 
-    assert best_target_rank(logits, (2, 3)) == 2
-    assert best_target_rank(logits, (3,)) == 3
+    assert best_token_rank(logits, (2, 3)) == 2
+    assert best_token_rank(logits, (3,)) == 3
 
 
 def test_top_tokens_preserve_token_ids_and_logits() -> None:
-    assert top_tokens(
+    assert top_token_values(
         torch.tensor([0.0, 2.0, 1.0]),
         FakeTokenizer(),
         k=2,
-    ) == [
-        {"token_id": 1, "token": "token-1", "logit": 2.0},
-        {"token_id": 2, "token": "token-2", "logit": 1.0},
-    ]
+    ) == ((1, "token-1", 2.0), (2, "token-2", 1.0))
 
 
 def test_scoring_input_appends_only_bounded_clean_formatting_tokens() -> None:
