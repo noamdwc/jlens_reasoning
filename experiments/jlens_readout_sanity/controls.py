@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from typing import Any
 
 import torch
 
 from experiments.jlens_readout_sanity.constants import (
     CONTROL_ALPHA,
-    CONTROL_CHECK_MAP,
     CONTROL_REQUIRED_CASE_COUNT,
     CONTROL_SEEDS,
     IDENTITY_ATOL,
@@ -26,14 +25,22 @@ from experiments.jlens_readout_sanity.constants import (
     RANDOM_VECTOR_NAMESPACE,
     WRONG_CONCEPT_REQUIRED_CASE_WINS,
 )
+from experiments.jlens_readout_sanity.control_analysis import (
+    _control_metadata,
+    _wrong_reference_contexts,
+    aggregate_all_checks,
+    assemble_control_results,
+    controls_passed,
+    real_rank_gain_cases,
+    require_exact_cases,
+    summarize_wrong_concept,
+)
 from experiments.jlens_readout_sanity.types import InterventionContext
 from jlens_reasoning.experiments_utils.controls import (
     build_random_target_exclusions,
     log_rank_gain,
     matched_random_vectors,
     mean,
-    percentile_label,
-    require_exact_case_keys,
     select_random_targets,
     strict_percentile_gate,
 )
@@ -41,10 +48,18 @@ from jlens_reasoning.experiments_utils.interventions import (
     execute_intervention,
     single_token_vectors_by_layer,
 )
-from jlens_reasoning.experiments_utils.tokens import (
-    best_target_rank,
-    concept_surfaces,
-)
+from jlens_reasoning.experiments_utils.tokens import best_target_rank
+
+__all__ = [
+    "_control_metadata",
+    "_wrong_reference_contexts",
+    "aggregate_all_checks",
+    "analyze_identity_case",
+    "controls_passed",
+    "require_exact_cases",
+    "run_negative_controls",
+    "summarize_wrong_concept",
+]
 
 
 def analyze_identity_case(
@@ -122,210 +137,6 @@ def _rank_gain_payload(
     }
 
 
-def _intervention_payload_at_alpha(
-    interventions: Mapping[str, Mapping[str, Any]],
-    alpha: float,
-) -> Mapping[str, Any]:
-    matches = [
-        payload for key, payload in interventions.items() if float(key) == float(alpha)
-    ]
-    if len(matches) != 1:
-        raise ValueError(f"Expected exactly one intervention payload for alpha={alpha}")
-    return matches[0]
-
-
-def require_exact_cases(
-    results: Sequence[Mapping[str, Any]],
-    *,
-    expected_keys: Sequence[str],
-) -> None:
-    """Require caller-owned case keys in their supplied order."""
-    require_exact_case_keys(results, expected_keys=expected_keys)
-
-
-@dataclass(frozen=True, slots=True)
-class _ControlMetadata:
-    expected_keys: tuple[str, ...]
-    wrong_references: tuple[InterventionContext, ...]
-    source_surfaces: tuple[str, ...]
-    target_surfaces: tuple[str, ...]
-    clean_answer_surfaces: tuple[str, ...]
-    intended_answer_surfaces: tuple[str, ...]
-    formatting_token_ids: tuple[int, ...]
-
-
-def _wrong_reference_contexts(
-    contexts: Sequence[InterventionContext],
-) -> tuple[InterventionContext, ...]:
-    references = []
-    for context in contexts:
-        direction = (
-            context.resolved.source.token_id,
-            context.resolved.target.token_id,
-        )
-        reference = next(
-            (
-                candidate
-                for candidate in contexts
-                if (
-                    candidate.resolved.source.token_id,
-                    candidate.resolved.target.token_id,
-                )
-                != direction
-            ),
-            None,
-        )
-        if reference is None:
-            raise ValueError(
-                "Wrong-concept control requires at least two distinct swap directions"
-            )
-        references.append(reference)
-    return tuple(references)
-
-
-def _control_metadata(
-    contexts: Sequence[InterventionContext],
-) -> _ControlMetadata:
-    return _ControlMetadata(
-        expected_keys=tuple(context.resolved.case.key for context in contexts),
-        wrong_references=_wrong_reference_contexts(contexts),
-        source_surfaces=tuple(
-            surface
-            for context in contexts
-            for surface in concept_surfaces(
-                context.resolved.case.source_surface.strip()
-            )
-        ),
-        target_surfaces=tuple(
-            surface
-            for context in contexts
-            for surface in concept_surfaces(
-                context.resolved.case.target_surface.strip()
-            )
-        ),
-        clean_answer_surfaces=tuple(
-            surface
-            for context in contexts
-            for answer in context.resolved.read_case.expected_answers
-            for surface in concept_surfaces(answer)
-        ),
-        intended_answer_surfaces=tuple(
-            surface
-            for context in contexts
-            for answer in context.resolved.case.target_answers
-            for surface in concept_surfaces(answer)
-        ),
-        formatting_token_ids=tuple(
-            item["token_id"]
-            for context in contexts
-            for item in context.formatting_prefix
-        ),
-    )
-
-
-def summarize_wrong_concept(
-    matched_cases: Sequence[Mapping[str, Any]],
-    mismatched_cases: Sequence[Mapping[str, Any]],
-    *,
-    expected_keys: Sequence[str],
-    required_winning_case_count: int = WRONG_CONCEPT_REQUIRED_CASE_WINS,
-) -> dict[str, Any]:
-    """Compare matched direction swaps against deliberately mismatched swaps."""
-    require_exact_cases(matched_cases, expected_keys=expected_keys)
-    require_exact_cases(mismatched_cases, expected_keys=expected_keys)
-    cases = []
-    for matched, mismatched in zip(matched_cases, mismatched_cases, strict=True):
-        matched_gain = float(matched["log_rank_gain"])
-        mismatched_gain = float(mismatched["log_rank_gain"])
-        cases.append(
-            {
-                "key": matched["key"],
-                "matched_log_rank_gain": matched_gain,
-                "mismatched_log_rank_gain": mismatched_gain,
-                "comparison": "matched_log_rank_gain > mismatched_log_rank_gain",
-                "matched_wins": matched_gain > mismatched_gain,
-            }
-        )
-    matched_mean = mean([float(case["log_rank_gain"]) for case in matched_cases])
-    mismatched_mean = mean([float(case["log_rank_gain"]) for case in mismatched_cases])
-    winning_case_count = sum(bool(case["matched_wins"]) for case in cases)
-    aggregate_condition = matched_mean > mismatched_mean
-    case_condition = winning_case_count >= required_winning_case_count
-    return {
-        "cases": cases,
-        "matched_mean_log_rank_gain": matched_mean,
-        "mismatched_mean_log_rank_gain": mismatched_mean,
-        "aggregate_comparison": (
-            "matched_mean_log_rank_gain > mismatched_mean_log_rank_gain"
-        ),
-        "aggregate_condition": aggregate_condition,
-        "matched_winning_case_count": winning_case_count,
-        "required_winning_case_count": required_winning_case_count,
-        "case_condition": case_condition,
-        "passed": aggregate_condition and case_condition,
-    }
-
-
-def controls_passed(controls: Mapping[str, Mapping[str, Any]]) -> bool:
-    """Return whether every configured negative control passed."""
-    return all(bool(controls[name]["passed"]) for name, _ in CONTROL_CHECK_MAP)
-
-
-def _control_failure(name: str, control: Mapping[str, Any]) -> str:
-    if name == "identity":
-        return (
-            "identity control failed: "
-            f"{control.get('passed_case_count', 0)}/"
-            f"{control.get('required_case_count', 5)} cases passed; "
-            "required every identity comparison to pass; "
-            "maximum absolute logit difference="
-            f"{control.get('maximum_absolute_logit_difference')!r}"
-        )
-    if name == "matched_random_vector":
-        return (
-            "matched random vector control failed: real mean log-rank gain="
-            f"{control.get('real_mean_log_rank_gain')!r}; required strictly > "
-            f"{percentile_label(PERCENTILE_QUANTILE)} sanity threshold="
-            f"{control.get('percentile_95_threshold')!r}"
-        )
-    if name == "wrong_concept":
-        return (
-            "wrong concept control failed: matched mean log-rank gain="
-            f"{control.get('matched_mean_log_rank_gain')!r}, mismatched mean="
-            f"{control.get('mismatched_mean_log_rank_gain')!r}; matched wins="
-            f"{control.get('matched_winning_case_count')!r}; required matched "
-            "mean > mismatched mean and at least "
-            f"{control.get('required_winning_case_count', WRONG_CONCEPT_REQUIRED_CASE_WINS)} "
-            "strict case wins"
-        )
-    if name == "random_target":
-        return (
-            "random target control failed: real mean log-rank gain="
-            f"{control.get('real_mean_log_rank_gain')!r}; required strictly > "
-            f"{percentile_label(PERCENTILE_QUANTILE)} sanity threshold="
-            f"{control.get('percentile_95_threshold')!r}"
-        )
-    raise KeyError(f"Unknown control: {name}")
-
-
-def aggregate_all_checks(
-    existing_checks: Mapping[str, bool],
-    existing_failures: Sequence[str],
-    controls: Mapping[str, Mapping[str, Any]],
-) -> tuple[dict[str, bool], list[str], bool]:
-    """Add all control gates to existing experiment capability gates."""
-    checks = dict(existing_checks)
-    failures = list(existing_failures)
-    for control_name, check_name in CONTROL_CHECK_MAP:
-        if control_name not in controls:
-            raise KeyError(f"Missing control payload: {control_name}")
-        passed = bool(controls[control_name]["passed"])
-        checks[check_name] = passed
-        if not passed:
-            failures.append(_control_failure(control_name, controls[control_name]))
-    return checks, failures, all(checks.values())
-
-
 def run_negative_controls(
     *,
     contexts: Sequence[InterventionContext],
@@ -345,26 +156,10 @@ def run_negative_controls(
     metadata = _control_metadata(contexts)
     expected_keys = metadata.expected_keys
     wrong_references = metadata.wrong_references
-    require_exact_cases(swap_results, expected_keys=expected_keys)
-    real_cases = []
-    for result in swap_results:
-        alpha_one = _intervention_payload_at_alpha(
-            result["interventions"], CONTROL_ALPHA
-        )
-        real_cases.append(
-            {
-                "key": result["key"],
-                "clean_rank": result["clean"]["target_rank"],
-                "intervened_rank": alpha_one["target_rank"],
-                "intervened_top1_id": alpha_one["top1_id"],
-                "log_rank_gain": log_rank_gain(
-                    result["clean"]["target_rank"],
-                    alpha_one["target_rank"],
-                ),
-            }
-        )
-    require_exact_cases(real_cases, expected_keys=expected_keys)
-    real_mean = mean([case["log_rank_gain"] for case in real_cases])
+    real_cases, real_mean = real_rank_gain_cases(
+        swap_results,
+        expected_keys=expected_keys,
+    )
 
     identity_cases = [
         analyze_identity_case(
@@ -576,42 +371,10 @@ def run_negative_controls(
         "passed": random_target_gate["passed"],
     }
 
-    control_results = {
-        "identity": identity,
-        "matched_random_vector": matched_random_vector,
-        "wrong_concept": wrong_concept,
-        "random_target": random_target,
-    }
-    return {
-        "seeds": list(CONTROL_SEEDS),
-        "definitions": {
-            "log_rank_gain": "log(clean_rank) - log(intervened_rank)",
-            "logarithm": "natural",
-            "aggregate": (f"arithmetic mean across exactly {len(expected_keys)} cases"),
-            "expected_case_keys": list(expected_keys),
-            "percentile": (
-                "sort ascending; linear interpolation at "
-                f"(n - 1) * {PERCENTILE_QUANTILE:g} "
-                f"({percentile_label(PERCENTILE_QUANTILE)})"
-            ),
-            "percentile_interpretation": PERCENTILE_INTERPRETATION,
-            "comparison": "strictly greater than",
-        },
-        "thresholds": {
-            "percentile_quantile": PERCENTILE_QUANTILE,
-            "wrong_concept_required_case_wins": WRONG_CONCEPT_REQUIRED_CASE_WINS,
-        },
-        "tolerances": {
-            "identity_logits": {"atol": IDENTITY_ATOL, "rtol": IDENTITY_RTOL},
-            "random_vector_norm_float32": {
-                "atol": NORM_ATOL,
-                "rtol": NORM_RTOL,
-            },
-            "random_vector_norm_low_precision": {
-                "atol": LOW_PRECISION_NORM_ATOL,
-                "rtol": LOW_PRECISION_NORM_RTOL,
-            },
-        },
-        **control_results,
-        "passed": controls_passed(control_results),
-    }
+    return assemble_control_results(
+        expected_keys=expected_keys,
+        identity=identity,
+        matched_random_vector=matched_random_vector,
+        wrong_concept=wrong_concept,
+        random_target=random_target,
+    )

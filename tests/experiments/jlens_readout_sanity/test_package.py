@@ -1,4 +1,4 @@
-from experiments.jlens_readout_sanity import controls, runner, utils
+from experiments.jlens_readout_sanity import control_analysis, controls, runner, utils
 
 
 def test_utils_is_the_small_notebook_facade() -> None:
@@ -18,3 +18,22 @@ def test_control_orchestration_remains_experiment_local() -> None:
     assert controls.run_negative_controls.__module__ == (
         "experiments.jlens_readout_sanity.controls"
     )
+
+
+def test_control_analysis_owns_pure_control_logic() -> None:
+    assert control_analysis._control_metadata.__module__ == (
+        "experiments.jlens_readout_sanity.control_analysis"
+    )
+    assert control_analysis.summarize_wrong_concept.__module__ == (
+        "experiments.jlens_readout_sanity.control_analysis"
+    )
+    assert control_analysis.aggregate_all_checks.__module__ == (
+        "experiments.jlens_readout_sanity.control_analysis"
+    )
+
+
+def test_controls_facade_reexports_analysis_api() -> None:
+    assert controls.summarize_wrong_concept is control_analysis.summarize_wrong_concept
+    assert controls.require_exact_cases is control_analysis.require_exact_cases
+    assert controls.controls_passed is control_analysis.controls_passed
+    assert controls.aggregate_all_checks is control_analysis.aggregate_all_checks
