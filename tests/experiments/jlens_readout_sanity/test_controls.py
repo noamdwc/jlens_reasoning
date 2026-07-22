@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+import experiments.jlens_readout_sanity.controls as controls_module
 from experiments.jlens_readout_sanity.constants import (
     CONTROL_SEEDS,
     IDENTITY_ATOL,
@@ -14,6 +15,8 @@ from experiments.jlens_readout_sanity.constants import (
     RANDOM_TARGET_NAMESPACE,
     RANDOM_VECTOR_NAMESPACE,
 )
+from experiments.jlens_readout_sanity.controls import evaluate_control_condition
+from jlens_reasoning.evaluation import NextTokenEvaluation, evaluate_next_token
 from jlens_reasoning.evaluation_utils import log_rank_gain
 from jlens_reasoning.experiments_utils.artifacts import write_results
 from jlens_reasoning.experiments_utils.controls import (
@@ -101,6 +104,66 @@ def test_log_rank_gain_uses_natural_logarithms() -> None:
     assert log_rank_gain(100, 10) == pytest.approx(math.log(10.0))
     assert log_rank_gain(10, 100) == pytest.approx(-math.log(10.0))
     assert log_rank_gain(7, 7) == 0.0
+
+
+def test_control_condition_uses_shared_next_token_evaluation(monkeypatch) -> None:
+    calls: list[tuple[str, ...]] = []
+    actual = evaluate_next_token
+
+    class ControlRankTokenizer:
+        def encode(
+            self,
+            text: str,
+            *,
+            add_special_tokens: bool = False,
+        ) -> list[int]:
+            assert add_special_tokens is False
+            return [2] if text.strip().casefold() == "target" else [0, 1]
+
+        def decode(
+            self,
+            token_ids: list[int],
+            *,
+            clean_up_tokenization_spaces: bool = False,
+        ) -> str:
+            assert clean_up_tokenization_spaces is False
+            return "target" if token_ids[0] == 2 else f"token-{token_ids[0]}"
+
+    def recording_evaluator(
+        logits: torch.Tensor,
+        references: tuple[str, ...],
+        tokenizer: object,
+        *,
+        top_k: int = 25,
+    ) -> NextTokenEvaluation:
+        calls.append(tuple(references))
+        return actual(logits, references, tokenizer, top_k=top_k)
+
+    monkeypatch.setattr(
+        controls_module,
+        "evaluate_next_token",
+        recording_evaluator,
+    )
+    clean = NextTokenEvaluation(
+        accepted_references=("target",),
+        accepted_token_ids=(2,),
+        top1_id=0,
+        top1_token="token-0",
+        target_rank=3,
+        top_tokens=(),
+    )
+
+    result = evaluate_control_condition(
+        clean=clean,
+        intervened_logits=torch.tensor([0.0, 3.0, 1.0]),
+        accepted_references=("target",),
+        tokenizer=ControlRankTokenizer(),
+        top_k=3,
+    )
+
+    assert calls == [("target",)]
+    assert result.comparison.baseline_rank == 3
+    assert result.comparison.candidate_rank == result.evaluation.target_rank
 
 
 @pytest.mark.parametrize(("clean_rank", "intervened_rank"), [(0, 1), (1, 0)])
