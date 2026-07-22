@@ -955,6 +955,25 @@ def test_run_readout_sanity_integrates_all_controls_without_storing_logits(
         top_k=3,
     )
 
+    assert result["policy"] == {
+        "clean_baselines": {"required_count": 5},
+        "spider_read": {
+            "maximum_rank": 5,
+            "requires_better_than_logit_lens": True,
+            "paper_target_rank": 1,
+        },
+        "swap_rank_improvements": {
+            "required_count": 3,
+            "case_count": 5,
+        },
+        "swap_target_top1": {
+            "required_count": 1,
+            "case_count": 5,
+            "paper_primary_alpha": 1.0,
+            "paper_target_rank": 1,
+        },
+    }
+
     controls = result["controls"]
     selected_target_ids = {
         target["token_id"] for target in controls["random_target"]["targets"]

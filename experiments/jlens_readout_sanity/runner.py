@@ -20,6 +20,7 @@ from experiments.jlens_readout_sanity.constants import (
     LENS_REVISION,
     MODEL_NAME,
     SPIDER_READ_MAX_RANK,
+    SWAP_TARGET_TOP1_REQUIRED_COUNT,
     TOP_K,
     WORKSPACE_LAYER_LOWER_FRACTION,
     WORKSPACE_LAYER_UPPER_FRACTION,
@@ -428,7 +429,7 @@ def aggregate_capability_checks(
         "clean_baselines": clean_baselines,
         "spider_read": spider_read,
         "swap_rank_improvements": improved_count >= minimum_improvements,
-        "swap_target_top1": top1_count >= 1,
+        "swap_target_top1": top1_count >= SWAP_TARGET_TOP1_REQUIRED_COUNT,
     }
     failures: list[str] = []
     if not clean_baselines:
@@ -558,6 +559,24 @@ def run_readout_sanity(
         "d_model": model.d_model,
         "top_k": top_k,
         "intervention_strengths": list(alphas),
+        "policy": {
+            "clean_baselines": {"required_count": len(read_results)},
+            "spider_read": {
+                "maximum_rank": SPIDER_READ_MAX_RANK,
+                "requires_better_than_logit_lens": True,
+                "paper_target_rank": 1,
+            },
+            "swap_rank_improvements": {
+                "required_count": minimum_improvements,
+                "case_count": len(swap_results),
+            },
+            "swap_target_top1": {
+                "required_count": SWAP_TARGET_TOP1_REQUIRED_COUNT,
+                "case_count": len(swap_results),
+                "paper_primary_alpha": CONTROL_ALPHA,
+                "paper_target_rank": 1,
+            },
+        },
         "cases": read_results,
         "swaps": swap_results,
         "controls": controls,

@@ -23,6 +23,7 @@ from experiments.jlens_readout_sanity.constants import (
     RANDOM_TARGET_NAMESPACE,
     RANDOM_VECTOR_NAMESPACE,
     SPIDER_READ_MAX_RANK,
+    SWAP_TARGET_TOP1_REQUIRED_COUNT,
     TOP_K,
     WORKSPACE_LAYER_LOWER_FRACTION,
     WORKSPACE_LAYER_UPPER_FRACTION,
@@ -50,6 +51,7 @@ def test_artifact_coordinates_and_readout_policy_are_fixed() -> None:
     assert DEFAULT_MINIMUM_IMPROVEMENTS == 3
     assert DEFAULT_MAX_FORMATTING_TOKENS == 2
     assert SPIDER_READ_MAX_RANK == 5
+    assert SWAP_TARGET_TOP1_REQUIRED_COUNT == 1
 
 
 def test_control_policy_is_fixed_and_namespaced() -> None:
