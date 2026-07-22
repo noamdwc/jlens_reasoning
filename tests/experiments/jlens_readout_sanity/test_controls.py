@@ -7,7 +7,6 @@ import pytest
 import torch
 
 from experiments.jlens_readout_sanity.constants import (
-    CONTROL_CASE_KEYS,
     CONTROL_SEEDS,
     IDENTITY_ATOL,
     IDENTITY_RTOL,
@@ -390,7 +389,6 @@ def _gain_cases(gains: list[float]) -> list[dict[str, float | str]]:
 
 def test_exact_case_validation_rejects_missing_duplicate_extra_and_order() -> None:
     complete = _gain_cases([1.0] * 5)
-    assert CONTROL_CASE_KEYS == EXPECTED_CASE_KEYS
     require_exact_cases(complete, expected_keys=EXPECTED_CASE_KEYS)
 
     malformed = (

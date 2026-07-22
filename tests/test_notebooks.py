@@ -71,9 +71,9 @@ def test_experiment_notebooks_are_discovered_without_a_registry() -> None:
 
 
 def test_readout_sanity_notebook_has_pinned_gpu_workflow() -> None:
-    notebook = load_notebook(
-        Path("experiments/jlens_readout_sanity/jlens_readout_sanity.ipynb")
-    )
+    path = Path("experiments/jlens_readout_sanity/jlens_readout_sanity.ipynb")
+    notebook = load_notebook(path)
+    cells_by_id = notebook_cells_by_id(path)
     source = "\n".join(cell.source for cell in notebook.cells)
 
     assert "initialize_colab(enable_wandb=False, require_cuda=True)" in source
@@ -98,6 +98,9 @@ def test_readout_sanity_notebook_has_pinned_gpu_workflow() -> None:
     assert "causal_lm.generate" not in source
     assert "SimpleFactualEvaluator" not in source
     assert "max_new_tokens" not in source
+    assert "READOUT_CASES" not in cells_by_id["load-model-and-lens"]
+    assert "cases=READOUT_CASES" in cells_by_id["run-experiment"]
+    assert "swap_cases=SWAP_CASES" in cells_by_id["run-experiment"]
 
 
 def test_readout_cases_are_defined_visibly_in_the_notebook() -> None:

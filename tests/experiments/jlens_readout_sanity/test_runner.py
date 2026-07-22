@@ -16,8 +16,6 @@ from experiments.jlens_readout_sanity.constants import (
     LENS_REPO,
     LENS_REVISION,
     MODEL_NAME,
-    READOUT_CASES,
-    SWAP_CASES,
     WORKSPACE_LAYER_LOWER_FRACTION,
     WORKSPACE_LAYER_UPPER_FRACTION,
 )
@@ -62,6 +60,10 @@ from jlens_reasoning.experiments_utils.validation import (
 )
 from jlens_reasoning.experiments_utils.validation import (
     workspace_layers as _workspace_layers,
+)
+from tests.experiments.jlens_readout_sanity.case_fixtures import (
+    READOUT_CASES,
+    SWAP_CASES,
 )
 
 

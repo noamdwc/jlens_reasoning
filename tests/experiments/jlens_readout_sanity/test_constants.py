@@ -1,6 +1,6 @@
+import experiments.jlens_readout_sanity.constants as constants_module
 from experiments.jlens_readout_sanity.constants import (
     CONTROL_ALPHA,
-    CONTROL_CASE_KEYS,
     CONTROL_CHECK_MAP,
     CONTROL_REQUIRED_CASE_COUNT,
     CONTROL_SEEDS,
@@ -22,15 +22,18 @@ from experiments.jlens_readout_sanity.constants import (
     PERCENTILE_QUANTILE,
     RANDOM_TARGET_NAMESPACE,
     RANDOM_VECTOR_NAMESPACE,
-    READOUT_CASES,
     SPIDER_READ_MAX_RANK,
-    SWAP_CASES,
     TOP_K,
     WORKSPACE_LAYER_LOWER_FRACTION,
     WORKSPACE_LAYER_UPPER_FRACTION,
     WRONG_CONCEPT_REQUIRED_CASE_WINS,
 )
-from experiments.jlens_readout_sanity.types import ReadoutCase, SwapCase
+
+
+def test_case_definitions_are_not_owned_by_constants() -> None:
+    assert not hasattr(constants_module, "READOUT_CASES")
+    assert not hasattr(constants_module, "SWAP_CASES")
+    assert not hasattr(constants_module, "CONTROL_CASE_KEYS")
 
 
 def test_artifact_coordinates_and_readout_policy_are_fixed() -> None:
@@ -90,23 +93,3 @@ def test_control_policy_is_fixed_and_namespaced() -> None:
         ("wrong_concept", "wrong_concept_control"),
         ("random_target", "random_target_control"),
     )
-
-
-def test_fixed_cases_preserve_order_and_derive_control_keys() -> None:
-    assert all(isinstance(case, ReadoutCase) for case in READOUT_CASES)
-    assert all(isinstance(case, SwapCase) for case in SWAP_CASES)
-    assert tuple(case.key for case in READOUT_CASES) == (
-        "spider",
-        "france_capital",
-        "france_language",
-        "france_continent",
-        "france_currency",
-    )
-    assert SWAP_CASES == (
-        SwapCase("spider", " spider", " ant", ("6", "six")),
-        SwapCase("france_capital", " France", " China", ("Beijing",)),
-        SwapCase("france_language", " France", " China", ("Chinese",)),
-        SwapCase("france_continent", " France", " China", ("Asia",)),
-        SwapCase("france_currency", " France", " China", ("Yuan",)),
-    )
-    assert CONTROL_CASE_KEYS == tuple(case.key for case in SWAP_CASES)

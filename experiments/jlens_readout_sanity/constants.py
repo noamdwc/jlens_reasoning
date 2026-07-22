@@ -1,7 +1,5 @@
 """Fixed policy and artifact coordinates for the J-Lens sanity experiment."""
 
-from experiments.jlens_readout_sanity.types import ReadoutCase, SwapCase
-
 MODEL_NAME = "Qwen/Qwen3.5-4B"
 LENS_REPO = "neuronpedia/jacobian-lens"
 LENS_REVISION = "qwen-n1000"
@@ -14,51 +12,6 @@ DEFAULT_INTERVENTION_STRENGTHS = (1.0, 2.0)
 DEFAULT_MINIMUM_IMPROVEMENTS = 3
 DEFAULT_MAX_FORMATTING_TOKENS = 2
 SPIDER_READ_MAX_RANK = 5
-
-READOUT_CASES = (
-    ReadoutCase(
-        key="spider",
-        prompt="The number of legs on the animal that spins webs is",
-        expected_answers=("8", "eight"),
-        target_concepts=("spider",),
-    ),
-    ReadoutCase(
-        key="france_capital",
-        prompt="The capital of France is the city of",
-        expected_answers=("Paris",),
-        target_concepts=("France",),
-        literal_argument="France",
-    ),
-    ReadoutCase(
-        key="france_language",
-        prompt="Most people in France speak",
-        expected_answers=("French",),
-        target_concepts=("France",),
-        literal_argument="France",
-    ),
-    ReadoutCase(
-        key="france_continent",
-        prompt="France is a country on the continent of",
-        expected_answers=("Europe",),
-        target_concepts=("France",),
-        literal_argument="France",
-    ),
-    ReadoutCase(
-        key="france_currency",
-        prompt="The single-word name for the currency now used in France is the",
-        expected_answers=("Euro",),
-        target_concepts=("France",),
-        literal_argument="France",
-    ),
-)
-
-SWAP_CASES = (
-    SwapCase("spider", " spider", " ant", ("6", "six")),
-    SwapCase("france_capital", " France", " China", ("Beijing",)),
-    SwapCase("france_language", " France", " China", ("Chinese",)),
-    SwapCase("france_continent", " France", " China", ("Asia",)),
-    SwapCase("france_currency", " France", " China", ("Yuan",)),
-)
 
 CONTROL_SEEDS = (
     11,
@@ -79,7 +32,6 @@ CONTROL_SEEDS = (
     607,
 )
 CONTROL_REQUIRED_CASE_COUNT = 5
-CONTROL_CASE_KEYS = tuple(case.key for case in SWAP_CASES)
 
 CONTROL_ALPHA = 1.0
 IDENTITY_ATOL = 1e-6
