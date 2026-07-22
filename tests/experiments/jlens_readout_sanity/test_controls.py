@@ -15,6 +15,7 @@ from experiments.jlens_readout_sanity.constants import (
     RANDOM_VECTOR_NAMESPACE,
 )
 from experiments.jlens_readout_sanity.controls import (
+    _control_metadata,
     _wrong_reference_contexts,
     aggregate_all_checks,
     controls_passed,
@@ -40,6 +41,7 @@ from jlens_reasoning.experiments_utils.controls import (
 from jlens_reasoning.experiments_utils.controls import (
     strict_percentile_gate as _strict_percentile_gate,
 )
+from jlens_reasoning.experiments_utils.tokens import concept_surfaces
 
 
 def derive_subseed(base_seed, layer_index, role):
@@ -98,6 +100,78 @@ def _direction_context(key: str, source_id: int, target_id: int) -> SimpleNamesp
             target=SimpleNamespace(token_id=target_id),
         )
     )
+
+
+def _metadata_context(
+    key: str,
+    source_id: int,
+    target_id: int,
+    *,
+    source_surface: str,
+    target_surface: str,
+    clean_answers: tuple[str, ...],
+    target_answers: tuple[str, ...],
+    formatting_token_id: int,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        resolved=SimpleNamespace(
+            case=SimpleNamespace(
+                key=key,
+                source_surface=source_surface,
+                target_surface=target_surface,
+                target_answers=target_answers,
+            ),
+            read_case=SimpleNamespace(expected_answers=clean_answers),
+            source=SimpleNamespace(token_id=source_id),
+            target=SimpleNamespace(token_id=target_id),
+        ),
+        formatting_prefix=[{"token_id": formatting_token_id}],
+    )
+
+
+def test_control_metadata_derives_from_renamed_contexts() -> None:
+    first = _metadata_context(
+        "alpha",
+        1,
+        2,
+        source_surface=" Wolf",
+        target_surface=" Bear",
+        clean_answers=("Pup",),
+        target_answers=("Cub",),
+        formatting_token_id=7,
+    )
+    second = _metadata_context(
+        "beta",
+        3,
+        4,
+        source_surface=" Oak",
+        target_surface=" Pine",
+        clean_answers=("Leaf",),
+        target_answers=("Needle",),
+        formatting_token_id=8,
+    )
+
+    metadata = _control_metadata((first, second))
+
+    assert metadata.expected_keys == ("alpha", "beta")
+    assert metadata.wrong_references == (second, first)
+    assert metadata.source_surfaces == (
+        *concept_surfaces("Wolf"),
+        *concept_surfaces("Oak"),
+    )
+    assert metadata.target_surfaces == (
+        *concept_surfaces("Bear"),
+        *concept_surfaces("Pine"),
+    )
+    assert metadata.clean_answer_surfaces == (
+        *concept_surfaces("Pup"),
+        *concept_surfaces("Leaf"),
+    )
+    assert metadata.intended_answer_surfaces == (
+        *concept_surfaces("Cub"),
+        *concept_surfaces("Needle"),
+    )
+    assert metadata.formatting_token_ids == (7, 8)
 
 
 def test_wrong_concept_references_derive_from_directions_not_case_names() -> None:

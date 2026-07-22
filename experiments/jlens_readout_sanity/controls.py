@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from typing import Any
 
 import torch
@@ -143,6 +143,17 @@ def require_exact_cases(
     require_exact_case_keys(results, expected_keys=expected_keys)
 
 
+@dataclass(frozen=True, slots=True)
+class _ControlMetadata:
+    expected_keys: tuple[str, ...]
+    wrong_references: tuple[InterventionContext, ...]
+    source_surfaces: tuple[str, ...]
+    target_surfaces: tuple[str, ...]
+    clean_answer_surfaces: tuple[str, ...]
+    intended_answer_surfaces: tuple[str, ...]
+    formatting_token_ids: tuple[int, ...]
+
+
 def _wrong_reference_contexts(
     contexts: Sequence[InterventionContext],
 ) -> tuple[InterventionContext, ...]:
@@ -170,6 +181,46 @@ def _wrong_reference_contexts(
             )
         references.append(reference)
     return tuple(references)
+
+
+def _control_metadata(
+    contexts: Sequence[InterventionContext],
+) -> _ControlMetadata:
+    return _ControlMetadata(
+        expected_keys=tuple(context.resolved.case.key for context in contexts),
+        wrong_references=_wrong_reference_contexts(contexts),
+        source_surfaces=tuple(
+            surface
+            for context in contexts
+            for surface in concept_surfaces(
+                context.resolved.case.source_surface.strip()
+            )
+        ),
+        target_surfaces=tuple(
+            surface
+            for context in contexts
+            for surface in concept_surfaces(
+                context.resolved.case.target_surface.strip()
+            )
+        ),
+        clean_answer_surfaces=tuple(
+            surface
+            for context in contexts
+            for answer in context.resolved.read_case.expected_answers
+            for surface in concept_surfaces(answer)
+        ),
+        intended_answer_surfaces=tuple(
+            surface
+            for context in contexts
+            for answer in context.resolved.case.target_answers
+            for surface in concept_surfaces(answer)
+        ),
+        formatting_token_ids=tuple(
+            item["token_id"]
+            for context in contexts
+            for item in context.formatting_prefix
+        ),
+    )
 
 
 def summarize_wrong_concept(
@@ -291,8 +342,9 @@ def run_negative_controls(
         raise ValueError(
             f"Negative controls require exactly {CONTROL_REQUIRED_CASE_COUNT} cases"
         )
-    expected_keys = tuple(context.resolved.case.key for context in contexts)
-    wrong_references = _wrong_reference_contexts(contexts)
+    metadata = _control_metadata(contexts)
+    expected_keys = metadata.expected_keys
+    wrong_references = metadata.wrong_references
     require_exact_cases(swap_results, expected_keys=expected_keys)
     real_cases = []
     for result in swap_results:
@@ -445,38 +497,13 @@ def run_negative_controls(
         **wrong_summary,
     }
 
-    source_surfaces = tuple(
-        surface
-        for context in contexts
-        for surface in concept_surfaces(context.resolved.case.source_surface.strip())
-    )
-    target_surfaces = tuple(
-        surface
-        for context in contexts
-        for surface in concept_surfaces(context.resolved.case.target_surface.strip())
-    )
-    clean_answer_surfaces = tuple(
-        surface
-        for context in contexts
-        for answer in context.resolved.read_case.expected_answers
-        for surface in concept_surfaces(answer)
-    )
-    intended_answer_surfaces = tuple(
-        surface
-        for context in contexts
-        for answer in context.resolved.case.target_answers
-        for surface in concept_surfaces(answer)
-    )
-    formatting_token_ids = tuple(
-        item["token_id"] for context in contexts for item in context.formatting_prefix
-    )
     exclusions = build_random_target_exclusions(
         tokenizer,
-        source_surfaces=source_surfaces,
-        target_surfaces=target_surfaces,
-        clean_answer_surfaces=clean_answer_surfaces,
-        intended_answer_surfaces=intended_answer_surfaces,
-        formatting_token_ids=formatting_token_ids,
+        source_surfaces=metadata.source_surfaces,
+        target_surfaces=metadata.target_surfaces,
+        clean_answer_surfaces=metadata.clean_answer_surfaces,
+        intended_answer_surfaces=metadata.intended_answer_surfaces,
+        formatting_token_ids=metadata.formatting_token_ids,
     )
     output_vocab_size = int(unembedding_weight.shape[0])
     selected_targets = select_random_targets(

@@ -1,3 +1,4 @@
+from dataclasses import asdict
 from pathlib import Path
 
 import nbformat
@@ -108,16 +109,77 @@ def test_readout_cases_are_defined_visibly_in_the_notebook() -> None:
 
     readout_cases = namespace["READOUT_CASES"]
     swap_cases = namespace["SWAP_CASES"]
-    assert [case.key for case in readout_cases] == [
-        "spider",
-        "france_capital",
-        "france_language",
-        "france_continent",
-        "france_currency",
+    assert [asdict(case) for case in readout_cases] == [
+        {
+            "key": "spider",
+            "prompt": "The number of legs on the animal that spins webs is",
+            "expected_answers": ("8", "eight"),
+            "target_concepts": ("spider",),
+            "literal_argument": None,
+        },
+        {
+            "key": "france_capital",
+            "prompt": "The capital of France is the city of",
+            "expected_answers": ("Paris",),
+            "target_concepts": ("France",),
+            "literal_argument": "France",
+        },
+        {
+            "key": "france_language",
+            "prompt": "Most people in France speak",
+            "expected_answers": ("French",),
+            "target_concepts": ("France",),
+            "literal_argument": "France",
+        },
+        {
+            "key": "france_continent",
+            "prompt": "France is a country on the continent of",
+            "expected_answers": ("Europe",),
+            "target_concepts": ("France",),
+            "literal_argument": "France",
+        },
+        {
+            "key": "france_currency",
+            "prompt": (
+                "The single-word name for the currency now used in France is the"
+            ),
+            "expected_answers": ("Euro",),
+            "target_concepts": ("France",),
+            "literal_argument": "France",
+        },
     ]
-    assert [case.key for case in swap_cases] == [case.key for case in readout_cases]
-    assert swap_cases[0].target_surface == " ant"
-    assert swap_cases[-1].target_answers == ("Yuan",)
+    assert [asdict(case) for case in swap_cases] == [
+        {
+            "key": "spider",
+            "source_surface": " spider",
+            "target_surface": " ant",
+            "target_answers": ("6", "six"),
+        },
+        {
+            "key": "france_capital",
+            "source_surface": " France",
+            "target_surface": " China",
+            "target_answers": ("Beijing",),
+        },
+        {
+            "key": "france_language",
+            "source_surface": " France",
+            "target_surface": " China",
+            "target_answers": ("Chinese",),
+        },
+        {
+            "key": "france_continent",
+            "source_surface": " France",
+            "target_surface": " China",
+            "target_answers": ("Asia",),
+        },
+        {
+            "key": "france_currency",
+            "source_surface": " France",
+            "target_surface": " China",
+            "target_answers": ("Yuan",),
+        },
+    ]
 
 
 def test_readout_execution_saving_and_reporting_are_separate_cells() -> None:
