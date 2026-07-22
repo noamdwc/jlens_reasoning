@@ -14,6 +14,19 @@ def load_notebook(path: Path) -> nbformat.NotebookNode:
     return nbformat.read(path, as_version=4)
 
 
+def notebook_cells_by_id(path: Path) -> dict[str, str]:
+    notebook = load_notebook(path)
+    return {cell.id: cell.source for cell in notebook.cells}
+
+
+def execute_notebook_case_cell() -> dict[str, object]:
+    path = Path("experiments/jlens_readout_sanity/jlens_readout_sanity.ipynb")
+    source = notebook_cells_by_id(path)["define-cases"]
+    namespace: dict[str, object] = {}
+    exec(compile(source, f"{path}:define-cases", "exec"), namespace)
+    return namespace
+
+
 def test_notebooks_have_no_saved_outputs_or_execution_counts() -> None:
     for path in NOTEBOOKS:
         notebook = load_notebook(path)
@@ -85,6 +98,23 @@ def test_readout_sanity_notebook_has_pinned_gpu_workflow() -> None:
     assert "causal_lm.generate" not in source
     assert "SimpleFactualEvaluator" not in source
     assert "max_new_tokens" not in source
+
+
+def test_readout_cases_are_defined_visibly_in_the_notebook() -> None:
+    namespace = execute_notebook_case_cell()
+
+    readout_cases = namespace["READOUT_CASES"]
+    swap_cases = namespace["SWAP_CASES"]
+    assert [case.key for case in readout_cases] == [
+        "spider",
+        "france_capital",
+        "france_language",
+        "france_continent",
+        "france_currency",
+    ]
+    assert [case.key for case in swap_cases] == [case.key for case in readout_cases]
+    assert swap_cases[0].target_surface == " ant"
+    assert swap_cases[-1].target_answers == ("Yuan",)
 
 
 def test_readout_execution_saving_and_reporting_are_separate_cells() -> None:
