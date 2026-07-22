@@ -9,8 +9,6 @@ from typing import Any
 
 import torch
 
-from jlens_reasoning.evaluation_utils import log_rank_gain as log_rank_gain
-
 
 def mean(values: Sequence[float]) -> float:
     """Return an accurate arithmetic mean for a non-empty sequence."""

@@ -14,10 +14,10 @@ from experiments.jlens_readout_sanity.constants import (
     RANDOM_TARGET_NAMESPACE,
     RANDOM_VECTOR_NAMESPACE,
 )
+from jlens_reasoning.evaluation_utils import log_rank_gain
 from jlens_reasoning.experiments_utils.artifacts import write_results
 from jlens_reasoning.experiments_utils.controls import (
     build_random_target_exclusions,
-    log_rank_gain,
     percentile,
     percentile_label,
 )

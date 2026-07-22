@@ -101,10 +101,6 @@ def positions_from_literal(
     return list(range(start, len(sequence)))
 
 
-def best_target_rank(logits: torch.Tensor, target_ids: Sequence[int]) -> int:
-    return best_token_rank(logits, target_ids)
-
-
 def top_tokens(
     logits: torch.Tensor,
     tokenizer: Any,
@@ -133,7 +129,7 @@ def next_token_payload(
     return {
         "top1_id": top1_id,
         "top1_token": tokenizer.decode([top1_id], clean_up_tokenization_spaces=False),
-        "target_rank": best_target_rank(normalized, target_ids),
+        "target_rank": best_token_rank(normalized, target_ids),
         "top_tokens": top_tokens(normalized, tokenizer, k=top_k),
     }
 

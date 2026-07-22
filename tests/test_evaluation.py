@@ -1,3 +1,4 @@
+import inspect
 import math
 from dataclasses import FrozenInstanceError, fields, replace
 
@@ -17,7 +18,13 @@ from jlens_reasoning.evaluation import (
     evaluate,
     evaluate_next_token,
 )
-from jlens_reasoning.evaluation_utils import parse_think_tags
+from jlens_reasoning.evaluation_utils import (
+    answer_token_variants,
+    best_token_rank,
+    log_rank_gain,
+    parse_think_tags,
+    top_token_values,
+)
 
 
 def test_model_output_preserves_raw_token_artifact() -> None:
@@ -458,3 +465,14 @@ def test_next_token_evaluation_rejects_unscorable_answers(
             references,
             RankTokenizer(),
         )
+
+
+@pytest.mark.parametrize(
+    "function",
+    (answer_token_variants, best_token_rank, top_token_values, log_rank_gain),
+)
+def test_rank_helpers_document_their_outputs(function: object) -> None:
+    docstring = inspect.getdoc(function)
+
+    assert docstring is not None
+    assert "\nReturns " in docstring

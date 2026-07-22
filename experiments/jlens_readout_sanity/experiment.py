@@ -41,7 +41,7 @@ class Case:
     intervention: InterventionSpec | None = None
 
 
-GenerateOutput = Callable[[str], ModelOutput]
+OutputGenerator = Callable[[str], ModelOutput]
 
 
 def validate_cases(cases: Sequence[Case]) -> None:
@@ -75,7 +75,7 @@ def validate_cases(cases: Sequence[Case]) -> None:
 
 def generate_and_evaluate(
     case: Case,
-    generate_output: GenerateOutput,
+    generate_output: OutputGenerator,
 ) -> EvaluationResult:
     """Generate and evaluate one case's clean visible response."""
     output = generate_output(case.prompt)

@@ -28,8 +28,8 @@ from experiments.jlens_readout_sanity.runner import (
     summarize_swap_logits,
 )
 from experiments.jlens_readout_sanity.types import ReadoutCase, SwapCase
+from jlens_reasoning.evaluation_utils import best_token_rank, log_rank_gain
 from jlens_reasoning.experiments_utils.artifacts import write_results
-from jlens_reasoning.experiments_utils.controls import log_rank_gain
 from jlens_reasoning.experiments_utils.interventions import (
     LensCoordinateSwapper,
     coordinate_swap,
@@ -41,7 +41,6 @@ from jlens_reasoning.experiments_utils.interventions import (
 )
 from jlens_reasoning.experiments_utils.tokens import (
     TokenVariant,
-    best_target_rank,
     concept_token_variants,
     find_last_subsequence,
     positions_after_literal,
@@ -188,8 +187,8 @@ def test_find_last_subsequence_and_positions_after_literal() -> None:
 def test_rank_is_one_based_best_variant_and_stable_for_ties() -> None:
     logits = torch.tensor([0.0, 3.0, 3.0, 1.0])
 
-    assert best_target_rank(logits, (2, 3)) == 2
-    assert best_target_rank(logits, (3,)) == 3
+    assert best_token_rank(logits, (2, 3)) == 2
+    assert best_token_rank(logits, (3,)) == 3
 
 
 def test_jlens_vector_composes_jacobian_and_unembedding() -> None:

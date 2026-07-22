@@ -35,13 +35,13 @@ from experiments.jlens_readout_sanity.types import (
     ResolvedSwapCase,
     SwapCase,
 )
+from jlens_reasoning.evaluation_utils import best_token_rank
 from jlens_reasoning.experiments_utils.interventions import (
     execute_intervention,
     token_vectors_by_layer,
 )
 from jlens_reasoning.experiments_utils.tokens import (
     TokenVariant,
-    best_target_rank,
     concept_token_variants,
     next_token_payload,
     positions_after_literal,
@@ -125,7 +125,7 @@ def _summarize_lens(
 ) -> dict[str, int]:
     candidates = [
         (
-            best_target_rank(logits_by_layer[layer][position], target_ids),
+            best_token_rank(logits_by_layer[layer][position], target_ids),
             layer,
             position,
         )
@@ -147,7 +147,7 @@ def _readout_payload(
         str(layer): [
             {
                 "position": position,
-                "target_rank": best_target_rank(position_logits, target_ids),
+                "target_rank": best_token_rank(position_logits, target_ids),
                 "top_tokens": top_tokens(position_logits, tokenizer, k=top_k),
             }
             for position, position_logits in enumerate(layer_logits)
@@ -268,7 +268,7 @@ def summarize_swap_logits(
     target_ids = tuple(variant.token_id for variant in target_variants)
     normalized_clean = clean_logits.detach().float().cpu()
     clean = next_token_payload(normalized_clean, target_ids, tokenizer, top_k=top_k)
-    clean["expected_rank"] = best_target_rank(normalized_clean, expected_ids)
+    clean["expected_rank"] = best_token_rank(normalized_clean, expected_ids)
     clean["expected_top1"] = clean["expected_rank"] == 1
     interventions = {
         str(alpha): next_token_payload(logits, target_ids, tokenizer, top_k=top_k)

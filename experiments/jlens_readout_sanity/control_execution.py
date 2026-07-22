@@ -30,9 +30,9 @@ from experiments.jlens_readout_sanity.control_analysis import (
     summarize_wrong_concept,
 )
 from experiments.jlens_readout_sanity.types import InterventionContext
+from jlens_reasoning.evaluation_utils import best_token_rank, log_rank_gain
 from jlens_reasoning.experiments_utils.controls import (
     build_random_target_exclusions,
-    log_rank_gain,
     matched_random_vectors,
     mean,
     select_random_targets,
@@ -42,7 +42,6 @@ from jlens_reasoning.experiments_utils.interventions import (
     execute_intervention,
     single_token_vectors_by_layer,
 )
-from jlens_reasoning.experiments_utils.tokens import best_target_rank
 
 
 def analyze_identity_case(
@@ -71,8 +70,8 @@ def analyze_identity_case(
     intervened = intervened_logits.detach().float().cpu()
     clean_top1_id = int(clean.argmax().item())
     intervened_top1_id = int(intervened.argmax().item())
-    clean_target_rank = best_target_rank(clean, target_ids)
-    intervened_target_rank = best_target_rank(intervened, target_ids)
+    clean_target_rank = best_token_rank(clean, target_ids)
+    intervened_target_rank = best_token_rank(intervened, target_ids)
     maximum_difference = float((clean - intervened).abs().max().item())
     top1_unchanged = clean_top1_id == intervened_top1_id
     target_rank_unchanged = clean_target_rank == intervened_target_rank
@@ -108,8 +107,8 @@ def _rank_gain_payload(
 ) -> dict[str, Any]:
     clean = context.clean_logits.detach().float().cpu()
     intervened = intervened_logits.detach().float().cpu()
-    clean_rank = best_target_rank(clean, context.target_ids)
-    intervened_rank = best_target_rank(intervened, context.target_ids)
+    clean_rank = best_token_rank(clean, context.target_ids)
+    intervened_rank = best_token_rank(intervened, context.target_ids)
     return {
         "key": context.resolved.case.key,
         "intended_target_ids": list(context.target_ids),

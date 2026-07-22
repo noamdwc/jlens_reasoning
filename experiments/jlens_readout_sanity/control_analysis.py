@@ -21,8 +21,8 @@ from experiments.jlens_readout_sanity.constants import (
     WRONG_CONCEPT_REQUIRED_CASE_WINS,
 )
 from experiments.jlens_readout_sanity.types import InterventionContext
+from jlens_reasoning.evaluation_utils import log_rank_gain
 from jlens_reasoning.experiments_utils.controls import (
-    log_rank_gain,
     mean,
     percentile_label,
     require_exact_case_keys,

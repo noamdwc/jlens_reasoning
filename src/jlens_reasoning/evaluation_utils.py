@@ -39,7 +39,10 @@ def answer_token_variants(
     tokenizer: Any,
     accepted_references: Sequence[str],
 ) -> tuple[tuple[int, str], ...]:
-    """Resolve accepted answers to unique case-and-space single-token variants."""
+    """Resolve accepted answers to unique case-and-space single-token variants.
+
+    Returns ordered ``(token_id, surface)`` pairs, keeping the first surface per ID.
+    """
     variants: list[tuple[int, str]] = []
     seen_ids: set[int] = set()
     for reference in accepted_references:
@@ -64,7 +67,10 @@ def answer_token_variants(
 
 
 def best_token_rank(logits: torch.Tensor, target_ids: Sequence[int]) -> int:
-    """Return the best deterministic one-based rank among target token IDs."""
+    """Find the best deterministic one-based rank among target token IDs.
+
+    Returns the smallest target rank, breaking logit ties by lower vocabulary ID.
+    """
     if logits.ndim != 1:
         raise ValueError("best_token_rank expects one logits vector")
     if not target_ids:
@@ -85,7 +91,10 @@ def top_token_values(
     *,
     k: int,
 ) -> tuple[tuple[int, str, float], ...]:
-    """Return deterministic top-token IDs, decoded surfaces, and logits."""
+    """Select and decode the highest-logit tokens.
+
+    Returns ordered ``(token_id, decoded_surface, logit)`` tuples.
+    """
     if k < 0:
         raise ValueError("top-token count must be non-negative")
     values, indices = torch.topk(logits, k=min(k, logits.numel()))
@@ -103,7 +112,10 @@ def top_token_values(
 
 
 def log_rank_gain(baseline_rank: int, candidate_rank: int) -> float:
-    """Return positive natural-log gain when a candidate rank improves."""
+    """Measure the natural-log rank change from baseline to candidate.
+
+    Returns ``log(baseline_rank) - log(candidate_rank)``; positive means improvement.
+    """
     if baseline_rank < 1 or candidate_rank < 1:
         raise ValueError("Ranks must be positive one-based integers")
     return math.log(baseline_rank) - math.log(candidate_rank)
