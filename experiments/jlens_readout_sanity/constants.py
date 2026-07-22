@@ -78,6 +78,7 @@ CONTROL_SEEDS = (
     547,
     607,
 )
+CONTROL_REQUIRED_CASE_COUNT = 5
 CONTROL_CASE_KEYS = tuple(case.key for case in SWAP_CASES)
 
 CONTROL_ALPHA = 1.0

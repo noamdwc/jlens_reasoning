@@ -1,3 +1,4 @@
+import inspect
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,6 +25,7 @@ from experiments.jlens_readout_sanity.controls import (
     analyze_identity_case,
 )
 from experiments.jlens_readout_sanity.runner import (
+    _validate_case_configuration,
     aggregate_capability_checks,
     analyze_case,
     analyze_swap_case,
@@ -75,6 +77,31 @@ def workspace_layers(n_layers, source_layers):
 def prepare_scoring_input(*args, **kwargs):
     kwargs.setdefault("max_formatting_tokens", 2)
     return _prepare_scoring_input(*args, **kwargs)
+
+
+def test_run_requires_explicit_case_tuples() -> None:
+    parameters = inspect.signature(run_readout_sanity).parameters
+    assert parameters["cases"].default is inspect.Parameter.empty
+    assert parameters["swap_cases"].default is inspect.Parameter.empty
+
+
+def test_case_configuration_requires_five_ordered_matching_keys() -> None:
+    valid_reads = tuple(READOUT_CASES)
+    valid_swaps = tuple(SWAP_CASES)
+
+    _validate_case_configuration(valid_reads, valid_swaps)
+
+    malformed = (
+        (valid_reads[:-1], valid_swaps[:-1]),
+        (valid_reads, tuple(reversed(valid_swaps))),
+        (valid_reads, (*valid_swaps[:-1], valid_swaps[0])),
+    )
+    for read_cases, swap_cases in malformed:
+        with pytest.raises(
+            ValueError,
+            match="five|unique|same keys in the same order",
+        ):
+            _validate_case_configuration(read_cases, swap_cases)
 
 
 def test_released_artifact_coordinates_match_upstream_walkthrough() -> None:
@@ -920,6 +947,8 @@ def test_run_readout_sanity_integrates_all_controls_without_storing_logits(
         tokenizer=tokenizer,
         unembedding_weight=unembedding,
         forward_next_token=forward_next_token,
+        cases=READOUT_CASES,
+        swap_cases=SWAP_CASES,
         alphas=alphas,
         top_k=3,
     )
@@ -1117,6 +1146,8 @@ def test_run_requires_configured_control_alpha(
             tokenizer=SimpleNamespace(),
             unembedding_weight=torch.zeros(6, 2),
             forward_next_token=lambda input_ids: torch.zeros(6),
+            cases=READOUT_CASES,
+            swap_cases=SWAP_CASES,
             alphas=(1.0,),
         )
 
@@ -1140,8 +1171,11 @@ def test_run_validates_swap_surfaces_before_lens_forwards() -> None:
             tokenizer=SwapTokenizer(),
             unembedding_weight=torch.zeros(6, 2),
             forward_next_token=lambda input_ids: torch.zeros(6),
-            cases=(ReadoutCase("spider", "prompt", ("8",), ("spider",)),),
-            swap_cases=(SwapCase("spider", " spider", " bad surface", ("6",)),),
+            cases=READOUT_CASES,
+            swap_cases=(
+                SwapCase("spider", " spider", " bad surface", ("6",)),
+                *SWAP_CASES[1:],
+            ),
             minimum_improvements=1,
         )
 

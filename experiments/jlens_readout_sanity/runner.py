@@ -11,6 +11,7 @@ from jlens.hooks import ActivationRecorder
 
 from experiments.jlens_readout_sanity.constants import (
     CONTROL_ALPHA,
+    CONTROL_REQUIRED_CASE_COUNT,
     DEFAULT_INTERVENTION_STRENGTHS,
     DEFAULT_MAX_FORMATTING_TOKENS,
     DEFAULT_MINIMUM_IMPROVEMENTS,
@@ -18,9 +19,7 @@ from experiments.jlens_readout_sanity.constants import (
     LENS_REPO,
     LENS_REVISION,
     MODEL_NAME,
-    READOUT_CASES,
     SPIDER_READ_MAX_RANK,
-    SWAP_CASES,
     TOP_K,
     WORKSPACE_LAYER_LOWER_FRACTION,
     WORKSPACE_LAYER_UPPER_FRACTION,
@@ -55,6 +54,29 @@ from jlens_reasoning.experiments_utils.validation import (
     workspace_layers,
     workspace_loading,
 )
+
+
+def _validate_case_configuration(
+    cases: Sequence[ReadoutCase],
+    swap_cases: Sequence[SwapCase],
+) -> None:
+    read_keys = [case.key for case in cases]
+    swap_keys = [case.key for case in swap_cases]
+    if len(read_keys) != CONTROL_REQUIRED_CASE_COUNT or len(swap_keys) != (
+        CONTROL_REQUIRED_CASE_COUNT
+    ):
+        raise ValueError(
+            "Negative controls require the exact "
+            f"five ({CONTROL_REQUIRED_CASE_COUNT}) readout and swap cases"
+        )
+    if len(set(read_keys)) != len(read_keys):
+        raise ValueError("Readout case keys must be unique")
+    if len(set(swap_keys)) != len(swap_keys):
+        raise ValueError("Swap case keys must be unique")
+    if read_keys != swap_keys:
+        raise ValueError(
+            "Readout and swap cases must have the same keys in the same order"
+        )
 
 
 def resolve_swap_cases(
@@ -430,14 +452,16 @@ def run_readout_sanity(
     tokenizer: Any,
     unembedding_weight: torch.Tensor,
     forward_next_token: Callable[[torch.Tensor], torch.Tensor],
-    cases: Sequence[ReadoutCase] = READOUT_CASES,
-    swap_cases: Sequence[SwapCase] = SWAP_CASES,
+    cases: Sequence[ReadoutCase],
+    swap_cases: Sequence[SwapCase],
     alphas: Sequence[float] = DEFAULT_INTERVENTION_STRENGTHS,
     minimum_improvements: int = DEFAULT_MINIMUM_IMPROVEMENTS,
     top_k: int = TOP_K,
 ) -> dict[str, Any]:
     """Run the complete fixed five-case sanity experiment."""
     validate_model_lens(model, lens)
+    _validate_case_configuration(cases, swap_cases)
+    resolved_swaps = resolve_swap_cases(cases, swap_cases, tokenizer)
     layers = workspace_layers(
         model.n_layers,
         lens.source_layers,
@@ -446,11 +470,6 @@ def run_readout_sanity(
     )
     if not layers:
         raise ValueError("No fitted layers fall inside the workspace range")
-    resolved_swaps = resolve_swap_cases(cases, swap_cases, tokenizer)
-    if tuple(cases) != READOUT_CASES or tuple(swap_cases) != SWAP_CASES:
-        raise ValueError(
-            "Negative controls require the exact five configured readout and swap cases"
-        )
     if CONTROL_ALPHA not in alphas:
         raise ValueError(
             "Negative controls require the existing "

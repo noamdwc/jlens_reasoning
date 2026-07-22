@@ -2,6 +2,7 @@ from experiments.jlens_readout_sanity.constants import (
     CONTROL_ALPHA,
     CONTROL_CASE_KEYS,
     CONTROL_CHECK_MAP,
+    CONTROL_REQUIRED_CASE_COUNT,
     CONTROL_SEEDS,
     DEFAULT_INTERVENTION_STRENGTHS,
     DEFAULT_MAX_FORMATTING_TOKENS,
@@ -49,6 +50,7 @@ def test_artifact_coordinates_and_readout_policy_are_fixed() -> None:
 
 
 def test_control_policy_is_fixed_and_namespaced() -> None:
+    assert CONTROL_REQUIRED_CASE_COUNT == 5
     assert CONTROL_SEEDS == (
         11,
         29,
