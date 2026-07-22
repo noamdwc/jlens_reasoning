@@ -102,9 +102,7 @@ results beneath:
 
 ```text
 runs/jlens-readout-sanity/
-├── result.json
-├── spider.html
-└── france_capital.html
+└── result.json
 ```
 
 The experiment checks whether the J-Lens surfaces the unspoken `spider`
@@ -114,6 +112,11 @@ answers. It runs the paper's `spider`→`ant` example and the same
 at both the standard (`alpha=1`) and double (`alpha=2`) strengths. The result
 artifact reports exact per-swap ranks and applies an open-model capability gate;
 it does not claim numerical replication of Claude 4.5.
+
+The notebook prints a text-only report for every configured check. `PASS` or
+`FAIL` always reflects the Qwen sanity threshold used by the run. Where the
+paper provides a directly comparable target, the report also shows the paper
+gap as diagnostic context; that gap does not change pass/fail.
 
 All experiments that grade model responses are expected to follow the
 [LLM answer-evaluation policy](docs/llm-answer-evaluation.md). The policy keeps

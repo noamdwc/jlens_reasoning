@@ -205,3 +205,14 @@ def test_readout_execution_saving_and_reporting_are_separate_cells() -> None:
     assert "for case in" not in report_source
     assert "for swap in" not in report_source
     assert "render-slices" not in cells_by_id
+
+
+def test_readout_sanity_documents_text_only_result_artifact() -> None:
+    readme = Path("README.md").read_text(encoding="utf-8")
+    normalized = " ".join(readme.split())
+
+    assert "runs/jlens-readout-sanity/\n└── result.json" in readme
+    assert "spider.html" not in readme
+    assert "france_capital.html" not in readme
+    assert "Qwen sanity threshold" in normalized
+    assert "paper gap" in normalized
