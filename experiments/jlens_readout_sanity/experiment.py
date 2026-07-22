@@ -10,9 +10,14 @@ import torch
 from jlens.hooks import ActivationRecorder
 
 from experiments.jlens_readout_sanity.constants import (
+    CONTROL_ALPHA,
     DEFAULT_MAX_FORMATTING_TOKENS,
+    DEFAULT_MINIMUM_IMPROVEMENTS,
     SPIDER_READ_MAX_RANK,
+    SWAP_TARGET_TOP1_REQUIRED_COUNT,
     TOP_K,
+    WORKSPACE_LAYER_LOWER_FRACTION,
+    WORKSPACE_LAYER_UPPER_FRACTION,
 )
 from jlens_reasoning.evaluation import (
     EvaluationResult,
@@ -41,7 +46,11 @@ from jlens_reasoning.experiments_utils.tokens import (
     prepare_scoring_input,
     single_token_surface,
 )
-from jlens_reasoning.experiments_utils.validation import workspace_loading
+from jlens_reasoning.experiments_utils.validation import (
+    validate_model_lens,
+    workspace_layers,
+    workspace_loading,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -444,3 +453,156 @@ class ExperimentResult:
     def passed(self) -> bool:
         """Return whether every configured experiment check passed."""
         return bool(self.checks) and all(self.checks.values())
+
+
+def run_case(
+    case: Case,
+    runtime: ExperimentRuntime,
+    *,
+    layers: Sequence[int],
+    top_k: int,
+) -> tuple[CaseResult, PreparedIntervention | None]:
+    """Run the clean evaluation and each operation configured for one case."""
+    baseline = generate_and_evaluate(case, runtime.generate_output)
+    readout = (
+        run_readout(case, case.readout, runtime, layers=layers, top_k=top_k)
+        if case.readout is not None
+        else None
+    )
+    if case.intervention is None:
+        intervention = None
+        prepared = None
+    else:
+        intervention, prepared = run_intervention(
+            case,
+            case.intervention,
+            runtime,
+            layers=layers,
+            top_k=top_k,
+        )
+        if readout is not None:
+            readout.workspace_loading = prepared.workspace_loading
+    return CaseResult(case, baseline, readout, intervention), prepared
+
+
+def run_experiment(
+    *,
+    cases: Sequence[Case],
+    runtime: ExperimentRuntime,
+    minimum_improvements: int = DEFAULT_MINIMUM_IMPROVEMENTS,
+    top_k: int = TOP_K,
+) -> ExperimentResult:
+    """Run the complete configured J-Lens readout sanity experiment."""
+    from experiments.jlens_readout_sanity.control_analysis import (
+        aggregate_all_checks,
+    )
+    from experiments.jlens_readout_sanity.controls import run_control_suite
+
+    validate_cases(cases)
+    validate_model_lens(runtime.model, runtime.lens)
+    layers = tuple(
+        workspace_layers(
+            runtime.model.n_layers,
+            runtime.lens.source_layers,
+            lower_fraction=WORKSPACE_LAYER_LOWER_FRACTION,
+            upper_fraction=WORKSPACE_LAYER_UPPER_FRACTION,
+        )
+    )
+    if not layers:
+        raise ValueError("No fitted layers fall inside the workspace range")
+
+    intervention_cases = [case for case in cases if case.intervention is not None]
+    for case in intervention_cases:
+        spec = case.intervention
+        assert spec is not None
+        single_token_surface(runtime.tokenizer, spec.source_surface)
+        single_token_surface(runtime.tokenizer, spec.target_surface)
+        if CONTROL_ALPHA not in spec.alphas:
+            raise ValueError(
+                f"Case {case.key!r} must include control alpha {CONTROL_ALPHA:g}"
+            )
+
+    results = []
+    prepared = []
+    interventions = []
+    for case in cases:
+        result, context = run_case(case, runtime, layers=layers, top_k=top_k)
+        results.append(result)
+        if context is not None:
+            prepared.append(context)
+            assert result.intervention is not None
+            interventions.append(result.intervention)
+
+    readout_gates = [
+        result.readout
+        for result in results
+        if result.case.readout is not None
+        and result.case.readout.require_capability_gate
+    ]
+    improved_count = sum(
+        any(condition.comparison.improved for condition in intervention.conditions)
+        for intervention in interventions
+    )
+    top1_count = sum(
+        any(condition.comparison.reached_top1 for condition in intervention.conditions)
+        for intervention in interventions
+    )
+    checks = {
+        "clean_baselines": all(result.baseline.passed for result in results),
+        "spider_read": bool(readout_gates)
+        and all(readout.capability_passed is True for readout in readout_gates),
+        "swap_rank_improvements": improved_count >= minimum_improvements,
+        "swap_target_top1": top1_count >= SWAP_TARGET_TOP1_REQUIRED_COUNT,
+    }
+    failures = []
+    if not checks["clean_baselines"]:
+        failures.append("one or more clean baseline answers failed evaluation")
+    if not checks["spider_read"]:
+        failures.append("configured readout capability gate failed")
+    if not checks["swap_rank_improvements"]:
+        failures.append(
+            f"coordinate swaps improved {improved_count}/{len(interventions)} "
+            f"target ranks; need at least {minimum_improvements}"
+        )
+    if not checks["swap_target_top1"]:
+        failures.append("no coordinate swap placed its target answer at top-1")
+
+    controls = run_control_suite(
+        prepared=prepared,
+        interventions=interventions,
+        runtime=runtime,
+        layers=layers,
+        top_k=top_k,
+    )
+    checks, failures, _ = aggregate_all_checks(checks, failures, controls)
+    case_count = len(interventions)
+    return ExperimentResult(
+        cases=tuple(results),
+        controls=controls,
+        checks=checks,
+        failures=tuple(failures),
+        policy={
+            "clean_baselines": {"required_count": len(results)},
+            "spider_read": {
+                "maximum_rank": SPIDER_READ_MAX_RANK,
+                "requires_better_than_logit_lens": True,
+                "paper_target_rank": 1,
+            },
+            "swap_rank_improvements": {
+                "required_count": minimum_improvements,
+                "case_count": case_count,
+            },
+            "swap_target_top1": {
+                "required_count": SWAP_TARGET_TOP1_REQUIRED_COUNT,
+                "case_count": case_count,
+                "paper_primary_alpha": CONTROL_ALPHA,
+                "paper_target_rank": 1,
+            },
+        },
+        metadata={
+            "workspace_layers": layers,
+            "top_k": top_k,
+            "case_count": len(results),
+        },
+        provenance={},
+    )

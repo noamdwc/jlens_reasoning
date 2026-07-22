@@ -1,9 +1,17 @@
 import json
+from dataclasses import dataclass
 from pathlib import Path
+from typing import get_type_hints
 
 import torch
 
 from jlens_reasoning.experiments_utils.artifacts import write_results
+
+
+@dataclass(frozen=True)
+class TypedArtifact:
+    rank: torch.Tensor
+    layers: tuple[int, ...]
 
 
 def test_write_results_is_json_ready_and_byte_stable(tmp_path: Path) -> None:
@@ -22,5 +30,17 @@ def test_write_results_is_json_ready_and_byte_stable(tmp_path: Path) -> None:
     assert json.loads(first.read_text(encoding="utf-8")) == {
         "layers": [7, 8],
         "path": "runs/result.json",
+        "rank": 3,
+    }
+
+
+def test_write_results_accepts_typed_experiment_results(tmp_path: Path) -> None:
+    output = tmp_path / "typed.json"
+
+    write_results(output, TypedArtifact(torch.tensor(3), (7, 8)))
+
+    assert get_type_hints(write_results)["result"] is object
+    assert json.loads(output.read_text(encoding="utf-8")) == {
+        "layers": [7, 8],
         "rank": 3,
     }

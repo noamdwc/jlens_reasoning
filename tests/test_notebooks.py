@@ -82,7 +82,7 @@ def test_readout_sanity_notebook_has_pinned_gpu_workflow() -> None:
     assert "from experiments.jlens_readout_sanity.constants import" in source
     assert "from experiments.jlens_readout_sanity.utils import" in source
     assert "JacobianLens.from_pretrained" in source
-    assert "run_readout_sanity" in source
+    assert "run_experiment" in source
     assert "write_results" in source
     assert "render_sanity_report" in source
     assert "jlens.vis" not in source
@@ -94,47 +94,86 @@ def test_readout_sanity_notebook_has_pinned_gpu_workflow() -> None:
     assert "raise RuntimeError" in source
     assert "forward_next_token" in source
     assert "get_output_embeddings().weight" in source
-    assert "causal_lm.generate" not in source
-    assert "SimpleFactualEvaluator" not in source
-    assert "max_new_tokens" not in source
+    assert "causal_lm.generate" in source
+    assert "ModelOutput" in source
+    assert "GenerationStatus" in source
+    assert "max_new_tokens=64" in source
     assert "READOUT_CASES" not in cells_by_id["load-model-and-lens"]
-    assert "cases=READOUT_CASES" in cells_by_id["run-experiment"]
-    assert "swap_cases=SWAP_CASES" in cells_by_id["run-experiment"]
+    assert "CASES = (" in cells_by_id["define-cases"]
+    assert "READOUT_CASES" not in source
+    assert "SWAP_CASES" not in source
+    assert "generate_output" in cells_by_id["run-experiment"]
+    assert "cases=CASES" in cells_by_id["run-experiment"]
 
 
 def test_readout_cases_are_defined_visibly_in_the_notebook() -> None:
     namespace = execute_notebook_case_cell()
 
-    readout_cases = namespace["READOUT_CASES"]
-    swap_cases = namespace["SWAP_CASES"]
-    assert [asdict(case) for case in readout_cases] == [
+    cases = namespace["CASES"]
+    assert [asdict(case) for case in cases] == [
         {
             "key": "spider",
             "prompt": "The number of legs on the animal that spins webs is",
             "expected_answers": ("8", "eight"),
-            "target_concepts": ("spider",),
-            "literal_argument": None,
+            "readout": {
+                "concepts": ("spider",),
+                "literal_argument": None,
+                "require_capability_gate": True,
+            },
+            "intervention": {
+                "source_surface": " spider",
+                "target_surface": " ant",
+                "target_answers": ("6", "six"),
+                "alphas": (1.0, 2.0),
+            },
         },
         {
             "key": "france_capital",
             "prompt": "The capital of France is the city of",
             "expected_answers": ("Paris",),
-            "target_concepts": ("France",),
-            "literal_argument": "France",
+            "readout": {
+                "concepts": ("France",),
+                "literal_argument": "France",
+                "require_capability_gate": False,
+            },
+            "intervention": {
+                "source_surface": " France",
+                "target_surface": " China",
+                "target_answers": ("Beijing",),
+                "alphas": (1.0, 2.0),
+            },
         },
         {
             "key": "france_language",
             "prompt": "Most people in France speak",
             "expected_answers": ("French",),
-            "target_concepts": ("France",),
-            "literal_argument": "France",
+            "readout": {
+                "concepts": ("France",),
+                "literal_argument": "France",
+                "require_capability_gate": False,
+            },
+            "intervention": {
+                "source_surface": " France",
+                "target_surface": " China",
+                "target_answers": ("Chinese",),
+                "alphas": (1.0, 2.0),
+            },
         },
         {
             "key": "france_continent",
             "prompt": "France is a country on the continent of",
             "expected_answers": ("Europe",),
-            "target_concepts": ("France",),
-            "literal_argument": "France",
+            "readout": {
+                "concepts": ("France",),
+                "literal_argument": "France",
+                "require_capability_gate": False,
+            },
+            "intervention": {
+                "source_surface": " France",
+                "target_surface": " China",
+                "target_answers": ("Asia",),
+                "alphas": (1.0, 2.0),
+            },
         },
         {
             "key": "france_currency",
@@ -142,40 +181,17 @@ def test_readout_cases_are_defined_visibly_in_the_notebook() -> None:
                 "The single-word name for the currency now used in France is the"
             ),
             "expected_answers": ("Euro",),
-            "target_concepts": ("France",),
-            "literal_argument": "France",
-        },
-    ]
-    assert [asdict(case) for case in swap_cases] == [
-        {
-            "key": "spider",
-            "source_surface": " spider",
-            "target_surface": " ant",
-            "target_answers": ("6", "six"),
-        },
-        {
-            "key": "france_capital",
-            "source_surface": " France",
-            "target_surface": " China",
-            "target_answers": ("Beijing",),
-        },
-        {
-            "key": "france_language",
-            "source_surface": " France",
-            "target_surface": " China",
-            "target_answers": ("Chinese",),
-        },
-        {
-            "key": "france_continent",
-            "source_surface": " France",
-            "target_surface": " China",
-            "target_answers": ("Asia",),
-        },
-        {
-            "key": "france_currency",
-            "source_surface": " France",
-            "target_surface": " China",
-            "target_answers": ("Yuan",),
+            "readout": {
+                "concepts": ("France",),
+                "literal_argument": "France",
+                "require_capability_gate": False,
+            },
+            "intervention": {
+                "source_surface": " France",
+                "target_surface": " China",
+                "target_answers": ("Yuan",),
+                "alphas": (1.0, 2.0),
+            },
         },
     ]
 
@@ -188,19 +204,19 @@ def test_readout_execution_saving_and_reporting_are_separate_cells() -> None:
 
     run_source = cells_by_id["run-experiment"]
     assert "forward_next_token" in run_source
-    assert "run_readout_sanity" in run_source
+    assert "run_experiment" in run_source
     assert "write_results" not in run_source
     assert 'result["provenance"]' not in run_source
 
     save_source = cells_by_id["save-result"]
-    assert 'result["provenance"]' in save_source
+    assert "result.provenance" in save_source
     assert "write_results" in save_source
-    assert "run_readout_sanity" not in save_source
-    assert 'result["cases"]' not in save_source
+    assert "run_experiment" not in save_source
+    assert "result.cases" not in save_source
 
     report_source = cells_by_id["report-results"]
     assert "write_results" not in report_source
-    assert "run_readout_sanity" not in report_source
+    assert "run_experiment" not in report_source
     assert "print(render_sanity_report(result))" in report_source
     assert "for case in" not in report_source
     assert "for swap in" not in report_source

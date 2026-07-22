@@ -11,6 +11,7 @@ from experiments.jlens_readout_sanity.experiment import (
     InterventionSpec,
     ReadoutSpec,
     generate_and_evaluate,
+    run_case,
     run_intervention,
     run_readout,
     validate_cases,
@@ -136,6 +137,7 @@ class OperationTokenizer:
 
 class FakeReadoutLens:
     source_layers = [2]
+    jacobians = {2: torch.eye(2)}
 
     def apply(
         self,
@@ -231,3 +233,36 @@ def test_run_intervention_uses_evaluation_for_each_configured_alpha() -> None:
     assert tuple(condition.alpha for condition in result.conditions) == (1.0, 2.0)
     assert all(condition.comparison.improved for condition in result.conditions)
     assert all(condition.comparison.reached_top1 for condition in result.conditions)
+
+
+def test_run_case_executes_only_the_operations_present_on_the_case() -> None:
+    model = TinySwapModel()
+
+    def forward_next_token(input_ids: torch.Tensor) -> torch.Tensor:
+        del input_ids
+        hidden = torch.tensor([[[1.0, 0.0], [1.0, 0.0]]])
+        for block in model.layers:
+            hidden = block(hidden)
+        logits = torch.zeros(6)
+        logits[4] = hidden[0, -1, 0]
+        logits[5] = hidden[0, -1, 1]
+        return logits
+
+    unembedding = torch.zeros(6, 2)
+    unembedding[2] = torch.tensor([1.0, 0.0])
+    unembedding[3] = torch.tensor([0.0, 1.0])
+    runtime = ExperimentRuntime(
+        model=model,
+        lens=FakeReadoutLens(),
+        tokenizer=OperationTokenizer(),
+        unembedding_weight=unembedding,
+        forward_next_token=forward_next_token,
+        generate_output=lambda _: ModelOutput("8"),
+    )
+
+    result, prepared = run_case(spider_case(), runtime, layers=(2,), top_k=3)
+
+    assert result.baseline.passed
+    assert result.readout is not None
+    assert result.intervention is not None
+    assert prepared is not None

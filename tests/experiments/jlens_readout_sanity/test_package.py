@@ -2,13 +2,13 @@ from experiments.jlens_readout_sanity import (
     control_analysis,
     control_execution,
     controls,
-    runner,
+    experiment,
     utils,
 )
 
 
 def test_utils_is_the_small_notebook_facade() -> None:
-    assert utils.run_readout_sanity is runner.run_readout_sanity
+    assert utils.run_experiment is experiment.run_experiment
     assert utils.write_results.__module__ == (
         "jlens_reasoning.experiments_utils.artifacts"
     )

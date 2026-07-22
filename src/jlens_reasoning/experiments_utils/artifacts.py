@@ -27,7 +27,8 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
-def write_results(path: Path, result: Mapping[str, Any]) -> None:
+def write_results(path: Path, result: object) -> None:
+    """Serialize a typed experiment result or mapping as stable JSON."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(_jsonable(result), indent=2, sort_keys=True) + "\n",
