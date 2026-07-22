@@ -9,6 +9,9 @@ def test_utils_is_the_small_notebook_facade() -> None:
     assert utils.validate_model_lens.__module__ == (
         "jlens_reasoning.experiments_utils.validation"
     )
+    assert utils.render_sanity_report.__module__ == (
+        "experiments.jlens_readout_sanity.reporting"
+    )
 
 
 def test_control_orchestration_remains_experiment_local() -> None:
