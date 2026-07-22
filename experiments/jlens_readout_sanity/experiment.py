@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from jlens_reasoning.evaluation import (
     EvaluationResult,
+    ModelOutput,
     NextTokenEvaluation,
     RankComparison,
+    SimpleFactualEvaluator,
+    evaluate,
 )
+from jlens_reasoning.evaluation_utils import parse_think_tags
 from jlens_reasoning.experiments_utils.tokens import TokenVariant
 
 
@@ -35,6 +39,9 @@ class Case:
     expected_answers: tuple[str, ...]
     readout: ReadoutSpec | None = None
     intervention: InterventionSpec | None = None
+
+
+GenerateOutput = Callable[[str], ModelOutput]
 
 
 def validate_cases(cases: Sequence[Case]) -> None:
@@ -64,6 +71,19 @@ def validate_cases(cases: Sequence[Case]) -> None:
                 raise ValueError(f"Case {case.key!r} has no target answers")
             if not spec.alphas or len(set(spec.alphas)) != len(spec.alphas):
                 raise ValueError(f"Case {case.key!r} needs unique intervention alphas")
+
+
+def generate_and_evaluate(
+    case: Case,
+    generate_output: GenerateOutput,
+) -> EvaluationResult:
+    """Generate and evaluate one case's clean visible response."""
+    output = generate_output(case.prompt)
+    return evaluate(
+        output,
+        case.expected_answers,
+        evaluator=SimpleFactualEvaluator(reasoning_parser=parse_think_tags),
+    )
 
 
 @dataclass(frozen=True, slots=True)

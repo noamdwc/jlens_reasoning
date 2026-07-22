@@ -6,7 +6,13 @@ from experiments.jlens_readout_sanity.experiment import (
     Case,
     InterventionSpec,
     ReadoutSpec,
+    generate_and_evaluate,
     validate_cases,
+)
+from jlens_reasoning.evaluation import (
+    AnswerStatus,
+    GenerationStatus,
+    ModelOutput,
 )
 
 
@@ -70,3 +76,27 @@ def test_validate_cases_accepts_readout_swap_and_combined_cases() -> None:
     )
 
     validate_cases(cases)
+
+
+def test_generate_and_evaluate_uses_full_raw_output_and_think_parser() -> None:
+    case = spider_case()
+    generated = ModelOutput(
+        text="<think>A spider has eight legs.</think>\n 8.",
+        token_ids=(1, 2, 3),
+        token_pieces=("<think>reason</think>", " ", "8."),
+        generation_status=GenerationStatus.COMPLETE,
+        finish_reason="eos",
+    )
+    seen: list[str] = []
+
+    def generate_output(prompt: str) -> ModelOutput:
+        seen.append(prompt)
+        return generated
+
+    result = generate_and_evaluate(case, generate_output)
+
+    assert seen == [case.prompt]
+    assert result.raw_output is generated
+    assert result.extracted_answer == "8"
+    assert result.answer_status is AnswerStatus.CORRECT
+    assert result.passed
