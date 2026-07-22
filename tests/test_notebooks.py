@@ -84,18 +84,16 @@ def test_readout_sanity_notebook_has_pinned_gpu_workflow() -> None:
     assert "JacobianLens.from_pretrained" in source
     assert "run_readout_sanity" in source
     assert "write_results" in source
-    assert "compute_slice" in source
-    assert 'mode="embed"' in source
+    assert "render_sanity_report" in source
+    assert "jlens.vis" not in source
+    assert "compute_slice" not in source
+    assert "build_page" not in source
+    assert "notebook_iframe" not in source
+    assert ".html" not in source
+    assert "write_text(page" not in source
     assert "raise RuntimeError" in source
     assert "forward_next_token" in source
     assert "get_output_embeddings().weight" in source
-    assert "intervention_strengths" in source
-    assert 'result["swaps"]' in source
-    assert "identity_control" in source
-    assert "matched_random_vector_control" in source
-    assert "wrong_concept_control" in source
-    assert "random_target_control" in source
-    assert "overall_controls" in source
     assert "causal_lm.generate" not in source
     assert "SimpleFactualEvaluator" not in source
     assert "max_new_tokens" not in source
@@ -201,8 +199,9 @@ def test_readout_execution_saving_and_reporting_are_separate_cells() -> None:
     assert 'result["cases"]' not in save_source
 
     report_source = cells_by_id["report-results"]
-    assert 'result["cases"]' in report_source
-    assert 'result["swaps"]' in report_source
-    assert 'result["controls"]' in report_source
     assert "write_results" not in report_source
     assert "run_readout_sanity" not in report_source
+    assert "print(render_sanity_report(result))" in report_source
+    assert "for case in" not in report_source
+    assert "for swap in" not in report_source
+    assert "render-slices" not in cells_by_id
