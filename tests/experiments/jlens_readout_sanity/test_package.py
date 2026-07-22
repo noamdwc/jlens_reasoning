@@ -1,4 +1,10 @@
-from experiments.jlens_readout_sanity import control_analysis, controls, runner, utils
+from experiments.jlens_readout_sanity import (
+    control_analysis,
+    control_execution,
+    controls,
+    runner,
+    utils,
+)
 
 
 def test_utils_is_the_small_notebook_facade() -> None:
@@ -37,3 +43,25 @@ def test_controls_facade_reexports_analysis_api() -> None:
     assert controls.require_exact_cases is control_analysis.require_exact_cases
     assert controls.controls_passed is control_analysis.controls_passed
     assert controls.aggregate_all_checks is control_analysis.aggregate_all_checks
+
+
+def test_control_execution_owns_model_backed_logic() -> None:
+    assert control_execution.analyze_identity_case.__module__ == (
+        "experiments.jlens_readout_sanity.control_execution"
+    )
+    assert control_execution.run_identity_control.__module__ == (
+        "experiments.jlens_readout_sanity.control_execution"
+    )
+    assert control_execution.run_matched_random_vector_control.__module__ == (
+        "experiments.jlens_readout_sanity.control_execution"
+    )
+    assert control_execution.run_wrong_concept_control.__module__ == (
+        "experiments.jlens_readout_sanity.control_execution"
+    )
+    assert control_execution.run_random_target_control.__module__ == (
+        "experiments.jlens_readout_sanity.control_execution"
+    )
+
+
+def test_controls_facade_reexports_identity_analyzer() -> None:
+    assert controls.analyze_identity_case is control_execution.analyze_identity_case
