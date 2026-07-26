@@ -39,13 +39,23 @@ def test_notebooks_have_no_saved_outputs_or_execution_counts() -> None:
             assert cell.get("outputs", []) == []
 
 
-def test_notebooks_share_one_canonical_loader_cell() -> None:
+def test_notebooks_share_one_canonical_drive_loader_cell() -> None:
     loader_cells = [load_notebook(path).cells[0].source for path in NOTEBOOKS]
+    loader = loader_cells[0]
 
     assert loader_cells[0] == loader_cells[1]
-    assert "GITHUB_TOKEN_JLENS_REAS" in loader_cells[0]
-    assert "scripts/colab_bootstrap.py" in loader_cells[0]
-    assert "PROJECT_REF" in loader_cells[0]
+    assert 'drive.mount("/content/drive")' in loader
+    assert "/content/drive/MyDrive/data/jlens-reasoning/wheels" in loader
+    assert "requirements-colab.txt" in loader
+    assert "project-commit.txt" in loader
+    assert "PROJECT_COMMIT" in loader
+    assert 'glob("jlens_reasoning-*.whl")' in loader
+    assert "--requirement" in loader
+    assert "--no-deps" in loader
+    assert "GITHUB_TOKEN_JLENS_REAS" not in loader
+    assert "scripts/colab_bootstrap.py" not in loader
+    assert "PROJECT_REF" not in loader
+    assert not Path("scripts/colab_bootstrap.py").exists()
 
 
 def test_notebooks_do_not_contain_credentials() -> None:
@@ -66,6 +76,8 @@ def test_notebooks_use_the_colab_environment_module() -> None:
             "from jlens_reasoning.environments.colab import initialize_colab" in source
         )
         assert "context = initialize_colab(" in source
+        assert "PROJECT_DIR" not in source
+        assert "rev-parse" not in source
 
 
 def test_experiment_notebooks_are_discovered_without_a_registry() -> None:

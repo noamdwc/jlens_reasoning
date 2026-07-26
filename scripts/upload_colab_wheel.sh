@@ -54,7 +54,7 @@ start_seconds=$SECONDS
 printf 'Colab wheel upload\n'
 printf 'Repository: %s\n' "$repository"
 printf 'Destination: %s/wheels/\n' "$remote_root"
-printf 'Plan: check Drive -> prepare source -> build wheel -> upload\n'
+printf 'Plan: check Drive -> export requirements -> build wheel -> upload bundle\n'
 printf 'Timing: build duration depends on the local cache; '
 printf 'rclone displays live upload speed and ETA.\n'
 
@@ -69,17 +69,37 @@ if ! preflight_error=$(rclone lsd "$remote_root" 2>&1); then
 fi
 show_progress 1 "Drive access confirmed"
 
-printf '\nStep 2/4: Preparing an isolated build source...\n'
+printf '\nStep 2/4: Exporting requirements and preparing the build source...\n'
 workspace=$(mktemp -d "${TMPDIR:-/tmp}/jlens-wheel.XXXXXX")
 trap 'rm -rf "$workspace"' EXIT
 
 source_directory="$workspace/source"
 build_directory="$workspace/dist"
+requirements_file="$workspace/requirements-colab.txt"
+commit_file="$workspace/project-commit.txt"
 mkdir -p "$source_directory"
+
+git -C "$repository" rev-parse HEAD > "$commit_file"
+
+if ! uv export \
+    --frozen \
+    --no-dev \
+    --extra experiment \
+    --prune torch \
+    --prune numpy \
+    --no-emit-project \
+    --format requirements.txt \
+    --output-file "$requirements_file" \
+    --project "$repository"; then
+    printf 'error: locked requirements export failed\n' >&2
+    exit 1
+fi
+
 cp "$repository/pyproject.toml" "$source_directory/"
 cp "$repository/README.md" "$source_directory/"
 cp -R "$repository/src" "$source_directory/src"
-show_progress 2 "Build source ready"
+cp -R "$repository/experiments" "$source_directory/experiments"
+show_progress 2 "Requirements and build source ready"
 
 printf '\nStep 3/4: Building the wheel with uv...\n'
 if ! uv build \
@@ -101,8 +121,21 @@ wheel_size=$(du -h "$wheel" | awk '{print $1}')
 show_progress 3 "Wheel ready: $(basename "$wheel") ($wheel_size)"
 
 remote_wheel="$remote_root/wheels/$(basename "$wheel")"
-printf '\nStep 4/4: Uploading the wheel with rclone...\n'
+remote_requirements="$remote_root/wheels/requirements-colab.txt"
+remote_commit="$remote_root/wheels/project-commit.txt"
+printf '\nStep 4/4: Uploading the Colab bundle with rclone...\n'
 printf 'Live transfer speed and ETA follow below.\n'
+printf 'Uploading locked requirements...\n'
+if ! rclone copyto \
+    "$requirements_file" \
+    "$remote_requirements" \
+    --ignore-times \
+    --progress; then
+    printf 'error: requirements upload failed\n' >&2
+    exit 1
+fi
+
+printf 'Uploading wheel...\n'
 if ! rclone copyto \
     "$wheel" \
     "$remote_wheel" \
@@ -112,6 +145,18 @@ if ! rclone copyto \
     exit 1
 fi
 
+printf 'Publishing project commit marker...\n'
+if ! rclone copyto \
+    "$commit_file" \
+    "$remote_commit" \
+    --ignore-times \
+    --progress; then
+    printf 'error: project commit marker upload failed\n' >&2
+    exit 1
+fi
+
 show_progress 4 "Upload complete"
+printf 'uploaded %s\n' "$remote_requirements"
 printf 'uploaded %s\n' "$remote_wheel"
+printf 'uploaded %s\n' "$remote_commit"
 printf 'Total time: %ds\n' "$((SECONDS - start_seconds))"

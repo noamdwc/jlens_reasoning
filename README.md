@@ -63,15 +63,25 @@ before an experiment, then sync results back afterward.
 
 Add these exact names to Colab Secrets:
 
-- `GITHUB_TOKEN_JLENS_REAS`: GitHub token with read access to this repository.
 - `HF_READ_TOKEN`: Hugging Face read token.
 - `WANDB_API_KEY`: W&B API key.
 
-Open `notebooks/_template.ipynb` through the IDE's Colab integration. Set
-`PROJECT_REF` to an explicit branch, tag, or full commit SHA, run the loader
-cell, then initialize. The bootstrap preserves Colab's CUDA-enabled PyTorch
-and preloaded NumPy, and installs the remaining project and experiment
-dependencies from the committed lockfile.
+Before opening a notebook, build and upload the current Colab bundle from the
+repository root:
+
+```bash
+./scripts/upload_colab_wheel.sh
+```
+
+The script exports locked experiment requirements and uploads them beside the
+project wheel and commit marker under `data/jlens-reasoning/wheels` on the
+configured Drive remote. It excludes PyTorch and NumPy so Colab keeps its
+CUDA-enabled PyTorch and preloaded NumPy.
+
+Open `notebooks/_template.ipynb` through the IDE's Colab integration and run the
+loader cell. It mounts Drive, installs the locked requirements, and
+force-installs the uploaded wheel. Run the uploader again whenever project code
+or dependencies change.
 
 ```python
 from jlens_reasoning.environments.colab import initialize_colab

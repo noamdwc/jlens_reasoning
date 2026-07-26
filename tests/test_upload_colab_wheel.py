@@ -44,6 +44,18 @@ printf 'uv' >> "$COMMAND_LOG"
 printf '\\t%s' "$@" >> "$COMMAND_LOG"
 printf '\\n' >> "$COMMAND_LOG"
 
+if [ "$1" = "export" ]; then
+    while [ "$#" -gt 0 ]; do
+        if [ "$1" = "--output-file" ]; then
+            requirements_file=$2
+            break
+        fi
+        shift
+    done
+    printf 'transformers==5.5.0\\n' > "$requirements_file"
+    exit 0
+fi
+
 output_directory=
 while [ "$#" -gt 0 ]; do
     if [ "$1" = "--out-dir" ]; then
@@ -55,7 +67,7 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 
-for input in pyproject.toml README.md src; do
+for input in pyproject.toml README.md src experiments; do
     [ -e "$build_source/$input" ]
 done
 
@@ -95,7 +107,9 @@ def run_uploader(
     return result, command_log, build_source_log, build_directory_log
 
 
-def test_builds_uploads_and_cleans_the_wheel(tmp_path: Path) -> None:
+def test_exports_builds_uploads_and_cleans_the_colab_bundle(
+    tmp_path: Path,
+) -> None:
     result, command_log, build_source_log, build_directory_log = run_uploader(
         tmp_path
     )
@@ -103,10 +117,37 @@ def test_builds_uploads_and_cleans_the_wheel(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     commands = command_log.read_text(encoding="utf-8").splitlines()
     assert commands[0] == "rclone\tlsd\tjlens:data/jlens-reasoning"
-    assert commands[1].startswith("uv\tbuild\t--wheel\t--out-dir\t")
-    assert commands[2].endswith(
+    export_command = commands[1].split("\t")
+    assert export_command[:14] == [
+        "uv",
+        "export",
+        "--frozen",
+        "--no-dev",
+        "--extra",
+        "experiment",
+        "--prune",
+        "torch",
+        "--prune",
+        "numpy",
+        "--no-emit-project",
+        "--format",
+        "requirements.txt",
+        "--output-file",
+    ]
+    assert Path(export_command[14]).name == "requirements-colab.txt"
+    assert export_command[15:] == ["--project", str(REPOSITORY)]
+    assert commands[2].startswith("uv\tbuild\t--wheel\t--out-dir\t")
+    assert commands[3].endswith(
+        "\tjlens:data/jlens-reasoning/wheels/requirements-colab.txt"
+        "\t--ignore-times\t--progress"
+    )
+    assert commands[4].endswith(
         "\tjlens:data/jlens-reasoning/wheels/"
         "jlens_reasoning-0.1.0-py3-none-any.whl"
+        "\t--ignore-times\t--progress"
+    )
+    assert commands[5].endswith(
+        "\tjlens:data/jlens-reasoning/wheels/project-commit.txt"
         "\t--ignore-times\t--progress"
     )
     assert (
@@ -128,10 +169,15 @@ def test_reports_phase_progress_and_timing(tmp_path: Path) -> None:
     result, _, _, _ = run_uploader(tmp_path)
 
     assert result.returncode == 0, result.stderr
-    assert "Plan: check Drive -> prepare source -> build wheel -> upload" in result.stdout
+    assert (
+        "Plan: check Drive -> export requirements -> build wheel -> upload bundle"
+        in result.stdout
+    )
     assert "rclone displays live upload speed and ETA" in result.stdout
     assert "[#####---------------]  25% Drive access confirmed" in result.stdout
-    assert "[##########----------]  50% Build source ready" in result.stdout
+    assert "[##########----------]  50% Requirements and build source ready" in (
+        result.stdout
+    )
     assert "[###############-----]  75% Wheel ready:" in result.stdout
     assert "[####################] 100% Upload complete" in result.stdout
     assert re.search(r"Total time: \d+s", result.stdout)
