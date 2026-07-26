@@ -138,8 +138,11 @@ The Git authorization environment is supplied only to the clone subprocess and
 is not stored in the notebook environment or Git configuration. The saved
 remote is the plain HTTPS repository URL. The bootstrap script has no GitHub,
 credential, clone, or checkout responsibilities; it only installs uv, exports
-the locked dependency set while preserving Colab's CUDA-enabled PyTorch, and
-installs this project into the active interpreter.
+the locked dependency set while preserving Colab's CUDA-enabled PyTorch and
+preloaded NumPy, and installs this project into the active interpreter. NumPy
+is preserved because Colab imports its compiled extension modules before
+notebook code runs; replacing its files in place would require a runtime
+restart before imports are safe.
 
 The loader assumes a fresh Colab runtime. Restarting the runtime is the supported
 way to switch revisions or rerun repository setup. New experiment notebooks are
