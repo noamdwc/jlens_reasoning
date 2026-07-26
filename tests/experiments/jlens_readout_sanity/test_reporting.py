@@ -10,6 +10,7 @@ from experiments.jlens_readout_sanity.experiment import (
     ReadoutSpec,
 )
 from experiments.jlens_readout_sanity.reporting import (
+    capability_rows,
     intervention_rows,
     readout_rows,
     render_sanity_report,
@@ -106,7 +107,13 @@ def sample_result() -> ExperimentResult:
             "random_target_control": False,
         },
         ("random target control failed",),
-        {},
+        {
+            "spider_read": {"paper_target_rank": 1},
+            "swap_target_top1": {
+                "paper_primary_alpha": 1.0,
+                "paper_target_rank": 1,
+            },
+        },
         {},
         {"project_commit": "abc123"},
     )
@@ -121,6 +128,27 @@ def test_typed_rows_keep_generated_answers_separate_from_token_ranks() -> None:
         "alpha=1: 4; alpha=2: 1",
         "1",
     )
+
+
+def test_rows_report_spider_and_primary_intervention_paper_gaps() -> None:
+    result = sample_result()
+
+    spider = next(row for row in capability_rows(result) if row[0] == "spider_read")
+
+    assert spider[-2:] == ("J rank 1", "+2 ranks")
+    assert intervention_rows(result)[0][-1] == "+3 ranks"
+
+
+def test_intervention_paper_gap_reports_an_exact_match() -> None:
+    result = sample_result()
+    intervention = result.cases[0].intervention
+    assert intervention is not None
+    intervention.conditions = (
+        condition(1.0, 40, 1),
+        condition(2.0, 40, 4),
+    )
+
+    assert intervention_rows(result)[0][-1] == "0 ranks"
 
 
 def test_complete_report_has_stable_sections_and_failure_details() -> None:

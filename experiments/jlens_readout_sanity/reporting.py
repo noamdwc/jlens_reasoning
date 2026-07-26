@@ -4,9 +4,17 @@ from __future__ import annotations
 
 from experiments.jlens_readout_sanity.experiment import ExperimentResult
 
+NO_PAPER_COMPARISON = "N/A"
+
 
 def _status(value: object) -> str:
     return "PASS" if bool(value) else "FAIL"
+
+
+def _rank_gap(rank: int, target_rank: int) -> str:
+    """Format the signed distance from a directly comparable paper rank."""
+    gap = rank - target_rank
+    return "0 ranks" if gap == 0 else f"{gap:+d} ranks"
 
 
 def _format_table(headers: tuple[str, ...], rows: tuple[tuple[str, ...], ...]) -> str:
@@ -65,8 +73,27 @@ def capability_rows(result: ExperimentResult) -> tuple[tuple[str, ...], ...]:
         ),
         "swap_target_top1": f"{top1_count}/{len(interventions)} targets reached top-1",
     }
+    spider_target_rank = int(result.policy["spider_read"]["paper_target_rank"])
+    paper_comparisons = {
+        "spider_read": (
+            f"J rank {spider_target_rank}",
+            (
+                NO_PAPER_COMPARISON
+                if gated is None
+                else _rank_gap(gated.jacobian_lens.best_rank, spider_target_rank)
+            ),
+        )
+    }
     return tuple(
-        (name, observations.get(name, "see negative controls"), _status(passed))
+        (
+            name,
+            observations.get(name, "see negative controls"),
+            _status(passed),
+            *paper_comparisons.get(
+                name,
+                (NO_PAPER_COMPARISON, NO_PAPER_COMPARISON),
+            ),
+        )
         for name, passed in result.checks.items()
     )
 
@@ -99,11 +126,24 @@ def readout_rows(result: ExperimentResult) -> tuple[tuple[str, ...], ...]:
 
 def intervention_rows(result: ExperimentResult) -> tuple[tuple[str, ...], ...]:
     """Build per-case clean and intervened target-rank rows."""
+    swap_policy = result.policy["swap_target_top1"]
+    primary_alpha = float(swap_policy["paper_primary_alpha"])
+    paper_target_rank = int(swap_policy["paper_target_rank"])
     rows = []
     for case in result.cases:
         intervention = case.intervention
         if intervention is None:
             continue
+        primary_conditions = [
+            condition
+            for condition in intervention.conditions
+            if condition.alpha == primary_alpha
+        ]
+        if len(primary_conditions) != 1:
+            raise ValueError(
+                f"Expected one intervention condition for alpha={primary_alpha:g}"
+            )
+        primary = primary_conditions[0]
         conditions = "; ".join(
             f"alpha={condition.alpha:g}: {condition.evaluation.target_rank}"
             for condition in intervention.conditions
@@ -133,6 +173,7 @@ def intervention_rows(result: ExperimentResult) -> tuple[tuple[str, ...], ...]:
                     )
                     else "no"
                 ),
+                _rank_gap(primary.evaluation.target_rank, paper_target_rank),
             )
         )
     return tuple(rows)
@@ -189,7 +230,10 @@ def render_sanity_report(result: ExperimentResult) -> str:
         f"Overall status: {_status(result.passed)}\n"
         f"Provenance: {provenance or 'N/A'}",
         "CAPABILITY CHECKS\n"
-        + _format_table(("check", "observed", "status"), capability_rows(result)),
+        + _format_table(
+            ("check", "observed", "status", "paper target", "paper gap"),
+            capability_rows(result),
+        ),
         "READOUT DETAILS\n"
         + _format_table(
             (
@@ -206,7 +250,15 @@ def render_sanity_report(result: ExperimentResult) -> str:
         ),
         "INTERVENTION DETAILS\n"
         + _format_table(
-            ("case", "clean rank", "conditions", "best rank", "improved", "top-1"),
+            (
+                "case",
+                "clean rank",
+                "conditions",
+                "best rank",
+                "improved",
+                "top-1",
+                "alpha=1 paper gap",
+            ),
             intervention_rows(result),
         ),
         "NEGATIVE CONTROLS\n"
