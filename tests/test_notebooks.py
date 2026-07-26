@@ -50,8 +50,11 @@ def test_notebooks_share_one_canonical_drive_loader_cell() -> None:
     assert "project-commit.txt" in loader
     assert "PROJECT_COMMIT" in loader
     assert 'glob("jlens_reasoning-*.whl")' in loader
+    assert loader.count("%pip install") == 2
     assert "--requirement" in loader
     assert "--no-deps" in loader
+    assert "subprocess.run" not in loader
+    assert "sys.executable" not in loader
     assert "GITHUB_TOKEN_JLENS_REAS" not in loader
     assert "scripts/colab_bootstrap.py" not in loader
     assert "PROJECT_REF" not in loader
