@@ -1,3 +1,4 @@
+import re
 from dataclasses import asdict
 from pathlib import Path
 
@@ -9,6 +10,8 @@ SHARED_NOTEBOOKS = [
 ]
 EXPERIMENT_NOTEBOOKS = sorted(Path("experiments").glob("*/*.ipynb"))
 NOTEBOOKS = [*SHARED_NOTEBOOKS, *EXPERIMENT_NOTEBOOKS]
+ASSET_NOTEBOOK = Path("notebooks/01_download_assets.ipynb")
+ALL_NOTEBOOKS = [*NOTEBOOKS, ASSET_NOTEBOOK]
 
 
 def load_notebook(path: Path) -> nbformat.NotebookNode:
@@ -29,7 +32,7 @@ def execute_notebook_case_cell() -> dict[str, object]:
 
 
 def test_notebooks_have_no_saved_outputs_or_execution_counts() -> None:
-    for path in NOTEBOOKS:
+    for path in ALL_NOTEBOOKS:
         notebook = load_notebook(path)
         for cell in notebook.cells:
             assert cell.get("execution_count") is None
@@ -46,11 +49,12 @@ def test_notebooks_share_one_canonical_loader_cell() -> None:
 
 
 def test_notebooks_do_not_contain_credentials() -> None:
-    forbidden_fragments = ("github_pat_", "ghp_", "hf_", "wandb-secret")
+    forbidden_fragments = ("github_pat_", "ghp_", "wandb-secret")
 
-    for path in NOTEBOOKS:
+    for path in ALL_NOTEBOOKS:
         source = path.read_text(encoding="utf-8")
         assert not any(fragment in source for fragment in forbidden_fragments)
+        assert re.search(r"hf_[A-Za-z0-9]{20,}", source) is None
 
 
 def test_notebooks_use_the_colab_environment_module() -> None:
@@ -232,3 +236,17 @@ def test_readout_sanity_documents_text_only_result_artifact() -> None:
     assert "france_capital.html" not in readme
     assert "Qwen sanity threshold" in normalized
     assert "paper gap" in normalized
+
+
+def test_asset_notebook_downloads_the_two_pinned_assets_to_drive() -> None:
+    notebook = load_notebook(ASSET_NOTEBOOK)
+    source = "\n".join(cell.source for cell in notebook.cells)
+
+    assert 'drive.mount("/content/drive")' in source
+    assert 'userdata.get("HF_TOKEN")' in source
+    assert "/content/drive/MyDrive/data/jlens-reasoning" in source
+    assert "Qwen/Qwen3.5-4B" in source
+    assert "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a" in source
+    assert "neuronpedia/jacobian-lens" in source
+    assert "16a01f309fcec900fdcec3f4cd5b64f3d00e4d5a" in source
+    assert "rclone" not in source

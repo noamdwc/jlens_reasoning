@@ -26,7 +26,6 @@ experiment = [
 [dependency-groups]
 dev = [
   "nbformat",
-  "pyyaml",
   "pytest",
   "ruff",
 ]

@@ -729,7 +729,6 @@ experiment = [
 dev = [
     { name = "nbformat" },
     { name = "pytest" },
-    { name = "pyyaml" },
     { name = "ruff" },
 ]
 
@@ -751,7 +750,6 @@ provides-extras = ["experiment"]
 dev = [
     { name = "nbformat" },
     { name = "pytest" },
-    { name = "pyyaml" },
     { name = "ruff" },
 ]
 
