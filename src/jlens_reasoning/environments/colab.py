@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 import torch
 
@@ -27,12 +26,6 @@ def _mount_google_drive() -> None:
     from google.colab import drive
 
     drive.mount("/content/drive")
-
-
-def _authenticate_huggingface(**kwargs: Any) -> None:
-    from huggingface_hub import login
-
-    login(**kwargs)
 
 
 def _required_secret(
@@ -57,15 +50,13 @@ def initialize_colab(
     artifact_root: str | Path = DEFAULT_COLAB_ARTIFACT_ROOT,
     secret_getter: Callable[[str], str] | None = None,
     drive_mounter: Callable[[], None] | None = None,
-    hf_authenticator: Callable[..., None] | None = None,
     wandb_authenticator: Callable[..., bool] = authenticate_wandb,
     device_selector: Callable[..., torch.device] = select_device,
 ) -> RuntimeContext:
-    """Mount Drive, authenticate services, and return notebook runtime paths."""
+    """Mount Drive, optionally authenticate W&B, and return runtime paths."""
 
     secret_getter = secret_getter or _get_colab_secret
     drive_mounter = drive_mounter or _mount_google_drive
-    hf_authenticator = hf_authenticator or _authenticate_huggingface
 
     try:
         drive_mounter()
@@ -75,16 +66,6 @@ def initialize_colab(
     os.environ[ARTIFACT_ROOT_ENV] = str(artifact_root)
     paths = create_artifact_paths(artifact_root)
     os.environ["HF_HOME"] = str(paths.huggingface_cache)
-
-    hf_token = _required_secret("HF_READ_TOKEN", secret_getter)
-    try:
-        hf_authenticator(
-            token=hf_token,
-            add_to_git_credential=False,
-            skip_if_logged_in=False,
-        )
-    except Exception:
-        raise RuntimeError("Hugging Face authentication failed") from None
 
     wandb_enabled = False
     if enable_wandb:

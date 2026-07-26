@@ -100,7 +100,11 @@ def test_readout_sanity_notebook_has_pinned_gpu_workflow() -> None:
     assert 'MODEL_NAME = "Qwen/Qwen3.5-4B"' not in source
     assert "from experiments.jlens_readout_sanity.constants import" in source
     assert "from experiments.jlens_readout_sanity.utils import" in source
+    assert "Path(MODEL_PATH)" in source
+    assert "Path(LENS_PATH)" in source
+    assert "local_files_only=True" in source
     assert "JacobianLens.from_pretrained" in source
+    assert "LENS_REPO" not in source
     assert "run_experiment" in source
     assert "write_results" in source
     assert "render_sanity_report" in source

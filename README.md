@@ -61,9 +61,8 @@ before an experiment, then sync results back afterward.
 
 ## Colab setup
 
-Add these exact names to Colab Secrets:
+Add this exact name to Colab Secrets when a notebook uses W&B:
 
-- `HF_READ_TOKEN`: Hugging Face read token.
 - `WANDB_API_KEY`: W&B API key.
 
 Before opening a notebook, build and upload the current Colab bundle from the
@@ -96,9 +95,10 @@ Disable it only when the notebook intentionally does not track an experiment:
 context = initialize_colab(enable_wandb=False, require_cuda=True)
 ```
 
-Initialization mounts Drive, validates artifact writability, authenticates
-Hugging Face, validates W&B when enabled, selects the device, and returns
-generic artifact paths. It authenticates W&B but does not create a run.
+Initialization mounts Drive, validates artifact writability, validates W&B when
+enabled, selects the device, and returns generic artifact paths. Experiment
+notebooks load their model and lens from Drive without Hugging Face
+authentication. W&B authentication does not create a run.
 
 Run `notebooks/00_environment_check.ipynb` after changing environment code. It
 does not download a model or benchmark.

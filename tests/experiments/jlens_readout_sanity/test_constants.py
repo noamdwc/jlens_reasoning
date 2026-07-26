@@ -44,6 +44,13 @@ def test_artifact_coordinates_and_readout_policy_are_fixed() -> None:
     assert LENS_FILE == (
         "qwen3.5-4b/jlens/Salesforce-wikitext/Qwen3.5-4B_jacobian_lens_n1000.pt"
     )
+    assert constants_module.MODEL_PATH == (
+        "/content/drive/MyDrive/data/jlens-reasoning/assets/models/qwen3.5-4b"
+    )
+    assert constants_module.LENS_PATH == (
+        "/content/drive/MyDrive/data/jlens-reasoning/assets/lenses/"
+        "qwen3.5-4b/Qwen3.5-4B_jacobian_lens_n1000.pt"
+    )
     assert TOP_K == 25
     assert WORKSPACE_LAYER_LOWER_FRACTION == 0.35
     assert WORKSPACE_LAYER_UPPER_FRACTION == 0.80
