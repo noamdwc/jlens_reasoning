@@ -70,8 +70,8 @@ Add these exact names to Colab Secrets:
 Open `notebooks/_template.ipynb` through the IDE's Colab integration. Set
 `PROJECT_REF` to an explicit branch, tag, or full commit SHA, run the loader
 cell, then initialize. The bootstrap preserves Colab's CUDA-enabled PyTorch
-and installs all other project and experiment dependencies from the committed
-lockfile.
+and preloaded NumPy, and installs the remaining project and experiment
+dependencies from the committed lockfile.
 
 ```python
 from jlens_reasoning.environments.colab import initialize_colab
@@ -92,6 +92,38 @@ generic artifact paths. It authenticates W&B but does not create a run.
 
 Run `notebooks/00_environment_check.ipynb` after changing environment code. It
 does not download a model or benchmark.
+
+## J-Lens read-and-change sanity experiment
+
+`experiments/jlens_readout_sanity/jlens_readout_sanity.ipynb` is the first model-backed experiment.
+Open it through the IDE's Colab integration with a GPU runtime and run all cells.
+It uses the released `Qwen/Qwen3.5-4B` Jacobian lens, disables W&B, and writes
+results beneath:
+
+```text
+runs/jlens-readout-sanity/
+└── result.json
+```
+
+The experiment checks whether the J-Lens surfaces the unspoken `spider`
+intermediate and whether clamped coordinate swaps causally redirect next-token
+answers. It runs the paper's `spider`→`ant` example and the same
+`France`→`China` swap across capital, language, continent, and currency prompts
+at both the standard (`alpha=1`) and double (`alpha=2`) strengths. The result
+artifact reports exact per-swap ranks and applies an open-model capability gate;
+it does not claim numerical replication of Claude 4.5.
+
+The notebook prints a text-only report for every configured check. `PASS` or
+`FAIL` always reflects the Qwen sanity threshold used by the run. Where the
+paper provides a directly comparable target, the report also shows the paper
+gap as diagnostic context; that gap does not change pass/fail.
+
+All experiments that grade model responses are expected to follow the
+[LLM answer-evaluation policy](docs/llm-answer-evaluation.md). The policy keeps
+raw generation, visible output, gold-blind extraction, normalization, and
+scoring separate, distinguishes paper-faithful metrics from semantic
+correctness, and records adoption status for evaluators that still need to be
+migrated.
 
 ## CI policy
 

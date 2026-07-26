@@ -131,6 +131,10 @@ def install_locked_environment(
             "experiment",
             "--prune",
             "torch",
+            # Colab imports NumPy before notebook code runs. Replacing its files
+            # in place mixes old loaded extensions with new Python modules.
+            "--prune",
+            "numpy",
             "--no-emit-project",
             "--format",
             "requirements.txt",
