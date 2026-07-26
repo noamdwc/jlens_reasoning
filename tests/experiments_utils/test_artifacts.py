@@ -14,6 +14,15 @@ class TypedArtifact:
     layers: tuple[int, ...]
 
 
+@dataclass(frozen=True)
+class DerivedStatusArtifact:
+    checks: dict[str, bool]
+
+    @property
+    def passed(self) -> bool:
+        return all(self.checks.values())
+
+
 def test_write_results_is_json_ready_and_byte_stable(tmp_path: Path) -> None:
     result = {
         "rank": torch.tensor(3),
@@ -43,4 +52,21 @@ def test_write_results_accepts_typed_experiment_results(tmp_path: Path) -> None:
     assert json.loads(output.read_text(encoding="utf-8")) == {
         "layers": [7, 8],
         "rank": 3,
+    }
+
+
+def test_write_results_includes_derived_top_level_passed(tmp_path: Path) -> None:
+    output = tmp_path / "derived-status.json"
+
+    write_results(
+        output,
+        DerivedStatusArtifact({"clean_baselines": True, "identity_control": False}),
+    )
+
+    assert json.loads(output.read_text(encoding="utf-8")) == {
+        "checks": {
+            "clean_baselines": True,
+            "identity_control": False,
+        },
+        "passed": False,
     }

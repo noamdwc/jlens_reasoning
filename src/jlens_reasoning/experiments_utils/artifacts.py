@@ -29,8 +29,11 @@ def _jsonable(value: Any) -> Any:
 
 def write_results(path: Path, result: object) -> None:
     """Serialize a typed experiment result or mapping as stable JSON."""
+    payload = _jsonable(result)
+    if isinstance(payload, dict) and hasattr(result, "passed"):
+        payload["passed"] = bool(result.passed)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps(_jsonable(result), indent=2, sort_keys=True) + "\n",
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
