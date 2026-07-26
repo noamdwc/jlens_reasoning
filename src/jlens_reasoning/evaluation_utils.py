@@ -126,7 +126,7 @@ def log_rank_gain(baseline_rank: int, candidate_rank: int) -> float:
 
 def extract_answer(evaluation_text: str) -> str | None:
     """Extract the first sentence-like answer segment from evaluated text."""
-    answer = re.split(r"[.!?\n]", evaluation_text, maxsplit=1)[0].strip()
+    answer = re.split(r"[,.!?\n]", evaluation_text, maxsplit=1)[0].strip()
     return answer or None
 
 
