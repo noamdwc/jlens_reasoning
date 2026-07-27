@@ -18,6 +18,7 @@ Options:
   --session NAME   Colab session name
   --timeout SEC    Per-cell execution timeout
   --keep           Keep the Colab session after the run
+  --allow-dirty    Upload uncommitted code
   -h, --help       Show this help
 EOF
 }
@@ -46,6 +47,10 @@ while [ "$#" -gt 0 ]; do
             ;;
         --keep)
             runner_arguments+=("$1")
+            shift
+            ;;
+        --allow-dirty)
+            upload_arguments+=("$1")
             shift
             ;;
         -*)

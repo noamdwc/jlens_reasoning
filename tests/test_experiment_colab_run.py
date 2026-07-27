@@ -108,11 +108,12 @@ def test_forwards_upload_and_colab_options(tmp_path: Path) -> None:
         "--timeout",
         "300",
         "--keep",
+        "--allow-dirty",
     )
 
     assert result.returncode == 0, result.stderr
     assert command_log.read_text(encoding="utf-8").splitlines() == [
-        "upload\t--remote\tresearch",
+        "upload\t--remote\tresearch\t--allow-dirty",
         (
             "run\t--gpu\tT4\t--session\tcustom-session"
             f"\t--timeout\t300\t--keep\t{notebook}"
@@ -150,6 +151,7 @@ def test_help_exits_without_running_commands(tmp_path: Path) -> None:
     assert "--remote NAME" in result.stdout
     assert "--gpu TYPE" in result.stdout
     assert "--keep" in result.stdout
+    assert "--allow-dirty" in result.stdout
     assert not command_log.exists()
 
 

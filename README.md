@@ -82,6 +82,9 @@ loader cell. It mounts Drive, installs the locked requirements, and
 force-installs the uploaded wheel. Run the uploader again whenever project code
 or dependencies change.
 
+Before the first model-backed experiment, run
+`notebooks/01_download_assets.ipynb`.
+
 ```python
 from jlens_reasoning.environments.colab import initialize_colab
 

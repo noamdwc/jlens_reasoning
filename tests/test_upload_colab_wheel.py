@@ -15,6 +15,7 @@ def fake_tools(tmp_path: Path) -> tuple[Path, Path]:
     bin_directory = tmp_path / "bin"
     bin_directory.mkdir()
     command_log = tmp_path / "commands.log"
+    (tmp_path / "uploaded").mkdir()
 
     write_executable(
         bin_directory / "rclone",
@@ -32,6 +33,9 @@ fi
 if [ "$1" = "copyto" ] && [ ! -f "$2" ]; then
     printf 'wheel does not exist\\n' >&2
     exit 1
+fi
+if [ "$1" = "copyto" ]; then
+    cp "$2" "$UPLOAD_DIRECTORY/$(basename "$3")"
 fi
 """,
     )
@@ -79,11 +83,48 @@ touch "$output_directory/jlens_reasoning-0.1.0-py3-none-any.whl"
     return bin_directory, command_log
 
 
+def create_repository(tmp_path: Path, *, dirty: bool) -> Path:
+    repository = tmp_path / "repository"
+    scripts_directory = repository / "scripts"
+    scripts_directory.mkdir(parents=True)
+    wrapper = scripts_directory / SCRIPT.name
+    wrapper.write_bytes(SCRIPT.read_bytes())
+    wrapper.chmod(0o755)
+
+    (repository / "pyproject.toml").write_text(
+        '[project]\nname = "jlens-reasoning"\nversion = "0.1.0"\n',
+        encoding="utf-8",
+    )
+    (repository / "README.md").write_text("# test\n", encoding="utf-8")
+    (repository / "src").mkdir()
+    (repository / "experiments").mkdir()
+
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    subprocess.run(
+        ["git", "-C", str(repository), "config", "user.email", "test@example.com"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repository), "config", "user.name", "Test"],
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(repository), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(repository), "commit", "-q", "-m", "initial"],
+        check=True,
+    )
+    if dirty:
+        (repository / "src" / "dirty.py").write_text("DIRTY = True\n", encoding="utf-8")
+    return repository
+
+
 def run_uploader(
     tmp_path: Path,
     *arguments: str,
+    dirty: bool = False,
     preflight_status: int = 0,
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path, Path]:
+    repository = create_repository(tmp_path, dirty=dirty)
     bin_directory, command_log = fake_tools(tmp_path)
     build_source_log = tmp_path / "build-source.log"
     build_directory_log = tmp_path / "build-directory.log"
@@ -94,10 +135,11 @@ def run_uploader(
         "BUILD_SOURCE_LOG": str(build_source_log),
         "BUILD_DIRECTORY_LOG": str(build_directory_log),
         "RCLONE_PREFLIGHT_STATUS": str(preflight_status),
+        "UPLOAD_DIRECTORY": str(tmp_path / "uploaded"),
     }
     result = subprocess.run(
-        ["/bin/bash", str(SCRIPT), *arguments],
-        cwd=REPOSITORY,
+        ["/bin/bash", str(repository / "scripts" / SCRIPT.name), *arguments],
+        cwd=repository,
         env=environment,
         text=True,
         capture_output=True,
@@ -137,7 +179,8 @@ def test_exports_builds_uploads_and_cleans_the_colab_bundle(
         "--output-file",
     ]
     assert Path(export_command[19]).name == "requirements-colab.txt"
-    assert export_command[20:] == ["--project", str(REPOSITORY)]
+    repository = tmp_path / "repository"
+    assert export_command[20:] == ["--project", str(repository)]
     assert commands[2].startswith("uv\tbuild\t--wheel\t--out-dir\t")
     assert commands[3].endswith(
         "\tjlens:data/jlens-reasoning/wheels/requirements-colab.txt"
@@ -149,6 +192,10 @@ def test_exports_builds_uploads_and_cleans_the_colab_bundle(
         "\t--ignore-times\t--progress"
     )
     assert commands[5].endswith(
+        "\tjlens:data/jlens-reasoning/wheels/project-dirty.txt"
+        "\t--ignore-times\t--progress"
+    )
+    assert commands[6].endswith(
         "\tjlens:data/jlens-reasoning/wheels/project-commit.txt"
         "\t--ignore-times\t--progress"
     )
@@ -159,9 +206,41 @@ def test_exports_builds_uploads_and_cleans_the_colab_bundle(
 
     build_source = Path(build_source_log.read_text(encoding="utf-8").strip())
     build_directory = Path(build_directory_log.read_text(encoding="utf-8").strip())
-    assert build_source != REPOSITORY
+    assert build_source != repository
     assert not build_source.exists()
     assert not build_directory.exists()
+    assert (tmp_path / "uploaded" / "project-dirty.txt").read_text(
+        encoding="utf-8"
+    ) == "false\n"
+
+
+def test_dirty_working_tree_stops_before_remote_preflight(tmp_path: Path) -> None:
+    result, command_log, _, _ = run_uploader(tmp_path, dirty=True)
+
+    assert result.returncode != 0
+    assert "working tree has uncommitted changes" in result.stderr
+    assert "--allow-dirty" in result.stderr
+    assert not command_log.exists()
+
+
+def test_allow_dirty_uploads_base_commit_and_dirty_marker(tmp_path: Path) -> None:
+    result, _, _, _ = run_uploader(tmp_path, "--allow-dirty", dirty=True)
+
+    assert result.returncode == 0, result.stderr
+    assert "warning: uploading uncommitted code" in result.stderr
+    repository = tmp_path / "repository"
+    expected_commit = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert (tmp_path / "uploaded" / "project-commit.txt").read_text(
+        encoding="utf-8"
+    ) == expected_commit
+    assert (tmp_path / "uploaded" / "project-dirty.txt").read_text(
+        encoding="utf-8"
+    ) == "true\n"
 
 
 def test_leaves_upload_progress_to_rclone(tmp_path: Path) -> None:
@@ -200,4 +279,5 @@ def test_help_exits_without_running_commands(tmp_path: Path) -> None:
 
     assert result.returncode == 0
     assert "usage:" in result.stdout
+    assert "--allow-dirty" in result.stdout
     assert not command_log.exists()

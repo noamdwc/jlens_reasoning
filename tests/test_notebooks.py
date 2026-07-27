@@ -60,7 +60,9 @@ def test_notebooks_share_one_canonical_drive_loader_cell() -> None:
     assert "/content/drive/MyDrive/data/jlens-reasoning/wheels" in loader
     assert "requirements-colab.txt" in loader
     assert "project-commit.txt" in loader
+    assert "project-dirty.txt" in loader
     assert "PROJECT_COMMIT" in loader
+    assert "PROJECT_WORKING_TREE_DIRTY" in loader
     assert 'glob("jlens_reasoning-*.whl")' in loader
     assert loader.count("%pip install -qq") == 2
     assert environment_check_loader.count("%pip install") == 2
@@ -253,6 +255,7 @@ def test_readout_execution_saving_and_reporting_are_separate_cells() -> None:
 
     save_source = cells_by_id["save-result"]
     assert "result.provenance" in save_source
+    assert '"working_tree_dirty": PROJECT_WORKING_TREE_DIRTY' in save_source
     assert "write_results" in save_source
     assert "run_experiment" not in save_source
     assert "result.cases" not in save_source
