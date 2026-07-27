@@ -1,3 +1,4 @@
+import re
 from dataclasses import asdict
 from pathlib import Path
 
@@ -9,6 +10,8 @@ SHARED_NOTEBOOKS = [
 ]
 EXPERIMENT_NOTEBOOKS = sorted(Path("experiments").glob("*/*.ipynb"))
 NOTEBOOKS = [*SHARED_NOTEBOOKS, *EXPERIMENT_NOTEBOOKS]
+ASSET_NOTEBOOK = Path("notebooks/01_download_assets.ipynb")
+ALL_NOTEBOOKS = [*NOTEBOOKS, ASSET_NOTEBOOK]
 
 
 def load_notebook(path: Path) -> nbformat.NotebookNode:
@@ -29,28 +32,64 @@ def execute_notebook_case_cell() -> dict[str, object]:
 
 
 def test_notebooks_have_no_saved_outputs_or_execution_counts() -> None:
-    for path in NOTEBOOKS:
+    for path in ALL_NOTEBOOKS:
         notebook = load_notebook(path)
         for cell in notebook.cells:
             assert cell.get("execution_count") is None
             assert cell.get("outputs", []) == []
 
 
-def test_notebooks_share_one_canonical_loader_cell() -> None:
-    loader_cells = [load_notebook(path).cells[0].source for path in NOTEBOOKS]
+def test_notebooks_share_one_canonical_drive_loader_cell() -> None:
+    recurring_paths = [
+        Path("notebooks/_template.ipynb"),
+        *EXPERIMENT_NOTEBOOKS,
+    ]
+    recurring_loaders = [
+        load_notebook(path).cells[0].source for path in recurring_paths
+    ]
+    loader = recurring_loaders[0]
+    environment_check_loader = (
+        load_notebook(Path("notebooks/00_environment_check.ipynb")).cells[0].source
+    )
 
-    assert loader_cells[0] == loader_cells[1]
-    assert "GITHUB_TOKEN_JLENS_REAS" in loader_cells[0]
-    assert "scripts/colab_bootstrap.py" in loader_cells[0]
-    assert "PROJECT_REF" in loader_cells[0]
+    assert all(candidate == loader for candidate in recurring_loaders)
+    assert environment_check_loader == loader.replace(
+        "%pip install -qq ", "%pip install "
+    )
+    assert 'drive.mount("/content/drive")' in loader
+    assert "/content/drive/MyDrive/data/jlens-reasoning/wheels" in loader
+    assert "requirements-colab.txt" in loader
+    assert "project-commit.txt" in loader
+    assert "project-dirty.txt" in loader
+    assert "PROJECT_COMMIT" in loader
+    assert "PROJECT_WORKING_TREE_DIRTY" in loader
+    assert 'glob("jlens_reasoning-*.whl")' in loader
+    assert loader.count("%pip install -qq") == 2
+    assert environment_check_loader.count("%pip install") == 2
+    assert "%pip install -q" not in environment_check_loader
+    assert "--requirement" in loader
+    assert "--no-deps" in loader
+    assert "subprocess.run" not in loader
+    assert "sys.executable" not in loader
+    assert "GITHUB_TOKEN_JLENS_REAS" not in loader
+    assert "scripts/colab_bootstrap.py" not in loader
+    assert "PROJECT_REF" not in loader
+    assert not Path("scripts/colab_bootstrap.py").exists()
+
+
+def test_asset_notebook_installs_dependencies_very_quietly() -> None:
+    source = "\n".join(cell.source for cell in load_notebook(ASSET_NOTEBOOK).cells)
+
+    assert source.count("%pip install -qq") == 1
 
 
 def test_notebooks_do_not_contain_credentials() -> None:
-    forbidden_fragments = ("github_pat_", "ghp_", "hf_", "wandb-secret")
+    forbidden_fragments = ("github_pat_", "ghp_", "wandb-secret")
 
-    for path in NOTEBOOKS:
+    for path in ALL_NOTEBOOKS:
         source = path.read_text(encoding="utf-8")
         assert not any(fragment in source for fragment in forbidden_fragments)
+        assert re.search(r"hf_[A-Za-z0-9]{20,}", source) is None
 
 
 def test_notebooks_use_the_colab_environment_module() -> None:
@@ -62,6 +101,8 @@ def test_notebooks_use_the_colab_environment_module() -> None:
             "from jlens_reasoning.environments.colab import initialize_colab" in source
         )
         assert "context = initialize_colab(" in source
+        assert "PROJECT_DIR" not in source
+        assert "rev-parse" not in source
 
 
 def test_experiment_notebooks_are_discovered_without_a_registry() -> None:
@@ -81,7 +122,11 @@ def test_readout_sanity_notebook_has_pinned_gpu_workflow() -> None:
     assert 'MODEL_NAME = "Qwen/Qwen3.5-4B"' not in source
     assert "from experiments.jlens_readout_sanity.constants import" in source
     assert "from experiments.jlens_readout_sanity.utils import" in source
+    assert "Path(MODEL_PATH)" in source
+    assert "Path(LENS_PATH)" in source
+    assert "local_files_only=True" in source
     assert "JacobianLens.from_pretrained" in source
+    assert "LENS_REPO" not in source
     assert "run_experiment" in source
     assert "write_results" in source
     assert "render_sanity_report" in source
@@ -210,6 +255,7 @@ def test_readout_execution_saving_and_reporting_are_separate_cells() -> None:
 
     save_source = cells_by_id["save-result"]
     assert "result.provenance" in save_source
+    assert '"working_tree_dirty": PROJECT_WORKING_TREE_DIRTY' in save_source
     assert "write_results" in save_source
     assert "run_experiment" not in save_source
     assert "result.cases" not in save_source
@@ -232,3 +278,17 @@ def test_readout_sanity_documents_text_only_result_artifact() -> None:
     assert "france_capital.html" not in readme
     assert "Qwen sanity threshold" in normalized
     assert "paper gap" in normalized
+
+
+def test_asset_notebook_downloads_the_two_pinned_assets_to_drive() -> None:
+    notebook = load_notebook(ASSET_NOTEBOOK)
+    source = "\n".join(cell.source for cell in notebook.cells)
+
+    assert 'drive.mount("/content/drive")' in source
+    assert 'userdata.get("HF_TOKEN")' in source
+    assert "/content/drive/MyDrive/data/jlens-reasoning" in source
+    assert "Qwen/Qwen3.5-4B" in source
+    assert "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a" in source
+    assert "neuronpedia/jacobian-lens" in source
+    assert "16a01f309fcec900fdcec3f4cd5b64f3d00e4d5a" in source
+    assert "rclone" not in source

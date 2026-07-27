@@ -4,6 +4,11 @@ MODEL_NAME = "Qwen/Qwen3.5-4B"
 LENS_REPO = "neuronpedia/jacobian-lens"
 LENS_REVISION = "qwen-n1000"
 LENS_FILE = "qwen3.5-4b/jlens/Salesforce-wikitext/Qwen3.5-4B_jacobian_lens_n1000.pt"
+MODEL_PATH = "/content/drive/MyDrive/data/jlens-reasoning/assets/models/qwen3.5-4b"
+LENS_PATH = (
+    "/content/drive/MyDrive/data/jlens-reasoning/assets/lenses/"
+    "qwen3.5-4b/Qwen3.5-4B_jacobian_lens_n1000.pt"
+)
 
 TOP_K = 25
 WORKSPACE_LAYER_LOWER_FRACTION = 0.35

@@ -61,17 +61,29 @@ before an experiment, then sync results back afterward.
 
 ## Colab setup
 
-Add these exact names to Colab Secrets:
+Add this exact name to Colab Secrets when a notebook uses W&B:
 
-- `GITHUB_TOKEN_JLENS_REAS`: GitHub token with read access to this repository.
-- `HF_READ_TOKEN`: Hugging Face read token.
 - `WANDB_API_KEY`: W&B API key.
 
-Open `notebooks/_template.ipynb` through the IDE's Colab integration. Set
-`PROJECT_REF` to an explicit branch, tag, or full commit SHA, run the loader
-cell, then initialize. The bootstrap preserves Colab's CUDA-enabled PyTorch
-and preloaded NumPy, and installs the remaining project and experiment
-dependencies from the committed lockfile.
+Before opening a notebook, build and upload the current Colab bundle from the
+repository root:
+
+```bash
+./scripts/upload_colab_wheel.sh
+```
+
+The script exports locked project runtime requirements and uploads them beside
+the project wheel and commit marker under `data/jlens-reasoning/wheels` on the
+configured Drive remote. It excludes notebook extras and Colab-owned packages
+so Colab keeps its preconfigured kernel, CUDA stack, NumPy, `fsspec`, and Rich.
+
+Open `notebooks/_template.ipynb` through the IDE's Colab integration and run the
+loader cell. It mounts Drive, installs the locked requirements, and
+force-installs the uploaded wheel. Run the uploader again whenever project code
+or dependencies change.
+
+Before the first model-backed experiment, run
+`notebooks/01_download_assets.ipynb`.
 
 ```python
 from jlens_reasoning.environments.colab import initialize_colab
@@ -86,9 +98,10 @@ Disable it only when the notebook intentionally does not track an experiment:
 context = initialize_colab(enable_wandb=False, require_cuda=True)
 ```
 
-Initialization mounts Drive, validates artifact writability, authenticates
-Hugging Face, validates W&B when enabled, selects the device, and returns
-generic artifact paths. It authenticates W&B but does not create a run.
+Initialization mounts Drive, validates artifact writability, validates W&B when
+enabled, selects the device, and returns generic artifact paths. Experiment
+notebooks load their model and lens from Drive without Hugging Face
+authentication. W&B authentication does not create a run.
 
 Run `notebooks/00_environment_check.ipynb` after changing environment code. It
 does not download a model or benchmark.
