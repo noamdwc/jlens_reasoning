@@ -9,15 +9,17 @@ upload_arguments=()
 runner_arguments=()
 
 usage() {
-    printf 'usage: %s [OPTIONS] EXPERIMENT\n' "$(basename "$0")"
-    printf '\n'
-    printf 'Options:\n'
-    printf '  --remote NAME    rclone remote used for the wheel upload\n'
-    printf '  --gpu TYPE       Colab accelerator (default: L4)\n'
-    printf '  --session NAME   Colab session name\n'
-    printf '  --timeout SEC    Per-cell execution timeout\n'
-    printf '  --keep           Keep the Colab session after the run\n'
-    printf '  -h, --help       Show this help\n'
+    cat <<EOF
+usage: $(basename "$0") [OPTIONS] EXPERIMENT
+
+Options:
+  --remote NAME    rclone remote used for the wheel upload
+  --gpu TYPE       Colab accelerator (default: L4)
+  --session NAME   Colab session name
+  --timeout SEC    Per-cell execution timeout
+  --keep           Keep the Colab session after the run
+  -h, --help       Show this help
+EOF
 }
 
 while [ "$#" -gt 0 ]; do
@@ -74,16 +76,6 @@ fi
 notebook="$repository/experiments/$experiment/$experiment.ipynb"
 if [ ! -f "$notebook" ]; then
     printf 'error: experiment notebook does not exist: %s\n' "$notebook" >&2
-    exit 1
-fi
-if [ ! -x "$upload_script" ]; then
-    printf 'error: wheel upload script is not executable: %s\n' \
-        "$upload_script" >&2
-    exit 1
-fi
-if [ ! -x "$notebook_runner" ]; then
-    printf 'error: notebook runner is not executable: %s\n' \
-        "$notebook_runner" >&2
     exit 1
 fi
 

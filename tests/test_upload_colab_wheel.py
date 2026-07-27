@@ -1,5 +1,4 @@
 import os
-import re
 import subprocess
 from pathlib import Path
 
@@ -110,9 +109,7 @@ def run_uploader(
 def test_exports_builds_uploads_and_cleans_the_colab_bundle(
     tmp_path: Path,
 ) -> None:
-    result, command_log, build_source_log, build_directory_log = run_uploader(
-        tmp_path
-    )
+    result, command_log, build_source_log, build_directory_log = run_uploader(tmp_path)
 
     assert result.returncode == 0, result.stderr
     commands = command_log.read_text(encoding="utf-8").splitlines()
@@ -157,42 +154,29 @@ def test_exports_builds_uploads_and_cleans_the_colab_bundle(
     )
     assert (
         "uploaded jlens:data/jlens-reasoning/wheels/"
-        "jlens_reasoning-0.1.0-py3-none-any.whl"
-        in result.stdout
+        "jlens_reasoning-0.1.0-py3-none-any.whl" in result.stdout
     )
 
     build_source = Path(build_source_log.read_text(encoding="utf-8").strip())
-    build_directory = Path(
-        build_directory_log.read_text(encoding="utf-8").strip()
-    )
+    build_directory = Path(build_directory_log.read_text(encoding="utf-8").strip())
     assert build_source != REPOSITORY
     assert not build_source.exists()
     assert not build_directory.exists()
 
 
-def test_reports_phase_progress_and_timing(tmp_path: Path) -> None:
+def test_leaves_upload_progress_to_rclone(tmp_path: Path) -> None:
     result, _, _, _ = run_uploader(tmp_path)
 
     assert result.returncode == 0, result.stderr
-    assert (
-        "Plan: check Drive -> export requirements -> build wheel -> upload bundle"
-        in result.stdout
-    )
-    assert "rclone displays live upload speed and ETA" in result.stdout
-    assert "[#####---------------]  25% Drive access confirmed" in result.stdout
-    assert "[##########----------]  50% Requirements and build source ready" in (
-        result.stdout
-    )
-    assert "[###############-----]  75% Wheel ready:" in result.stdout
-    assert "[####################] 100% Upload complete" in result.stdout
-    assert re.search(r"Total time: \d+s", result.stdout)
+    assert "Plan:" not in result.stdout
+    assert "[#####" not in result.stdout
+    assert "Total time:" not in result.stdout
 
 
 def test_missing_remote_stops_before_building(tmp_path: Path) -> None:
     result, command_log, _, _ = run_uploader(tmp_path, preflight_status=1)
 
     assert result.returncode != 0
-    assert "rclone remote is unavailable" in result.stderr
     assert command_log.read_text(encoding="utf-8").splitlines() == [
         "rclone\tlsd\tjlens:data/jlens-reasoning"
     ]

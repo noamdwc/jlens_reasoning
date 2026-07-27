@@ -17,7 +17,6 @@ def run_runner(
     *arguments: str,
     append_notebook: bool = True,
     create_notebook: bool = True,
-    drivemount_failures: int = 0,
     drivemount_status: int = 0,
     exec_status: int = 0,
     notebook_name: str = "example.ipynb",
@@ -71,29 +70,12 @@ if [ "$command" = "exec" ] && [ "${COLAB_WRITE_OUTPUT:-1}" -eq 1 ]; then
     fi
 fi
 
-if [ "$command" = "drivemount" ] && [ "${COLAB_DRIVEMOUNT_FAILURES:-0}" -gt 0 ]; then
-    attempt=0
-    if [ -f "$COLAB_DRIVEMOUNT_ATTEMPT_FILE" ]; then
-        attempt=$(< "$COLAB_DRIVEMOUNT_ATTEMPT_FILE")
-    fi
-    attempt=$((attempt + 1))
-    printf '%s\n' "$attempt" > "$COLAB_DRIVEMOUNT_ATTEMPT_FILE"
-    if [ "$attempt" -le "$COLAB_DRIVEMOUNT_FAILURES" ]; then
-        exit "${COLAB_DRIVEMOUNT_STATUS:-1}"
-    fi
-    exit 0
-fi
-
 case "$command" in
     drivemount) exit "${COLAB_DRIVEMOUNT_STATUS:-0}" ;;
     exec) exit "${COLAB_EXEC_STATUS:-0}" ;;
     stop) exit "${COLAB_STOP_STATUS:-0}" ;;
 esac
 """,
-    )
-    write_executable(
-        bin_directory / "sleep",
-        "#!/bin/bash\nexit 0\n",
     )
     certificate_file = tmp_path / "cacert.pem"
     certificate_file.touch()
@@ -102,8 +84,6 @@ esac
         "PATH": f"{bin_directory}{os.pathsep}{os.environ['PATH']}",
         "COMMAND_LOG": str(command_log),
         "CERTIFICATE_LOG": str(tmp_path / "certificates.log"),
-        "COLAB_DRIVEMOUNT_ATTEMPT_FILE": str(tmp_path / "drivemount-attempt.txt"),
-        "COLAB_DRIVEMOUNT_FAILURES": str(drivemount_failures),
         "COLAB_DRIVEMOUNT_STATUS": str(drivemount_status),
         "COLAB_EXEC_STATUS": str(exec_status),
         "COLAB_OUTPUT_ERROR": "1" if output_error else "0",
@@ -274,29 +254,8 @@ def test_mount_failure_still_stops_session(tmp_path: Path) -> None:
     assert command_log.read_text(encoding="utf-8").splitlines() == [
         "new\t-s\tjlens-example\t--gpu\tL4",
         "drivemount\t-s\tjlens-example",
-        "drivemount\t-s\tjlens-example",
-        "drivemount\t-s\tjlens-example",
         "stop\t-s\tjlens-example",
     ]
-
-
-def test_retries_a_transient_mount_failure(tmp_path: Path) -> None:
-    result, command_log = run_runner(
-        tmp_path,
-        drivemount_failures=1,
-        drivemount_status=7,
-    )
-
-    assert result.returncode == 0, result.stderr
-    notebook = tmp_path / "example.ipynb"
-    assert command_log.read_text(encoding="utf-8").splitlines() == [
-        "new\t-s\tjlens-example\t--gpu\tL4",
-        "drivemount\t-s\tjlens-example",
-        "drivemount\t-s\tjlens-example",
-        (f"exec\t-s\tjlens-example\t--timeout\t7200\t-f\t{notebook}"),
-        "stop\t-s\tjlens-example",
-    ]
-    assert "Drive mount failed; retrying" in result.stderr
 
 
 def test_keep_preserves_failed_session(tmp_path: Path) -> None:
@@ -309,8 +268,6 @@ def test_keep_preserves_failed_session(tmp_path: Path) -> None:
     assert result.returncode == 7
     assert command_log.read_text(encoding="utf-8").splitlines() == [
         "new\t-s\tjlens-example\t--gpu\tL4",
-        "drivemount\t-s\tjlens-example",
-        "drivemount\t-s\tjlens-example",
         "drivemount\t-s\tjlens-example",
     ]
     assert "Keeping Colab session: jlens-example" in result.stdout

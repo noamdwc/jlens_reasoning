@@ -9,14 +9,16 @@ session=
 timeout=7200
 
 usage() {
-    printf 'usage: %s [OPTIONS] NOTEBOOK.ipynb\n' "$(basename "$0")"
-    printf '\n'
-    printf 'Options:\n'
-    printf '  --gpu TYPE       Colab accelerator (default: L4)\n'
-    printf '  --session NAME   Session name (default: derived from notebook)\n'
-    printf '  --timeout SEC    Per-cell execution timeout (default: 7200)\n'
-    printf '  --keep           Keep the Colab session after the run\n'
-    printf '  -h, --help       Show this help\n'
+    cat <<EOF
+usage: $(basename "$0") [OPTIONS] NOTEBOOK.ipynb
+
+Options:
+  --gpu TYPE       Colab accelerator (default: L4)
+  --session NAME   Session name (default: derived from notebook)
+  --timeout SEC    Per-cell execution timeout (default: 7200)
+  --keep           Keep the Colab session after the run
+  -h, --help       Show this help
+EOF
 }
 
 while [ "$#" -gt 0 ]; do
@@ -65,14 +67,11 @@ if [ ! -f "$notebook" ]; then
     printf 'error: notebook does not exist: %s\n' "$notebook" >&2
     exit 1
 fi
-case "$notebook" in
-    *.ipynb) ;;
-    *)
-        printf 'error: notebook must use the .ipynb extension: %s\n' \
-            "$notebook" >&2
-        exit 2
-        ;;
-esac
+if [[ "$notebook" != *.ipynb ]]; then
+    printf 'error: notebook must use the .ipynb extension: %s\n' \
+        "$notebook" >&2
+    exit 2
+fi
 if ! colab_executable=$(command -v colab); then
     printf 'error: colab CLI is not installed\n' >&2
     exit 1
@@ -107,15 +106,14 @@ fi
 
 notebook_name=$(basename "$notebook" .ipynb)
 session=${session:-"jlens-${notebook_name//_/-}"}
-session_started=0
 
 cleanup() {
     status=$?
     trap - EXIT
 
-    if [ "$session_started" -eq 1 ] && [ "$keep" -eq 1 ]; then
+    if [ "$keep" -eq 1 ]; then
         printf 'Keeping Colab session: %s\n' "$session"
-    elif [ "$session_started" -eq 1 ]; then
+    else
         if ! colab stop -s "$session"; then
             printf 'error: failed to stop Colab session: %s\n' "$session" >&2
             if [ "$status" -eq 0 ]; then
@@ -126,35 +124,11 @@ cleanup() {
 
     exit "$status"
 }
-trap cleanup EXIT
 
 colab new -s "$session" --gpu "$gpu"
-session_started=1
+trap cleanup EXIT
 
-mount_attempt=1
-mount_attempt_limit=3
-while [ "$mount_attempt" -le "$mount_attempt_limit" ]; do
-    if colab drivemount -s "$session"; then
-        mount_status=0
-    else
-        mount_status=$?
-    fi
-    if [ "$mount_status" -eq 0 ]; then
-        break
-    fi
-    if [ "$mount_attempt" -eq "$mount_attempt_limit" ]; then
-        printf 'error: Drive mount failed after %s attempts\n' \
-            "$mount_attempt_limit" >&2
-        exit "$mount_status"
-    fi
-
-    retry_delay=$((mount_attempt * 5))
-    printf 'Drive mount failed; retrying in %s seconds (%s/%s)...\n' \
-        "$retry_delay" "$((mount_attempt + 1))" "$mount_attempt_limit" >&2
-    sleep "$retry_delay"
-    mount_attempt=$((mount_attempt + 1))
-done
-
+colab drivemount -s "$session"
 colab exec -s "$session" --timeout "$timeout" -f "$notebook"
 
 cli_output_notebook="${notebook%.ipynb}_output.ipynb"
