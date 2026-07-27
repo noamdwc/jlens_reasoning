@@ -40,17 +40,31 @@ def test_notebooks_have_no_saved_outputs_or_execution_counts() -> None:
 
 
 def test_notebooks_share_one_canonical_drive_loader_cell() -> None:
-    loader_cells = [load_notebook(path).cells[0].source for path in NOTEBOOKS]
-    loader = loader_cells[0]
+    recurring_paths = [
+        Path("notebooks/_template.ipynb"),
+        *EXPERIMENT_NOTEBOOKS,
+    ]
+    recurring_loaders = [
+        load_notebook(path).cells[0].source for path in recurring_paths
+    ]
+    loader = recurring_loaders[0]
+    environment_check_loader = (
+        load_notebook(Path("notebooks/00_environment_check.ipynb")).cells[0].source
+    )
 
-    assert loader_cells[0] == loader_cells[1]
+    assert all(candidate == loader for candidate in recurring_loaders)
+    assert environment_check_loader == loader.replace(
+        "%pip install -qq ", "%pip install "
+    )
     assert 'drive.mount("/content/drive")' in loader
     assert "/content/drive/MyDrive/data/jlens-reasoning/wheels" in loader
     assert "requirements-colab.txt" in loader
     assert "project-commit.txt" in loader
     assert "PROJECT_COMMIT" in loader
     assert 'glob("jlens_reasoning-*.whl")' in loader
-    assert loader.count("%pip install") == 2
+    assert loader.count("%pip install -qq") == 2
+    assert environment_check_loader.count("%pip install") == 2
+    assert "%pip install -q" not in environment_check_loader
     assert "--requirement" in loader
     assert "--no-deps" in loader
     assert "subprocess.run" not in loader
@@ -59,6 +73,12 @@ def test_notebooks_share_one_canonical_drive_loader_cell() -> None:
     assert "scripts/colab_bootstrap.py" not in loader
     assert "PROJECT_REF" not in loader
     assert not Path("scripts/colab_bootstrap.py").exists()
+
+
+def test_asset_notebook_installs_dependencies_very_quietly() -> None:
+    source = "\n".join(cell.source for cell in load_notebook(ASSET_NOTEBOOK).cells)
+
+    assert source.count("%pip install -qq") == 1
 
 
 def test_notebooks_do_not_contain_credentials() -> None:
