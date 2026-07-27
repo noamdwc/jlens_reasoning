@@ -84,10 +84,13 @@ git -C "$repository" rev-parse HEAD > "$commit_file"
 if ! uv export \
     --frozen \
     --no-dev \
-    --extra experiment \
     --prune torch \
     --prune numpy \
+    --prune fsspec \
+    --prune rich \
+    --prune colorama \
     --no-emit-project \
+    --no-hashes \
     --format requirements.txt \
     --output-file "$requirements_file" \
     --project "$repository"; then

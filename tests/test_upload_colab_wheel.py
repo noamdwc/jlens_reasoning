@@ -118,24 +118,29 @@ def test_exports_builds_uploads_and_cleans_the_colab_bundle(
     commands = command_log.read_text(encoding="utf-8").splitlines()
     assert commands[0] == "rclone\tlsd\tjlens:data/jlens-reasoning"
     export_command = commands[1].split("\t")
-    assert export_command[:14] == [
+    assert export_command[:19] == [
         "uv",
         "export",
         "--frozen",
         "--no-dev",
-        "--extra",
-        "experiment",
         "--prune",
         "torch",
         "--prune",
         "numpy",
+        "--prune",
+        "fsspec",
+        "--prune",
+        "rich",
+        "--prune",
+        "colorama",
         "--no-emit-project",
+        "--no-hashes",
         "--format",
         "requirements.txt",
         "--output-file",
     ]
-    assert Path(export_command[14]).name == "requirements-colab.txt"
-    assert export_command[15:] == ["--project", str(REPOSITORY)]
+    assert Path(export_command[19]).name == "requirements-colab.txt"
+    assert export_command[20:] == ["--project", str(REPOSITORY)]
     assert commands[2].startswith("uv\tbuild\t--wheel\t--out-dir\t")
     assert commands[3].endswith(
         "\tjlens:data/jlens-reasoning/wheels/requirements-colab.txt"

@@ -72,10 +72,10 @@ repository root:
 ./scripts/upload_colab_wheel.sh
 ```
 
-The script exports locked experiment requirements and uploads them beside the
-project wheel and commit marker under `data/jlens-reasoning/wheels` on the
-configured Drive remote. It excludes PyTorch and NumPy so Colab keeps its
-CUDA-enabled PyTorch and preloaded NumPy.
+The script exports locked project runtime requirements and uploads them beside
+the project wheel and commit marker under `data/jlens-reasoning/wheels` on the
+configured Drive remote. It excludes notebook extras and Colab-owned packages
+so Colab keeps its preconfigured kernel, CUDA stack, NumPy, `fsspec`, and Rich.
 
 Open `notebooks/_template.ipynb` through the IDE's Colab integration and run the
 loader cell. It mounts Drive, installs the locked requirements, and
