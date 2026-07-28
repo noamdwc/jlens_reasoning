@@ -12,6 +12,7 @@ dependencies = [
   "huggingface-hub",
   "jlens",
   "numpy",
+  "pyarrow>=18.0.0",
   "torch",
   "transformers>=5.5",
 ]
