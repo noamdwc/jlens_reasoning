@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 import pyarrow as pa
@@ -9,7 +10,11 @@ import torch
 
 from experiments.flenqa_length_drift.experiment import (
     LensPassResult,
+    LensRunners,
+    PromptShard,
+    plan_shards,
     run_prompt,
+    run_shard,
 )
 from experiments.flenqa_length_drift.tables import (
     REQUIRED_SHARD_TABLES,
@@ -21,6 +26,7 @@ from jlens_reasoning.benchmarks.flenqa_prompts import (
     build_prompt_text,
     compute_prompt_id,
 )
+from jlens_reasoning.experiments_utils.storage import is_shard_complete
 
 
 class ExperimentTokenizer:
@@ -56,25 +62,25 @@ class ExperimentTokenizer:
         return [token_id] if token_id is not None else [90, 91]
 
 
-def _source_row() -> FlenqaRow:
+def _source_row(index: int = 0) -> FlenqaRow:
     return FlenqaRow(
-        source_row_id=0,
-        problem_id=0,
-        sample_id=0,
+        source_row_id=index,
+        problem_id=index,
+        sample_id=index,
         task="PIR",
         label=True,
         key_texts=("Ada called Bob.", "Bob greeted Ada."),
         rule=None,
         question="Did Ada meet someone?",
-        mixin="Ada called Bob.\nPadding text.\nBob greeted Ada.",
+        mixin=f"Ada called Bob.\nPadding text {index}.\nBob greeted Ada.",
         ctx_size_declared=500,
         padding_type_declared="books",
         dispersion_declared="middle",
     )
 
 
-def _prepared():
-    row = _source_row()
+def _prepared(index: int = 0):
+    row = _source_row(index)
     text = build_prompt_text(
         task=row.task,
         question=row.question,
@@ -82,7 +88,7 @@ def _prepared():
         rule=row.rule,
     )
     prompt = FlenqaPrompt(
-        canonical_index=0,
+        canonical_index=index,
         prompt_id=compute_prompt_id(text),
         problem_id=row.problem_id,
         task=row.task,
@@ -93,7 +99,7 @@ def _prepared():
         label=row.label,
         mixin=row.mixin,
         ctx_size_declared=row.ctx_size_declared,
-        source_row_ids=(0,),
+        source_row_ids=(index,),
         padding_type_declared=("books",),
         dispersion_declared=("middle",),
     )
@@ -245,4 +251,123 @@ def test_run_prompt_padding_anchors_are_members_of_explicit_padding_set() -> Non
     assert {
         context_text[prepared.offsets[position][0] : prepared.offsets[position][1]]
         for position in padding_positions
-    } <= set("Padding text. ")
+    } <= set("Padding text 0.")
+
+
+def test_plan_shards_uses_original_canonical_order() -> None:
+    prepared = [_prepared(index)[0] for index in range(5)]
+
+    assert plan_shards(prepared, shard_size=2) == (
+        PromptShard(shard_id=0, prompt_indices=(0, 1)),
+        PromptShard(shard_id=1, prompt_indices=(2, 3)),
+        PromptShard(shard_id=2, prompt_indices=(4,)),
+    )
+
+
+def test_run_shard_resumes_only_from_validated_complete_manifest(
+    tmp_path: Path,
+) -> None:
+    prepared_and_tokenizers = [_prepared(index) for index in range(3)]
+    prepared = [item[0] for item in prepared_and_tokenizers]
+    tokenizer = prepared_and_tokenizers[0][1]
+    source_rows = {index: _source_row(index) for index in range(3)}
+    runners = LensRunners(
+        jacobian=FakeRunner(prepared[0].input_ids),
+        logit=FakeRunner(prepared[0].input_ids),
+    )
+    shards = plan_shards(prepared, shard_size=1)
+
+    run_shard(
+        shards[0],
+        prepared,
+        output_dir=tmp_path,
+        source_rows=source_rows,
+        runners=runners,
+        tokenizer=tokenizer,
+    )
+    remaining = tuple(
+        shard
+        for shard in shards
+        if not is_shard_complete(
+            tmp_path,
+            shard_id=shard.shard_id,
+            schemas=TABLE_SCHEMAS,
+            required_tables=REQUIRED_SHARD_TABLES,
+        )
+    )
+
+    assert remaining == shards[1:]
+    assert remaining[0].prompt_indices == (1,)
+    assert remaining[1].prompt_indices == (2,)
+
+
+@pytest.mark.parametrize("fail_table", REQUIRED_SHARD_TABLES)
+def test_run_shard_crash_keeps_shard_incomplete_and_reruns_every_prompt(
+    tmp_path: Path,
+    fail_table: str,
+) -> None:
+    first, tokenizer = _prepared(0)
+    second, _ = _prepared(1)
+    prepared = [first, second]
+    source_rows = {index: _source_row(index) for index in range(2)}
+    shard = plan_shards(prepared, shard_size=2)[0]
+    calls: list[str] = []
+
+    def fake_run_prompt(prompt, **kwargs):
+        calls.append(prompt.prompt.prompt_id)
+        return run_prompt(prompt, **kwargs)
+
+    def crash_after_table(table: str) -> None:
+        if table == fail_table:
+            raise RuntimeError("injected crash")
+
+    with pytest.raises(RuntimeError, match="injected crash"):
+        run_shard(
+            shard,
+            prepared,
+            output_dir=tmp_path,
+            source_rows=source_rows,
+            runners=LensRunners(
+                jacobian=FakeRunner(first.input_ids),
+                logit=FakeRunner(first.input_ids),
+            ),
+            tokenizer=tokenizer,
+            run_prompt_fn=fake_run_prompt,
+            after_append=crash_after_table,
+        )
+
+    assert not is_shard_complete(
+        tmp_path,
+        shard_id=shard.shard_id,
+        schemas=TABLE_SCHEMAS,
+        required_tables=REQUIRED_SHARD_TABLES,
+    )
+
+    calls.clear()
+
+    class PerPromptRunner:
+        def run(self, prompt, *, positions, max_seq_len):
+            expected = next(
+                candidate for candidate in prepared if candidate.prompt.text == prompt
+            )
+            return FakeRunner(expected.input_ids).run(
+                prompt,
+                positions=positions,
+                max_seq_len=max_seq_len,
+            )
+
+    manifest = run_shard(
+        shard,
+        prepared,
+        output_dir=tmp_path,
+        source_rows=source_rows,
+        runners=LensRunners(
+            jacobian=PerPromptRunner(),
+            logit=PerPromptRunner(),
+        ),
+        tokenizer=tokenizer,
+        run_prompt_fn=fake_run_prompt,
+    )
+
+    assert calls == [first.prompt.prompt_id, second.prompt.prompt_id]
+    assert manifest.prompt_ids == tuple(calls)

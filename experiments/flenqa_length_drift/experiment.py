@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Protocol
 
 import pyarrow as pa
@@ -28,6 +29,7 @@ from experiments.flenqa_length_drift.readout import (
 from experiments.flenqa_length_drift.scoring import score_binary_answer
 from experiments.flenqa_length_drift.tables import (
     REQUIRED_SHARD_TABLES,
+    TABLE_SCHEMAS,
     empty_batch,
     record_batch,
 )
@@ -38,6 +40,13 @@ from jlens_reasoning.benchmarks.flenqa_conditions import (
 )
 from jlens_reasoning.benchmarks.flenqa_preparation import PreparedPrompt
 from jlens_reasoning.benchmarks.flenqa_prompts import compute_prompt_id
+from jlens_reasoning.experiments_utils.storage import (
+    ShardManifest,
+    ShardWriter,
+    is_shard_complete,
+    read_shard_manifest,
+    validate_shard_manifest,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +64,42 @@ class LensRunner(Protocol):
         positions: Sequence[int],
         max_seq_len: int,
     ) -> LensPassResult: ...
+
+
+@dataclass(frozen=True, slots=True)
+class LensRunners:
+    jacobian: LensRunner
+    logit: LensRunner
+
+
+@dataclass(frozen=True, slots=True)
+class PromptShard:
+    shard_id: int
+    prompt_indices: tuple[int, ...]
+
+
+def plan_shards(
+    prepared_prompts: Sequence[PreparedPrompt],
+    *,
+    shard_size: int,
+) -> tuple[PromptShard, ...]:
+    """Assign immutable shards from the complete canonical prompt sequence."""
+    if type(shard_size) is not int or shard_size <= 0:
+        raise ValueError("shard_size must be a positive integer")
+    canonical_indices = tuple(
+        prepared.prompt.canonical_index for prepared in prepared_prompts
+    )
+    if len(set(canonical_indices)) != len(canonical_indices):
+        raise ValueError("Prompt canonical indices must be unique")
+    if canonical_indices != tuple(sorted(canonical_indices)):
+        raise ValueError("Prepared prompts must be in canonical order")
+    return tuple(
+        PromptShard(
+            shard_id=start // shard_size,
+            prompt_indices=canonical_indices[start : start + shard_size],
+        )
+        for start in range(0, len(canonical_indices), shard_size)
+    )
 
 
 def _input_ids(value: Any) -> tuple[int, ...]:
@@ -201,9 +246,7 @@ def _spans_batch(prepared: PreparedPrompt) -> pa.RecordBatch:
             "fact_ordinal": [diagnostic.fact_ordinal for diagnostic in diagnostics],
             "surface": [diagnostic.surface for diagnostic in diagnostics],
             "span_status": [diagnostic.status.value for diagnostic in diagnostics],
-            "span_match_count": [
-                diagnostic.match_count for diagnostic in diagnostics
-            ],
+            "span_match_count": [diagnostic.match_count for diagnostic in diagnostics],
             "char_start": [diagnostic.char_start for diagnostic in diagnostics],
             "char_end": [diagnostic.char_end for diagnostic in diagnostics],
             "token_start": [diagnostic.token_start for diagnostic in diagnostics],
@@ -363,9 +406,8 @@ def run_prompt(
         raise RuntimeError("Jacobian and logit-lens token IDs differ")
     if not torch.equal(jacobian.model_logits, logit.model_logits):
         raise RuntimeError("Jacobian and logit-lens model logits differ")
-    if (
-        jacobian.model_logits.ndim != 2
-        or jacobian.model_logits.shape[0] != len(positions)
+    if jacobian.model_logits.ndim != 2 or jacobian.model_logits.shape[0] != len(
+        positions
     ):
         raise RuntimeError("Lens model logits rows must match selected positions")
 
@@ -414,3 +456,74 @@ def run_prompt(
         ),
     }
     return tuple((table, batches[table]) for table in REQUIRED_SHARD_TABLES)
+
+
+def run_shard(
+    shard: PromptShard,
+    prepared_prompts: Sequence[PreparedPrompt],
+    *,
+    output_dir: Path,
+    source_rows: Mapping[int, FlenqaRow],
+    runners: LensRunners,
+    tokenizer: Any,
+    generate: Callable[[str], str] | None = None,
+    run_prompt_fn: Callable[..., tuple[tuple[str, pa.RecordBatch], ...]] = run_prompt,
+    after_append: Callable[[str], None] | None = None,
+) -> ShardManifest:
+    """Run one immutable shard, committing its completion manifest last."""
+    by_index = {
+        prepared.prompt.canonical_index: prepared for prepared in prepared_prompts
+    }
+    if len(by_index) != len(prepared_prompts):
+        raise ValueError("Prepared prompt canonical indices must be unique")
+    try:
+        selected = tuple(by_index[index] for index in shard.prompt_indices)
+    except KeyError as exc:
+        raise ValueError(
+            f"Shard references unknown canonical index {exc.args[0]}"
+        ) from exc
+    prompt_ids = tuple(prepared.prompt.prompt_id for prepared in selected)
+    root = Path(output_dir)
+    if is_shard_complete(
+        root,
+        shard_id=shard.shard_id,
+        schemas=TABLE_SCHEMAS,
+        required_tables=REQUIRED_SHARD_TABLES,
+    ):
+        manifest = read_shard_manifest(root, shard_id=shard.shard_id)
+        if manifest.prompt_ids != prompt_ids:
+            raise RuntimeError("Completed shard prompt membership does not match plan")
+        return validate_shard_manifest(
+            root,
+            manifest,
+            schemas=TABLE_SCHEMAS,
+            required_tables=REQUIRED_SHARD_TABLES,
+        )
+
+    writer = ShardWriter(
+        root,
+        shard_id=shard.shard_id,
+        schemas=TABLE_SCHEMAS,
+        required_tables=REQUIRED_SHARD_TABLES,
+        prompt_ids=prompt_ids,
+    )
+    try:
+        for prepared in selected:
+            batches = run_prompt_fn(
+                prepared,
+                source_rows=source_rows,
+                jacobian_runner=runners.jacobian,
+                logit_runner=runners.logit,
+                tokenizer=tokenizer,
+                generate=generate,
+            )
+            if tuple(table for table, _batch in batches) != REQUIRED_SHARD_TABLES:
+                raise RuntimeError("run_prompt did not return every required table")
+            for table, batch in batches:
+                writer.append(table, batch)
+                if after_append is not None:
+                    after_append(table)
+        return writer.commit()
+    except BaseException:
+        writer.abort()
+        raise

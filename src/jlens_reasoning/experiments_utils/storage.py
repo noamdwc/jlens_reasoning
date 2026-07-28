@@ -205,6 +205,25 @@ class ShardWriter:
         writer.write_batch(batch)
         self._row_counts[table] += batch.num_rows
 
+    def abort(self) -> None:
+        """Close open writers and remove every uncommitted shard artifact."""
+        if self._committed:
+            return
+        for writer in self._writers.values():
+            writer.close()
+        self._writers.clear()
+        for table in self.required_tables:
+            for path in (
+                _temporary_table_path(self.root, table, self.shard_id),
+                _table_path(self.root, table, self.shard_id),
+            ):
+                if path.exists():
+                    path.unlink()
+        manifest = _manifest_path(self.root, self.shard_id)
+        temporary_manifest = manifest.with_suffix(".json.tmp")
+        if temporary_manifest.exists():
+            temporary_manifest.unlink()
+
     def commit(self) -> ShardManifest:
         """Close and rename all tables, then atomically write the manifest last."""
         missing = [
