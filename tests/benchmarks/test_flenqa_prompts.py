@@ -49,7 +49,7 @@ def test_ruletaker_prompt_preserves_raw_rule_typo_and_trailing_newline() -> None
     )
 
     assert prompt == (
-        'Answer whether the statement The cow is blue. can be derived from the '
+        "Answer whether the statement The cow is blue. can be derived from the "
         'rule and the facts. Answer with either "True" or "False".\n'
         "Rule: ['If someone is young then they are blue.']\n"
         "Facts: The cow is young.\nThe cow is kind.\n"

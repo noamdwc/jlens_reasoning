@@ -46,7 +46,7 @@ class FlenqaRow:
     task: str
     label: bool
     key_texts: tuple[str, ...]
-    rule: object | None
+    rule: str | None
     question: str
     mixin: str
     ctx_size_declared: int
@@ -65,7 +65,7 @@ class FlenqaPrompt:
     text: str
     question: str
     key_texts: tuple[str, ...]
-    rule: object | None
+    rule: str | None
     label: bool
     mixin: str
     ctx_size_declared: int
@@ -111,10 +111,9 @@ def verify_count_invariants(
             )
 
     problem_counts = Counter(row["global_sample_id"] for row in rows)
-    if (
-        len(problem_counts) != expected_problem_count
-        or set(problem_counts.values()) != {expected_rows_per_problem}
-    ):
+    if len(problem_counts) != expected_problem_count or set(
+        problem_counts.values()
+    ) != {expected_rows_per_problem}:
         raise ValueError(
             "Full FLenQA problem_id counts do not match the published dataset: "
             f"expected {expected_problem_count} problems with "
@@ -128,9 +127,7 @@ def _validate_full_counts(rows: Sequence[Mapping[str, Any]]) -> None:
     expected_marginals: dict[str, dict[object, int]] = {
         "task": {task: 4_000 for task in TASKS},
         "ctx_size": {ctx_size: 2_400 for ctx_size in CONTEXT_SIZES},
-        "padding_type": {
-            padding_type: 6_000 for padding_type in PADDING_TYPES
-        },
+        "padding_type": {padding_type: 6_000 for padding_type in PADDING_TYPES},
         "dispersion": {dispersion: 3_000 for dispersion in DISPERSIONS},
         "label": {True: 6_000, False: 6_000},
     }
@@ -163,30 +160,46 @@ def verify_schema(
                 f"FLenQA source row {source_row_id} is missing required columns: "
                 f"{missing_columns}"
             )
+        for integer_column in ("global_sample_id", "sample_id"):
+            integer_value = row[integer_column]
+            if type(integer_value) is not int:
+                raise ValueError(
+                    f"Invalid {integer_column} in source row "
+                    f"{source_row_id}: {integer_value!r}"
+                )
         task = row["dataset"]
-        if task not in TASKS:
+        if not isinstance(task, str) or task not in TASKS:
             raise ValueError(f"Invalid task in source row {source_row_id}: {task!r}")
         ctx_size = row["ctx_size"]
-        if ctx_size not in CONTEXT_SIZES:
+        if type(ctx_size) is not int or ctx_size not in CONTEXT_SIZES:
             raise ValueError(
                 f"Invalid ctx_size in source row {source_row_id}: {ctx_size!r}"
             )
         padding_type = row["padding_type"]
-        if padding_type not in PADDING_TYPES:
+        if not isinstance(padding_type, str) or padding_type not in PADDING_TYPES:
             raise ValueError(
-                "Invalid padding_type in source row "
-                f"{source_row_id}: {padding_type!r}"
+                f"Invalid padding_type in source row {source_row_id}: {padding_type!r}"
             )
         dispersion = row["dispersion"]
-        if dispersion not in DISPERSIONS:
+        if not isinstance(dispersion, str) or dispersion not in DISPERSIONS:
             raise ValueError(
                 f"Invalid dispersion in source row {source_row_id}: {dispersion!r}"
             )
         label = row["label"]
         if not _valid_label(label):
-            raise ValueError(
-                f"Invalid label in source row {source_row_id}: {label!r}"
-            )
+            raise ValueError(f"Invalid label in source row {source_row_id}: {label!r}")
+        _text(
+            row["assertion/question"],
+            column="assertion/question",
+            source_row_id=source_row_id,
+        )
+        _text(row["mixin"], column="mixin", source_row_id=source_row_id)
+        key_column = "statement" if task == "Simplified RuleTaker" else "facts"
+        _text_tuple(
+            row[key_column],
+            column=key_column,
+            source_row_id=source_row_id,
+        )
 
     if full:
         _validate_full_counts(rows)
@@ -233,7 +246,7 @@ def normalize_rows(raw_rows: Iterable[Mapping[str, Any]]) -> tuple[FlenqaRow, ..
                 task=task,
                 label=label if type(label) is bool else label == "True",
                 key_texts=key_texts,
-                rule=raw["rule"] if task == "Simplified RuleTaker" else None,
+                rule=str(raw["rule"]) if task == "Simplified RuleTaker" else None,
                 question=_text(
                     raw["assertion/question"],
                     column="assertion/question",

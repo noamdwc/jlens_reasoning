@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+from typing import get_type_hints
 
 import pytest
 
@@ -78,6 +79,54 @@ def test_verify_schema_requires_every_source_column() -> None:
 
     with pytest.raises(ValueError, match="statement"):
         verify_schema([row])
+
+
+@pytest.mark.parametrize(
+    ("column", "invalid", "error_name"),
+    [
+        ("global_sample_id", 0.0, "global_sample_id"),
+        ("global_sample_id", True, "global_sample_id"),
+        ("sample_id", 0.0, "sample_id"),
+        ("sample_id", False, "sample_id"),
+        ("ctx_size", 250.0, "ctx_size"),
+        ("ctx_size", True, "ctx_size"),
+        ("dataset", [], "task"),
+        ("padding_type", [], "padding_type"),
+        ("dispersion", [], "dispersion"),
+        ("assertion/question", b"Is the key in the study?", "assertion/question"),
+        ("mixin", ["The key is in the study."], "mixin"),
+    ],
+)
+def test_verify_schema_rejects_wrong_scalar_types(
+    column: str,
+    invalid: object,
+    error_name: str,
+) -> None:
+    with pytest.raises(ValueError, match=error_name):
+        verify_schema([_raw_row(**{column: invalid})])
+
+
+@pytest.mark.parametrize(
+    ("task", "column", "invalid"),
+    [
+        ("PIR", "facts", "The key is in the study."),
+        ("MonoRel", "facts", [1]),
+        ("Simplified RuleTaker", "statement", "The cow is young."),
+        ("Simplified RuleTaker", "statement", [1]),
+    ],
+)
+def test_verify_schema_rejects_invalid_task_key_collections(
+    task: str,
+    column: str,
+    invalid: object,
+) -> None:
+    overrides: dict[str, object] = {"dataset": task, column: invalid}
+    if task == "Simplified RuleTaker":
+        overrides["facts"] = None
+        overrides["rule"] = "If someone is young then they are blue."
+
+    with pytest.raises(ValueError, match=column):
+        verify_schema([_raw_row(**overrides)])
 
 
 def test_verify_schema_accepts_small_valid_fixtures_by_default() -> None:
@@ -225,8 +274,45 @@ def test_normalize_rows_assigns_source_ids_and_task_specific_key_texts() -> None
         "Cy is older than Bea.",
     )
     assert rows[2].key_texts == ("The cow is young.", "The cow is kind.")
-    assert rows[2].rule == ["If someone is young then they are blue."]
+    assert rows[2].rule == "['If someone is young then they are blue.']"
     assert rows[2].label is False
+
+
+def test_normalize_rows_detaches_ruletaker_rule_from_mutable_source() -> None:
+    raw_rule = ["If someone is young then they are blue."]
+    normalized = normalize_rows(
+        [
+            _raw_row(
+                global_sample_id=200,
+                dataset="Simplified RuleTaker",
+                facts=None,
+                statement=["The cow is young."],
+                rule=raw_rule,
+                mixin="The cow is young.",
+                **{"assertion/question": "The cow is blue."},
+            )
+        ]
+    )[0]
+    expected_rule = "['If someone is young then they are blue.']"
+    expected_prompt = (
+        "Answer whether the statement The cow is blue. can be derived from the "
+        'rule and the facts. Answer with either "True" or "False".\n'
+        "Rule: ['If someone is young then they are blue.']\n"
+        "Facts: The cow is young.\n"
+        'Answer with either "True or "False".\n'
+    )
+
+    raw_rule.append("If someone is kind then they are green.")
+    prompt = deduplicate([normalized])[0]
+
+    assert normalized.rule == expected_rule
+    assert prompt.rule == expected_rule
+    assert prompt.text == expected_prompt
+
+
+def test_rule_fields_are_annotated_as_immutable_text() -> None:
+    assert get_type_hints(FlenqaRow)["rule"] == str | None
+    assert get_type_hints(FlenqaPrompt)["rule"] == str | None
 
 
 def test_row_and_prompt_models_are_frozen_and_slotted() -> None:
