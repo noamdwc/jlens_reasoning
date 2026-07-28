@@ -231,3 +231,18 @@ verbose response that hides its answer later may be `incorrect` or
 `unparseable` even if a human can infer the answer. References containing
 sentence-terminal punctuation require a future extractor version because
 punctuation currently ends the answer segment.
+
+## FLenQA Binary Verdict Policy (Version 1.0)
+
+FLenQA has a fixed binary answer shape and is scored without an LLM judge.
+Constrained scoring compares the best predefined single-token variants of
+`True` and `False` at the final prompt position. Both stored target ranks use
+`best_token_rank`, including its lower-token-ID tie break; the lower rank is the
+verdict. The raw logits, ranks, verdict, gold label, and correctness are stored.
+
+An optional short generation is diagnostic only. Preserve its raw text, apply
+the same gold-blind front-loaded extraction, normalization, and reference
+matching defined above, and accept only an extracted `True` or `False`.
+Store the generated verdict, correctness, and agreement with constrained
+scoring separately. An absent or unparseable generated verdict never changes
+the constrained verdict.
