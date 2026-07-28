@@ -205,7 +205,7 @@ def verify_schema(frame: pd.DataFrame) -> None:
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/flenqa/test_dataset.py -v`
-Expected: PASS (6 tests)
+Expected: PASS (8 tests)
 
 - [ ] **Step 6: Commit**
 
@@ -225,9 +225,17 @@ git commit -m "feat(flenqa): verify the published dataset schema"
 
 **Interfaces:**
 - Consumes: `TASKS`, `RULETAKER`, `verify_schema` from Task 1
-- Produces: `PROMPT_TEMPLATE`, `build_prompt(row: pd.Series) -> str`, `prompt_id(prompt: str) -> str`, `build_prompt_table(frame: pd.DataFrame) -> pd.DataFrame`
+- Produces: `TEMPLATES`, `TEMPLATE_VERSION`, `build_prompt(row: pd.Series) -> str`, `prompt_id(prompt: str) -> str`, `build_prompt_table(frame: pd.DataFrame) -> pd.DataFrame`
 
-The RuleTaker `rule` never appears in `mixin`, so the template must inject it or the task is unanswerable. `prompt_id` is a hash of the final templated string — the thing the model actually sees.
+**Use the authors' own templates, verbatim.** They are not in the dataset repo and not in the paper — they are in the authors' analysis notebook, `alonj/Same-Task-More-Tokens` → `FLenQA analysis.ipynb`, cell 5, as a `prompt_structures` dict of per-task lambdas. Take the three non-CoT variants. Rendering them over all 12,000 rows was verified to yield exactly 9,862 unique prompts with the per-length breakdown 300/2368/2394/2400/2400.
+
+Three details are easy to "fix" and must not be:
+
+1. The RuleTaker template's last line has an unbalanced quote — `"True or "False"`. It is the authors' typo. Keep it.
+2. `rule` is interpolated as the raw column value, which renders with list brackets: `Rule: ['If X is good and X is small then X is loud.']`. The parquet stores that column as a string already containing the bracketed form, and the authors' source data stores it as a list — interpolating the raw value reproduces the published prompt in both cases. Do **not** call `join` or `list` on it.
+3. MonoRel states the question twice (once in the preamble, once before the answer). This is intended; downstream position code must use `rfind` to locate the operative question.
+
+The RuleTaker `rule` never appears in `mixin`, so its template injects it or the task is unanswerable. All three templates end with a trailing newline, so the True/False answer token follows `\n`. `prompt_id` is a hash of the final templated string — the thing the model actually sees.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -238,7 +246,8 @@ def test_build_prompt_includes_context_and_question():
     prompt = dataset.build_prompt(make_frame().iloc[0])
     assert "a\nb" in prompt
     assert "q?" in prompt
-    assert prompt.rstrip().endswith("Answer:")
+    # Every template ends with the answer instruction and a trailing newline.
+    assert prompt.endswith("Answer only True or False.\n")
 
 
 def test_build_prompt_injects_the_ruletaker_rule():
@@ -246,11 +255,20 @@ def test_build_prompt_injects_the_ruletaker_rule():
         dataset=[dataset.RULETAKER],
         facts=[None],
         statement=[["Dave is small."]],
-        rule=[["If X is small then X is loud."]],
+        rule=["['If X is small then X is loud.']"],
         mixin=["Dave is small. He is quite small."],
     ).iloc[0]
     prompt = dataset.build_prompt(row)
     assert "If X is small then X is loud." in prompt
+    # The authors' unbalanced quote is reproduced, not repaired.
+    assert prompt.endswith('Answer with either "True or "False".\n')
+
+
+def test_monorel_prompt_states_the_question_twice():
+    row = make_frame(dataset=[dataset.MONOREL]).iloc[0]
+    prompt = dataset.build_prompt(row)
+    assert prompt.count("q?") == 2
+    assert prompt.find("q?") != prompt.rfind("q?")
 
 
 def test_prompt_id_is_stable_and_content_determined():
@@ -294,30 +312,49 @@ import hashlib
 Append to `dataset.py`:
 
 ```python
-PROMPT_TEMPLATE = "{context}\n\n{prefix} {question}\nAnswer with True or False.\nAnswer:"
+# Bumped whenever a template changes: it invalidates every prompt_id.
+TEMPLATE_VERSION = "authors-noncot-v1"
 
-QUESTION_PREFIX = {
-    PIR: "Question:",
-    MONOREL: "Question:",
-    RULETAKER: "Statement:",
+
+def _ruletaker_prompt(row: pd.Series) -> str:
+    # `rule` is interpolated raw, brackets and all, and the unbalanced quote on
+    # the last line is the authors'. Both are in the published prompts.
+    return f"""\
+Answer whether the statement {row['assertion/question']} can be derived from the rule and the facts. Answer with either "True" or "False".
+Rule: {row['rule']}
+Facts: {row['mixin']}
+Answer with either "True or "False".
+"""
+
+
+def _pir_prompt(row: pd.Series) -> str:
+    return f"""\
+{row['mixin']}
+True/False Question: {row['assertion/question']}
+Answer only True or False.
+"""
+
+
+def _monorel_prompt(row: pd.Series) -> str:
+    # The question appears twice by design; use rfind to locate the operative one.
+    return f"""\
+Here are some facts. Answer the exact following question based on the text: {row['assertion/question']} Answer the question as it appears exactly.
+{row['mixin']}
+{row['assertion/question']}
+Answer only True or False.
+"""
+
+
+TEMPLATES = {
+    RULETAKER: _ruletaker_prompt,
+    PIR: _pir_prompt,
+    MONOREL: _monorel_prompt,
 }
-
-# Bumped whenever the template changes: it invalidates every prompt_id.
-TEMPLATE_VERSION = "v1"
 
 
 def build_prompt(row: pd.Series) -> str:
     """Render the exact string the model will see."""
-    context = row["mixin"]
-    if row["dataset"] == RULETAKER:
-        # The rule is absent from `mixin`; without it the task is unanswerable.
-        rules = "\n".join(row["rule"])
-        context = f"{context}\n\n{rules}"
-    return PROMPT_TEMPLATE.format(
-        context=context,
-        prefix=QUESTION_PREFIX[row["dataset"]],
-        question=row["assertion/question"],
-    )
+    return TEMPLATES[row["dataset"]](row)
 
 
 def prompt_id(prompt: str) -> str:
@@ -364,7 +401,7 @@ bridges from them; `task` (not `dataset`) is the column name from here on.
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/flenqa/test_dataset.py -v`
-Expected: PASS (12 tests)
+Expected: PASS (13 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -636,7 +673,7 @@ def add_conditions(table: pd.DataFrame) -> pd.DataFrame:
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/flenqa/test_dataset.py -v`
-Expected: PASS (23 tests)
+Expected: PASS (24 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -818,7 +855,7 @@ def add_bridges(table: pd.DataFrame) -> pd.DataFrame:
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/flenqa/test_dataset.py -v`
-Expected: PASS (28 tests)
+Expected: PASS (29 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -961,7 +998,7 @@ __all__ = ["EXPECTED_PROMPTS", "MAX_SEQ_LEN", "extract_bridge", "load_prompts"]
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/flenqa/test_dataset.py -v`
-Expected: PASS (31 tests)
+Expected: PASS (32 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -1201,6 +1238,33 @@ def test_select_positions_anchors_the_last_bridge_mention_in_each_fact():
     assert positions["bridge_fact_b"] == prompt.rindex("Zed") + len("Zed") - 1
 
 
+def test_select_positions_shifts_spans_past_template_preamble():
+    """Spans are offsets into `mixin`; the template puts instructions first."""
+    prompt = "PREAMBLE. AAA Zed BBB Zed CCC"
+    mixin = "AAA Zed BBB Zed"
+    row = {
+        "prompt": prompt,
+        "mixin": mixin,
+        "question": "CCC",
+        "key_spans": [{"start": 0, "end": 11, "status": "ok"}],
+        "bridge": "Zed",
+    }
+    positions = readout.select_positions(FakeTokenizer(), prompt, row)
+    # Span (0, 11) in mixin space is (10, 21) in prompt space.
+    assert positions["fact_a_end"] == 20
+    assert positions["bridge_fact_a"] == prompt.index("Zed") + len("Zed") - 1
+    # Padding is sampled inside the mixin, never from the preamble.
+    padding = [v for k, v in positions.items() if k.startswith("padding_")]
+    assert all(10 <= v < 10 + len(mixin) for v in padding)
+
+
+def test_select_positions_rejects_a_prompt_missing_its_mixin():
+    row = {"prompt": "hello world", "mixin": "absent", "question": "world",
+           "key_spans": [], "bridge": None}
+    with pytest.raises(ValueError, match="mixin not found"):
+        readout.select_positions(FakeTokenizer(), row["prompt"], row)
+
+
 def test_select_positions_are_unique_and_in_range():
     prompt = "AAA Zed BBB Zed CCC"
     row = {
@@ -1256,11 +1320,24 @@ def select_positions(tokenizer, prompt: str, row) -> dict[str, int]:
 
     positions: dict[str, int] = {"final_token": n_tokens - 1}
 
+    # MonoRel states the question twice; the operative one is the last.
     question_index = prompt.rfind(row["question"])
     if question_index != -1:
         positions["question_end"] = at(question_index + len(row["question"]) - 1)
 
-    spans = [s for s in row["key_spans"] if s.get("status") == "ok"]
+    # key_spans are offsets into `mixin`. The RuleTaker and MonoRel templates put
+    # instruction text before the mixin, so shift every span into prompt space.
+    mixin = row["mixin"]
+    shift = prompt.find(mixin)
+    if shift == -1:
+        raise ValueError(f"mixin not found verbatim in prompt: {row.get('prompt_id')}")
+    mixin_range = range(shift, shift + len(mixin))
+
+    spans = [
+        {**s, "start": s["start"] + shift, "end": s["end"] + shift}
+        for s in row["key_spans"]
+        if s.get("status") == "ok"
+    ]
     for label, span in zip(("fact_a_end", "fact_b_end"), spans, strict=False):
         positions[label] = at(span["end"] - 1)
 
@@ -1282,7 +1359,9 @@ def select_positions(tokenizer, prompt: str, row) -> dict[str, int]:
         for span in spans
         for index in range(span["start"], span["end"])
     }
-    padding = [i for i in range(len(prompt)) if i not in covered]
+    # Padding is the filler inside the mixin only — the template's instruction
+    # text is neither padding nor key content.
+    padding = [i for i in mixin_range if i not in covered]
     if padding:
         rng = random.Random(row["prompt_id"] if "prompt_id" in row else prompt)
         for n, offset in enumerate(rng.sample(padding, min(PADDING_SAMPLE_COUNT, len(padding)))):
@@ -1302,7 +1381,7 @@ def select_positions(tokenizer, prompt: str, row) -> dict[str, int]:
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/flenqa/test_readout.py -v`
-Expected: PASS (6 tests)
+Expected: PASS (8 tests)
 
 - [ ] **Step 5: Commit**
 

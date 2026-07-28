@@ -43,6 +43,21 @@ below was re-checked on 2026-07-28.
 | Unique prompts | **9,862** on `(dataset, mixin, question)` |
 | Unique prompts by length | 300 / 2368 / 2394 / 2400 / 2400 |
 
+**The prompt templates are the authors' own.** They are not in the dataset repo
+and not in the paper; they live in the authors' analysis notebook,
+`alonj/Same-Task-More-Tokens` → `FLenQA analysis.ipynb`, as a `prompt_structures`
+dict of per-task lambdas (we take the three non-CoT variants). Rendering them
+verbatim over all 12,000 rows reproduces exactly **9,862** unique prompts with
+the same per-length breakdown, and no prompt group spans more than one
+`ctx_size`, `global_sample_id`, or `label` — so `EXPECTED_PROMPTS = 9862` is a
+measured fact under the real templates, not an assumption. Two quirks are
+reproduced deliberately rather than fixed: the RuleTaker template's unbalanced
+quote (`"True or "False"`), and `rule` rendering with its list brackets
+(`Rule: ['If X is …']`) because the column stores a list. Both appear in the
+published prompts; silently cleaning them would measure a prompt the paper never
+ran. All three templates end with a trailing newline, so the True/False answer
+token follows `\n` — token-boundary choice is pinned by the smoke run.
+
 **`ctx_size=250` contains no padding.** For all 1,600 PIR and MonoRel rows at
 250, `mixin` is exactly the key paragraphs joined by a newline. Every problem
 has exactly one unique prompt there, so all 8 padding × dispersion combinations
@@ -334,10 +349,8 @@ mismatch.
    Model and lens coordinates live in the notebook, not in the module — they are
    a property of a run, not of the dataset.
 2. **`lens.source_layers`** — may be a subset; 36 layers is an estimate.
-3. **Prompt templates** — not yet extracted from the authors' notebook. This
-   also affects the final dedup count, which is asserted rather than assumed.
-4. **Drive throughput and GPU availability** in the actual session.
-5. **Model capability** — Qwen3.5-4B may floor at long lengths; the scoring
+3. **Drive throughput and GPU availability** in the actual session.
+4. **Model capability** — Qwen3.5-4B may floor at long lengths; the scoring
    column makes this visible immediately.
 
 ## Deferred by design
