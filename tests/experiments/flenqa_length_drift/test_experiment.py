@@ -5,14 +5,18 @@ from pathlib import Path
 from typing import Any
 
 import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 import torch
 
 from experiments.flenqa_length_drift.experiment import (
+    ApplyLensRunner,
     LensPassResult,
     LensRunners,
     PromptShard,
+    RunConfig,
     plan_shards,
+    run_experiment,
     run_prompt,
     run_shard,
 )
@@ -60,6 +64,12 @@ class ExperimentTokenizer:
         assert add_special_tokens is False
         token_id = self.verdict_ids.get(text)
         return [token_id] if token_id is not None else [90, 91]
+
+    def get_vocab(self) -> dict[str, int]:
+        return {f"token-{token_id}": token_id for token_id in range(128)}
+
+    def convert_ids_to_tokens(self, token_id: int) -> str:
+        return f"token-{token_id}"
 
 
 def _source_row(index: int = 0) -> FlenqaRow:
@@ -138,6 +148,36 @@ class FakeRunner:
             model_logits=logits.clone(),
             input_ids=self.input_ids,
         )
+
+
+def test_apply_lens_runner_forwards_explicit_limits_and_mode() -> None:
+    class Lens:
+        def __init__(self) -> None:
+            self.call = None
+
+        def apply(self, model, prompt, **kwargs):
+            self.call = (model, prompt, kwargs)
+            return {2: torch.zeros(1, 4)}, torch.zeros(1, 4), [[1, 2]]
+
+    lens = Lens()
+    result = ApplyLensRunner(
+        lens=lens,
+        model="model",
+        use_jacobian=False,
+        layers=(2,),
+    ).run("prompt", positions=(1,), max_seq_len=4096)
+
+    assert lens.call == (
+        "model",
+        "prompt",
+        {
+            "layers": (2,),
+            "positions": (1,),
+            "max_seq_len": 4096,
+            "use_jacobian": False,
+        },
+    )
+    assert result.input_ids == [[1, 2]]
 
 
 def test_run_prompt_calls_both_lenses_with_identical_prompt_positions_and_ids() -> None:
@@ -371,3 +411,175 @@ def test_run_shard_crash_keeps_shard_incomplete_and_reruns_every_prompt(
 
     assert calls == [first.prompt.prompt_id, second.prompt.prompt_id]
     assert manifest.prompt_ids == tuple(calls)
+
+
+def _ruletaker_row(source_row_id: int, *, padding_type: str) -> FlenqaRow:
+    return FlenqaRow(
+        source_row_id=source_row_id,
+        problem_id=99,
+        sample_id=source_row_id,
+        task="Simplified RuleTaker",
+        label=True,
+        key_texts=("The cow is blue.",),
+        rule="['If the cow is blue then the cow is kind.']",
+        question="The cow is kind.",
+        mixin="The cow is blue.",
+        ctx_size_declared=250,
+        padding_type_declared=padding_type,
+        dispersion_declared="first",
+    )
+
+
+class AnyPromptRunner:
+    def __init__(self, prepared_prompts=()) -> None:
+        self.by_text = {prepared.prompt.text: prepared for prepared in prepared_prompts}
+        self.calls = 0
+
+    def run(self, prompt, *, positions, max_seq_len):
+        self.calls += 1
+        prepared = self.by_text[prompt]
+        return FakeRunner(prepared.input_ids).run(
+            prompt,
+            positions=positions,
+            max_seq_len=max_seq_len,
+        )
+
+
+def _run_config(**overrides) -> RunConfig:
+    values = {
+        "model_name": "fake/model",
+        "lens_revision": "fake-lens",
+        "tokenizer_name": "fake-tokenizer",
+        "template_hash": "fixed-template-hash",
+        "code_revision": "test-revision",
+        "shard_size": 1,
+        "expected_bridge_problems": 0,
+        "expected_unpadded_prompts": 1,
+    }
+    values.update(overrides)
+    return RunConfig(**values)
+
+
+def test_run_experiment_deduplicates_writes_globals_and_resumes(
+    tmp_path: Path,
+) -> None:
+    rows = (
+        _ruletaker_row(0, padding_type="books"),
+        _ruletaker_row(1, padding_type="same"),
+    )
+    tokenizer = ExperimentTokenizer()
+    from jlens_reasoning.benchmarks.flenqa import deduplicate
+
+    prepared = [prepare_prompt(prompt, tokenizer) for prompt in deduplicate(rows)]
+    jacobian = AnyPromptRunner(prepared)
+    logit = AnyPromptRunner(prepared)
+
+    manifest = run_experiment(
+        rows,
+        output_dir=tmp_path,
+        tokenizer=tokenizer,
+        runners=LensRunners(jacobian=jacobian, logit=logit),
+        config=_run_config(),
+    )
+
+    assert len(manifest.prompt_ids) == 1
+    assert manifest.shard_ids == (0,)
+    assert manifest.bridge_gate.applicable == 0
+    assert manifest.bridge_gate.resolved == 0
+    assert (tmp_path / "vocab.parquet").is_file()
+    assert (tmp_path / "run_meta.parquet").is_file()
+    assert (tmp_path / "run-manifest.json").is_file()
+    vocab = pq.read_table(tmp_path / "vocab.parquet").to_pydict()
+    assert vocab["token_id"] == list(range(128))
+    assert len(set(vocab["token_id"])) == 128
+    source_rows = pq.read_table(tmp_path / "source_rows" / "shard-00000.parquet")
+    assert source_rows.num_rows == 2
+    assert source_rows.column("source_row_id").to_pylist() == [0, 1]
+
+    resume_jacobian = AnyPromptRunner(prepared)
+    resume_logit = AnyPromptRunner(prepared)
+    resumed = run_experiment(
+        rows,
+        output_dir=tmp_path,
+        tokenizer=tokenizer,
+        runners=LensRunners(
+            jacobian=resume_jacobian,
+            logit=resume_logit,
+        ),
+        config=_run_config(),
+    )
+
+    assert resumed == manifest
+    assert resume_jacobian.calls == resume_logit.calls == 0
+
+
+def test_run_experiment_aborts_on_config_mismatch_before_opening_shard(
+    tmp_path: Path,
+) -> None:
+    rows = (_ruletaker_row(0, padding_type="books"),)
+    tokenizer = ExperimentTokenizer()
+    from jlens_reasoning.benchmarks.flenqa import deduplicate
+
+    prepared = [prepare_prompt(deduplicate(rows)[0], tokenizer)]
+    first = AnyPromptRunner(prepared)
+    run_experiment(
+        rows,
+        output_dir=tmp_path,
+        tokenizer=tokenizer,
+        runners=LensRunners(jacobian=first, logit=AnyPromptRunner(prepared)),
+        config=_run_config(),
+    )
+    mismatch = AnyPromptRunner(prepared)
+
+    with pytest.raises(RuntimeError, match="config"):
+        run_experiment(
+            rows,
+            output_dir=tmp_path,
+            tokenizer=tokenizer,
+            runners=LensRunners(
+                jacobian=mismatch,
+                logit=AnyPromptRunner(prepared),
+            ),
+            config=_run_config(model_name="different/model"),
+        )
+
+    assert mismatch.calls == 0
+
+
+@pytest.mark.parametrize("artifact", ["vocab.parquet", "shard"])
+def test_completed_run_rejects_missing_or_corrupt_artifacts(
+    tmp_path: Path,
+    artifact: str,
+) -> None:
+    rows = (_ruletaker_row(0, padding_type="books"),)
+    tokenizer = ExperimentTokenizer()
+    from jlens_reasoning.benchmarks.flenqa import deduplicate
+
+    prepared = [prepare_prompt(deduplicate(rows)[0], tokenizer)]
+    run_experiment(
+        rows,
+        output_dir=tmp_path,
+        tokenizer=tokenizer,
+        runners=LensRunners(
+            jacobian=AnyPromptRunner(prepared),
+            logit=AnyPromptRunner(prepared),
+        ),
+        config=_run_config(),
+    )
+    if artifact == "vocab.parquet":
+        (tmp_path / artifact).unlink()
+    else:
+        shard_path = tmp_path / "topk" / "shard-00000.parquet"
+        shard_path.write_bytes(b"corrupt")
+
+    with pytest.raises(RuntimeError, match="global|shard|resume"):
+        run_experiment(
+            rows,
+            output_dir=tmp_path,
+            tokenizer=tokenizer,
+            runners=LensRunners(
+                jacobian=AnyPromptRunner(prepared),
+                logit=AnyPromptRunner(prepared),
+            ),
+            config=_run_config(),
+        )

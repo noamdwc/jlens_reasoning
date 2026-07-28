@@ -6,8 +6,12 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+import torch
 
-def _token_count(tokenizer: Any, text: str) -> int:
+from jlens_reasoning.evaluation_utils import best_token_rank
+
+
+def _token_ids(tokenizer: Any, text: str) -> tuple[int, ...]:
     encoded = tokenizer(text, truncation=False)
     if not isinstance(encoded, Mapping) or "input_ids" not in encoded:
         raise ValueError("tokenizer must return input_ids")
@@ -25,7 +29,76 @@ def _token_count(tokenizer: Any, text: str) -> int:
         ids = ids[0]
     if not isinstance(ids, Sequence) or isinstance(ids, (str, bytes)):
         raise ValueError("preflight tokenizer input_ids must be a sequence")
-    return len(ids)
+    return tuple(int(token_id) for token_id in ids)
+
+
+def _token_count(tokenizer: Any, text: str) -> int:
+    return len(_token_ids(tokenizer, text))
+
+
+def _runner_ids(value: Any) -> tuple[int, ...]:
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    if value and isinstance(value[0], Sequence):
+        if len(value) != 1:
+            raise RuntimeError("lens preflight input IDs must have one batch")
+        value = value[0]
+    return tuple(int(token_id) for token_id in value)
+
+
+def evaluate_lens_preflight(
+    prompt: str,
+    *,
+    tokenizer: Any,
+    jacobian_runner: Any,
+    logit_runner: Any,
+    target_surfaces: Sequence[str],
+    max_seq_len: int = 4096,
+) -> tuple[int, int]:
+    """Return best target ranks across layers/positions for both lens modes."""
+    input_ids = _token_ids(tokenizer, prompt)
+    if len(input_ids) > max_seq_len:
+        raise ValueError("preflight prompt exceeds the lens sequence limit")
+    positions = tuple(range(len(input_ids)))
+    jacobian = jacobian_runner.run(
+        prompt,
+        positions=positions,
+        max_seq_len=max_seq_len,
+    )
+    logit = logit_runner.run(
+        prompt,
+        positions=positions,
+        max_seq_len=max_seq_len,
+    )
+    if (
+        _runner_ids(jacobian.input_ids) != input_ids
+        or _runner_ids(logit.input_ids) != input_ids
+    ):
+        raise RuntimeError("lens preflight token IDs differ")
+    if not torch.equal(jacobian.model_logits, logit.model_logits):
+        raise RuntimeError("lens preflight model logits differ")
+    target_ids = tuple(
+        int(encoded[0])
+        for surface in target_surfaces
+        if len(
+            encoded := tokenizer.encode(
+                surface,
+                add_special_tokens=False,
+            )
+        )
+        == 1
+    )
+    if not target_ids:
+        raise ValueError("preflight target has no single-token surface")
+
+    def best(logits_by_layer: Mapping[int, torch.Tensor]) -> int:
+        return min(
+            best_token_rank(row, target_ids)
+            for layer_logits in logits_by_layer.values()
+            for row in layer_logits
+        )
+
+    return best(jacobian.logits_by_layer), best(logit.logits_by_layer)
 
 
 def _prefix(filler: str, repeats: int, prompt: str) -> str:

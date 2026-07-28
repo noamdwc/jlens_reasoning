@@ -138,6 +138,17 @@ scoring separate, distinguishes paper-faithful metrics from semantic
 correctness, and records adoption status for evaluators that still need to be
 migrated.
 
+## FLenQA length-drift experiment
+
+Run
+`experiments/flenqa_length_drift/flenqa_smoke.ipynb` before the full
+`flenqa_length_drift.ipynb`. Both are thin Colab drivers over the same tested
+library path: the 200-problem bridge gate, exact-token-count preflight,
+untruncated prompt preparation, `run_experiment`, and manifest-backed resume.
+Outputs are written as typed Parquet tables under
+`runs/flenqa-length-drift[-smoke]/`; a run or shard is complete only when its
+completion manifest exists.
+
 ## CI policy
 
 CI installs the committed `uv.lock`, disables W&B, sets Hugging Face and

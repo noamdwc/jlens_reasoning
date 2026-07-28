@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
 import pyarrow as pa
+import pyarrow.parquet as pq
 import torch
 
 from experiments.flenqa_length_drift.anchors import (
@@ -20,7 +24,13 @@ from experiments.flenqa_length_drift.bridges import (
     bridge_candidate_surfaces,
     extract_bridge,
 )
-from experiments.flenqa_length_drift.constants import MAX_SEQ_LEN, TOP_K
+from experiments.flenqa_length_drift.constants import (
+    ANCHOR_BUDGET,
+    MAX_SEQ_LEN,
+    SHARD_SIZE,
+    TOP_K,
+)
+from experiments.flenqa_length_drift.gate import BridgeGateResult, bridge_gate
 from experiments.flenqa_length_drift.readout import (
     ReadoutReduction,
     TokenCandidate,
@@ -28,17 +38,22 @@ from experiments.flenqa_length_drift.readout import (
 )
 from experiments.flenqa_length_drift.scoring import score_binary_answer
 from experiments.flenqa_length_drift.tables import (
+    GLOBAL_SCHEMAS,
     REQUIRED_SHARD_TABLES,
     TABLE_SCHEMAS,
     empty_batch,
     record_batch,
 )
-from jlens_reasoning.benchmarks.flenqa import FlenqaRow
+from jlens_reasoning.benchmarks.flenqa import FlenqaRow, deduplicate
 from jlens_reasoning.benchmarks.flenqa_conditions import (
+    assert_unpadded_prompt_count,
     build_padding_positions,
     derive_conditions,
 )
-from jlens_reasoning.benchmarks.flenqa_preparation import PreparedPrompt
+from jlens_reasoning.benchmarks.flenqa_preparation import (
+    PreparedPrompt,
+    prepare_prompt,
+)
 from jlens_reasoning.benchmarks.flenqa_prompts import compute_prompt_id
 from jlens_reasoning.experiments_utils.storage import (
     ShardManifest,
@@ -73,9 +88,66 @@ class LensRunners:
 
 
 @dataclass(frozen=True, slots=True)
+class ApplyLensRunner:
+    """Adapter around ``JacobianLens.apply`` for one lens mode."""
+
+    lens: Any
+    model: Any
+    use_jacobian: bool
+    layers: tuple[int, ...] | None = None
+
+    def run(
+        self,
+        prompt: str,
+        *,
+        positions: Sequence[int],
+        max_seq_len: int,
+    ) -> LensPassResult:
+        logits, model_logits, input_ids = self.lens.apply(
+            self.model,
+            prompt,
+            layers=self.layers,
+            positions=tuple(positions),
+            max_seq_len=max_seq_len,
+            use_jacobian=self.use_jacobian,
+        )
+        return LensPassResult(
+            logits_by_layer=logits,
+            model_logits=model_logits,
+            input_ids=input_ids,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class PromptShard:
     shard_id: int
     prompt_indices: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RunConfig:
+    model_name: str
+    lens_revision: str
+    tokenizer_name: str
+    template_hash: str
+    code_revision: str
+    top_k: int = TOP_K
+    anchor_budget: int = ANCHOR_BUDGET
+    schema_version: str = "1"
+    shard_size: int = SHARD_SIZE
+    expected_bridge_problems: int = 200
+    expected_unpadded_prompts: int | None = 300
+    max_seq_len: int = MAX_SEQ_LEN
+    bridge_rule: str = "task-specific-shared-entity-v1"
+    dedup_rule: str = "sha256-final-text-first-occurrence-v1"
+
+
+@dataclass(frozen=True, slots=True)
+class RunManifest:
+    config_hash: str
+    prompt_ids: tuple[str, ...]
+    shard_ids: tuple[int, ...]
+    bridge_gate: BridgeGateResult
 
 
 def plan_shards(
@@ -100,6 +172,174 @@ def plan_shards(
         )
         for start in range(0, len(canonical_indices), shard_size)
     )
+
+
+def _config_hash(config: RunConfig) -> str:
+    payload = json.dumps(
+        asdict(config),
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _write_global_batch(path: Path, batch: pa.RecordBatch) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(f"{path.suffix}.tmp")
+    if temporary.exists():
+        temporary.unlink()
+    pq.write_table(
+        pa.Table.from_batches([batch], schema=batch.schema),
+        temporary,
+        compression="zstd",
+    )
+    os.replace(temporary, path)
+
+
+def _read_global_table(path: Path, *, table: str) -> pa.Table:
+    try:
+        result = pq.read_table(path)
+    except (OSError, pa.ArrowException) as exc:
+        raise RuntimeError(f"Cannot read global {table} table") from exc
+    if result.schema != GLOBAL_SCHEMAS[table]:
+        raise RuntimeError(f"Global {table} table has the wrong schema")
+    return result
+
+
+def _vocab_batch(tokenizer: Any) -> pa.RecordBatch:
+    get_vocab = getattr(tokenizer, "get_vocab", None)
+    if callable(get_vocab):
+        vocab = get_vocab()
+        if not isinstance(vocab, Mapping):
+            raise ValueError("tokenizer.get_vocab() must return a mapping")
+        by_id: dict[int, list[str]] = {}
+        for token_text, raw_token_id in vocab.items():
+            token_id = int(raw_token_id)
+            by_id.setdefault(token_id, []).append(str(token_text))
+    else:
+        vocab_size = getattr(tokenizer, "vocab_size", None)
+        if type(vocab_size) is not int or vocab_size < 0:
+            raise ValueError("tokenizer must expose get_vocab() or vocab_size")
+        by_id = {token_id: [] for token_id in range(vocab_size)}
+
+    convert = getattr(tokenizer, "convert_ids_to_tokens", None)
+    token_ids = sorted(by_id)
+    token_texts: list[str] = []
+    for token_id in token_ids:
+        converted = convert(token_id) if callable(convert) else None
+        token_texts.append(
+            str(converted)
+            if converted is not None
+            else (sorted(by_id[token_id])[0] if by_id[token_id] else str(token_id))
+        )
+    return record_batch(
+        "vocab",
+        {
+            "token_id": token_ids,
+            "token_text": token_texts,
+        },
+    )
+
+
+def _run_meta_batch(config: RunConfig, config_hash: str) -> pa.RecordBatch:
+    return record_batch(
+        "run_meta",
+        {
+            "config_hash": [config_hash],
+            "model_name": [config.model_name],
+            "lens_revision": [config.lens_revision],
+            "tokenizer_name": [config.tokenizer_name],
+            "template_hash": [config.template_hash],
+            "top_k": [config.top_k],
+            "anchor_budget": [config.anchor_budget],
+            "schema_version": [config.schema_version],
+            "code_revision": [config.code_revision],
+        },
+    )
+
+
+def _manifest_payload(manifest: RunManifest, root: Path) -> dict[str, Any]:
+    return {
+        "config_hash": manifest.config_hash,
+        "prompt_ids": list(manifest.prompt_ids),
+        "shard_ids": list(manifest.shard_ids),
+        "bridge_gate": asdict(manifest.bridge_gate),
+        "globals": {
+            table: {
+                "path": f"{table}.parquet",
+                "sha256": _file_sha256(root / f"{table}.parquet"),
+            }
+            for table in GLOBAL_SCHEMAS
+        },
+    }
+
+
+def _read_run_manifest(path: Path) -> RunManifest:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        gate = payload["bridge_gate"]
+        return RunManifest(
+            config_hash=str(payload["config_hash"]),
+            prompt_ids=tuple(str(value) for value in payload["prompt_ids"]),
+            shard_ids=tuple(int(value) for value in payload["shard_ids"]),
+            bridge_gate=BridgeGateResult(
+                applicable=int(gate["applicable"]),
+                resolved=int(gate["resolved"]),
+            ),
+        )
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Run completion manifest is invalid") from exc
+
+
+def _validate_run(
+    root: Path,
+    manifest: RunManifest,
+    *,
+    expected: RunManifest,
+) -> RunManifest:
+    if manifest != expected:
+        raise RuntimeError("Run completion manifest does not match current plan")
+    path = root / "run-manifest.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        globals_payload = payload["globals"]
+    except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Run completion manifest is invalid") from exc
+    for table in GLOBAL_SCHEMAS:
+        global_path = root / f"{table}.parquet"
+        _read_global_table(global_path, table=table)
+        try:
+            recorded = globals_payload[table]
+        except (KeyError, TypeError) as exc:
+            raise RuntimeError("Run manifest is missing a global table") from exc
+        if recorded.get("path") != f"{table}.parquet" or recorded.get(
+            "sha256"
+        ) != _file_sha256(global_path):
+            raise RuntimeError(f"Run manifest global {table} checksum is invalid")
+    for shard_id in manifest.shard_ids:
+        if not is_shard_complete(
+            root,
+            shard_id=shard_id,
+            schemas=TABLE_SCHEMAS,
+            required_tables=REQUIRED_SHARD_TABLES,
+        ):
+            raise RuntimeError(f"Run shard {shard_id} is incomplete")
+    actual_prompt_ids = tuple(
+        prompt_id
+        for shard_id in manifest.shard_ids
+        for prompt_id in read_shard_manifest(root, shard_id=shard_id).prompt_ids
+    )
+    if actual_prompt_ids != manifest.prompt_ids:
+        raise RuntimeError("Run shard prompt membership does not match manifest")
+    return manifest
 
 
 def _input_ids(value: Any) -> tuple[int, ...]:
@@ -527,3 +767,140 @@ def run_shard(
     except BaseException:
         writer.abort()
         raise
+
+
+def run_experiment(
+    rows: Sequence[FlenqaRow],
+    *,
+    output_dir: Path,
+    tokenizer: Any,
+    runners: LensRunners,
+    config: RunConfig,
+    generate: Callable[[str], str] | None = None,
+) -> RunManifest:
+    """Run or safely resume the complete FLenQA experiment."""
+    if (
+        config.top_k != TOP_K
+        or config.anchor_budget != ANCHOR_BUDGET
+        or config.max_seq_len != MAX_SEQ_LEN
+    ):
+        raise ValueError("RunConfig limits must match the fixed experiment limits")
+    if type(config.shard_size) is not int or config.shard_size <= 0:
+        raise ValueError("RunConfig shard_size must be a positive integer")
+    if (
+        type(config.expected_bridge_problems) is not int
+        or config.expected_bridge_problems < 0
+    ):
+        raise ValueError("expected_bridge_problems must be a non-negative integer")
+    if config.expected_unpadded_prompts is not None and (
+        type(config.expected_unpadded_prompts) is not int
+        or config.expected_unpadded_prompts < 0
+    ):
+        raise ValueError(
+            "expected_unpadded_prompts must be a non-negative integer or None"
+        )
+
+    root = Path(output_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    config_hash = _config_hash(config)
+    run_meta_path = root / "run_meta.parquet"
+    if run_meta_path.exists():
+        existing_meta = _read_global_table(run_meta_path, table="run_meta")
+        hashes = existing_meta.column("config_hash").to_pylist()
+        if hashes != [config_hash]:
+            raise RuntimeError("Existing run config does not match requested config")
+    elif (root / "manifests").exists() or (root / "run-manifest.json").exists():
+        raise RuntimeError("Cannot resume shards without a valid run_meta table")
+
+    source_rows = {row.source_row_id: row for row in rows}
+    if len(source_rows) != len(rows):
+        raise ValueError("FLenQA source_row_id values must be unique")
+    prompts = deduplicate(rows)
+    if not prompts:
+        raise ValueError("FLenQA experiment requires at least one prompt")
+    gate_result = bridge_gate(
+        prompts,
+        expected_applicable=config.expected_bridge_problems,
+    )
+    prepared_prompts = tuple(
+        prepare_prompt(
+            prompt,
+            tokenizer,
+            max_seq_len=MAX_SEQ_LEN,
+            bridge=extract_bridge(prompt),
+        )
+        for prompt in prompts
+    )
+    if config.expected_unpadded_prompts is not None:
+        assert_unpadded_prompt_count(
+            prepared_prompts,
+            expected=config.expected_unpadded_prompts,
+        )
+    shards = plan_shards(prepared_prompts, shard_size=config.shard_size)
+    expected_manifest = RunManifest(
+        config_hash=config_hash,
+        prompt_ids=tuple(prompt.prompt_id for prompt in prompts),
+        shard_ids=tuple(shard.shard_id for shard in shards),
+        bridge_gate=gate_result,
+    )
+
+    global_batches = {
+        "run_meta": _run_meta_batch(config, config_hash),
+        "vocab": _vocab_batch(tokenizer),
+    }
+    has_shards = (root / "manifests").exists() and any(
+        (root / "manifests").glob("shard-*.json")
+    )
+    for table in GLOBAL_SCHEMAS:
+        path = root / f"{table}.parquet"
+        expected_table = pa.Table.from_batches(
+            [global_batches[table]],
+            schema=GLOBAL_SCHEMAS[table],
+        )
+        if path.exists():
+            if not _read_global_table(path, table=table).equals(expected_table):
+                raise RuntimeError(f"Existing global {table} table does not match")
+        else:
+            if has_shards or (root / "run-manifest.json").exists():
+                raise RuntimeError(f"Cannot resume without global {table} table")
+            _write_global_batch(path, global_batches[table])
+
+    completion_path = root / "run-manifest.json"
+    if completion_path.exists():
+        return _validate_run(
+            root,
+            _read_run_manifest(completion_path),
+            expected=expected_manifest,
+        )
+
+    for shard in shards:
+        run_shard(
+            shard,
+            prepared_prompts,
+            output_dir=root,
+            source_rows=source_rows,
+            runners=runners,
+            tokenizer=tokenizer,
+            generate=generate,
+        )
+    for shard in shards:
+        if not is_shard_complete(
+            root,
+            shard_id=shard.shard_id,
+            schemas=TABLE_SCHEMAS,
+            required_tables=REQUIRED_SHARD_TABLES,
+        ):
+            raise RuntimeError(f"Shard {shard.shard_id} is incomplete")
+
+    payload = _manifest_payload(expected_manifest, root)
+    temporary = completion_path.with_suffix(".json.tmp")
+    temporary.write_text(
+        json.dumps(payload, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, completion_path)
+    return _validate_run(
+        root,
+        _read_run_manifest(completion_path),
+        expected=expected_manifest,
+    )

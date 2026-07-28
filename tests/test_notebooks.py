@@ -107,9 +107,33 @@ def test_notebooks_use_the_colab_environment_module() -> None:
 
 def test_experiment_notebooks_are_discovered_without_a_registry() -> None:
     assert EXPERIMENT_NOTEBOOKS == [
-        Path("experiments/jlens_readout_sanity/jlens_readout_sanity.ipynb")
+        Path("experiments/flenqa_length_drift/flenqa_length_drift.ipynb"),
+        Path("experiments/flenqa_length_drift/flenqa_smoke.ipynb"),
+        Path("experiments/jlens_readout_sanity/jlens_readout_sanity.ipynb"),
     ]
     assert not Path("notebooks/01_jlens_readout_sanity.ipynb").exists()
+
+
+def test_flenqa_notebooks_are_thin_drivers() -> None:
+    paths = (
+        Path("experiments/flenqa_length_drift/flenqa_length_drift.ipynb"),
+        Path("experiments/flenqa_length_drift/flenqa_smoke.ipynb"),
+    )
+    forbidden = (
+        "ParquetWriter",
+        "TABLE_SCHEMAS",
+        "prepare_prompt",
+        "run_shard",
+        "reduce_readout",
+        "span_match_count",
+    )
+
+    for path in paths:
+        source = "\n".join(cell.source for cell in load_notebook(path).cells)
+        assert "bridge_gate(" in source
+        assert "run_preflight(" in source
+        assert "run_experiment(" in source
+        assert not any(fragment in source for fragment in forbidden)
 
 
 def test_readout_sanity_notebook_has_pinned_gpu_workflow() -> None:
