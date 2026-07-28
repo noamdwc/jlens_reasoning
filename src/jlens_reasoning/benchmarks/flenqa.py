@@ -80,37 +80,67 @@ def _valid_label(value: object) -> bool:
     )
 
 
-def _validate_full_counts(rows: Sequence[Mapping[str, Any]]) -> None:
-    if len(rows) != FULL_DATASET_ROW_COUNT:
+def verify_count_invariants(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    expected_row_count: int,
+    expected_marginals: Mapping[str, Mapping[object, int]],
+    expected_problem_count: int,
+    expected_rows_per_problem: int,
+) -> None:
+    """Validate dataset count invariants against caller-supplied expectations."""
+    if len(rows) != expected_row_count:
         raise ValueError(
-            "Full FLenQA dataset must contain exactly 12,000 rows; "
+            f"FLenQA dataset must contain exactly {expected_row_count:,} rows; "
             f"received {len(rows):,}"
         )
 
-    expected_marginals: tuple[tuple[str, dict[object, int]], ...] = (
-        ("task", {task: 4_000 for task in TASKS}),
-        ("ctx_size", {ctx_size: 2_400 for ctx_size in CONTEXT_SIZES}),
-        ("padding_type", {padding_type: 6_000 for padding_type in PADDING_TYPES}),
-        ("dispersion", {dispersion: 3_000 for dispersion in DISPERSIONS}),
-    )
-    for logical_name, expected in expected_marginals:
+    for logical_name, expected in expected_marginals.items():
         source_name = "dataset" if logical_name == "task" else logical_name
-        actual = Counter(row[source_name] for row in rows)
-        if actual != expected:
+        if logical_name == "label":
+            actual = Counter(
+                value if type(value) is bool else value == "True"
+                for value in (row[source_name] for row in rows)
+            )
+        else:
+            actual = Counter(row[source_name] for row in rows)
+        if actual != dict(expected):
             raise ValueError(
                 f"Full FLenQA {logical_name} counts do not match "
                 f"the published dataset: {dict(actual)!r}"
             )
 
-    labels = Counter(
-        value if type(value) is bool else value == "True"
-        for value in (row["label"] for row in rows)
-    )
-    if labels != {True: 6_000, False: 6_000}:
+    problem_counts = Counter(row["global_sample_id"] for row in rows)
+    if (
+        len(problem_counts) != expected_problem_count
+        or set(problem_counts.values()) != {expected_rows_per_problem}
+    ):
         raise ValueError(
-            "Full FLenQA label counts do not match the published dataset: "
-            f"{dict(labels)!r}"
+            "Full FLenQA problem_id counts do not match the published dataset: "
+            f"expected {expected_problem_count} problems with "
+            f"{expected_rows_per_problem} rows each; received "
+            f"{len(problem_counts)} problems with row counts "
+            f"{sorted(set(problem_counts.values()))!r}"
         )
+
+
+def _validate_full_counts(rows: Sequence[Mapping[str, Any]]) -> None:
+    expected_marginals: dict[str, dict[object, int]] = {
+        "task": {task: 4_000 for task in TASKS},
+        "ctx_size": {ctx_size: 2_400 for ctx_size in CONTEXT_SIZES},
+        "padding_type": {
+            padding_type: 6_000 for padding_type in PADDING_TYPES
+        },
+        "dispersion": {dispersion: 3_000 for dispersion in DISPERSIONS},
+        "label": {True: 6_000, False: 6_000},
+    }
+    verify_count_invariants(
+        rows,
+        expected_row_count=FULL_DATASET_ROW_COUNT,
+        expected_marginals=expected_marginals,
+        expected_problem_count=300,
+        expected_rows_per_problem=40,
+    )
 
 
 def verify_schema(

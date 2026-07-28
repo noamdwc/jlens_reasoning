@@ -4,6 +4,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
+import jlens_reasoning.benchmarks.flenqa as flenqa_module
 from jlens_reasoning.benchmarks.flenqa import (
     FlenqaPrompt,
     FlenqaRow,
@@ -104,6 +105,88 @@ def test_verify_schema_accepts_small_valid_fixtures_by_default() -> None:
 def test_verify_schema_can_require_the_full_published_row_count() -> None:
     with pytest.raises(ValueError, match="12,000"):
         verify_schema([_raw_row()], full=True)
+
+
+def _compact_count_rows() -> list[dict[str, object]]:
+    return [
+        _raw_row(
+            global_sample_id=0,
+            dataset="PIR",
+            ctx_size=250,
+            padding_type="books",
+            dispersion="first",
+            label="True",
+        ),
+        _raw_row(
+            global_sample_id=0,
+            dataset="PIR",
+            ctx_size=500,
+            padding_type="same",
+            dispersion="middle",
+            label="False",
+        ),
+        _raw_row(
+            global_sample_id=1,
+            dataset="MonoRel",
+            ctx_size=250,
+            padding_type="same",
+            dispersion="first",
+            label="False",
+        ),
+        _raw_row(
+            global_sample_id=1,
+            dataset="MonoRel",
+            ctx_size=500,
+            padding_type="books",
+            dispersion="middle",
+            label="True",
+        ),
+    ]
+
+
+COMPACT_MARGINAL_COUNTS = {
+    "task": {"PIR": 2, "MonoRel": 2},
+    "ctx_size": {250: 2, 500: 2},
+    "padding_type": {"books": 2, "same": 2},
+    "dispersion": {"first": 2, "middle": 2},
+    "label": {True: 2, False: 2},
+}
+
+
+@pytest.mark.parametrize(
+    ("logical_name", "source_column", "replacement"),
+    [
+        ("task", "dataset", "MonoRel"),
+        ("problem_id", "global_sample_id", 2),
+        ("ctx_size", "ctx_size", 500),
+        ("padding_type", "padding_type", "same"),
+        ("dispersion", "dispersion", "middle"),
+        ("label", "label", "False"),
+    ],
+)
+def test_count_invariants_reject_each_marginal_mismatch(
+    logical_name: str,
+    source_column: str,
+    replacement: object,
+) -> None:
+    rows = _compact_count_rows()
+    flenqa_module.verify_count_invariants(
+        rows,
+        expected_row_count=4,
+        expected_marginals=COMPACT_MARGINAL_COUNTS,
+        expected_problem_count=2,
+        expected_rows_per_problem=2,
+    )
+    rows[0][source_column] = replacement
+
+    with pytest.raises(ValueError, match=logical_name):
+        flenqa_module.verify_count_invariants(
+            rows,
+            expected_row_count=4,
+            expected_marginals=COMPACT_MARGINAL_COUNTS,
+            expected_problem_count=2,
+            expected_rows_per_problem=2,
+        )
 
 
 def test_normalize_rows_assigns_source_ids_and_task_specific_key_texts() -> None:
