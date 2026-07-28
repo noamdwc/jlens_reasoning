@@ -80,6 +80,22 @@ def _valid_label(value: object) -> bool:
     )
 
 
+def _validate_ruletaker_rule(value: object, *, source_row_id: int) -> None:
+    valid = False
+    if isinstance(value, str):
+        valid = bool(value.strip())
+    elif isinstance(value, Sequence) and not isinstance(value, bytes):
+        valid = len(value) > 0 and all(
+            isinstance(rule, str) and bool(rule.strip()) for rule in value
+        )
+    if not valid:
+        raise ValueError(
+            "rule in Simplified RuleTaker source row "
+            f"{source_row_id} must be a non-empty string or a non-empty "
+            "sequence of non-empty strings"
+        )
+
+
 def verify_count_invariants(
     rows: Sequence[Mapping[str, Any]],
     *,
@@ -200,6 +216,11 @@ def verify_schema(
             column=key_column,
             source_row_id=source_row_id,
         )
+        if task == "Simplified RuleTaker":
+            _validate_ruletaker_rule(
+                row["rule"],
+                source_row_id=source_row_id,
+            )
 
     if full:
         _validate_full_counts(rows)

@@ -129,6 +129,73 @@ def test_verify_schema_rejects_invalid_task_key_collections(
         verify_schema([_raw_row(**overrides)])
 
 
+@pytest.mark.parametrize(
+    "invalid_rule",
+    [
+        None,
+        "",
+        " ",
+        [],
+        (),
+        [""],
+        [" "],
+        ["If someone is young then they are blue.", ""],
+        [1],
+        7,
+        {"rule": "If someone is young then they are blue."},
+    ],
+)
+def test_verify_schema_rejects_invalid_ruletaker_rules(
+    invalid_rule: object,
+) -> None:
+    with pytest.raises(ValueError, match="rule"):
+        verify_schema(
+            [
+                _raw_row(
+                    dataset="Simplified RuleTaker",
+                    facts=None,
+                    statement=["The cow is young."],
+                    rule=invalid_rule,
+                )
+            ]
+        )
+
+
+@pytest.mark.parametrize(
+    ("raw_rule", "expected_snapshot"),
+    [
+        (
+            "If someone is young then they are blue.",
+            "If someone is young then they are blue.",
+        ),
+        (
+            ["If someone is young then they are blue."],
+            "['If someone is young then they are blue.']",
+        ),
+        (
+            ("If someone is young then they are blue.",),
+            "('If someone is young then they are blue.',)",
+        ),
+    ],
+)
+def test_normalize_rows_accepts_and_snapshots_supported_ruletaker_rules(
+    raw_rule: object,
+    expected_snapshot: str,
+) -> None:
+    row = normalize_rows(
+        [
+            _raw_row(
+                dataset="Simplified RuleTaker",
+                facts=None,
+                statement=["The cow is young."],
+                rule=raw_rule,
+            )
+        ]
+    )[0]
+
+    assert row.rule == expected_snapshot
+
+
 def test_verify_schema_accepts_small_valid_fixtures_by_default() -> None:
     verify_schema(
         [
