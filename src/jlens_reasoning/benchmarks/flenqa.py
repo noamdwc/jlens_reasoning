@@ -1,0 +1,274 @@
+"""Typed normalization and ordered prompt deduplication for FLenQA."""
+
+from __future__ import annotations
+
+from collections import Counter
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any
+
+from jlens_reasoning.benchmarks.flenqa_prompts import (
+    build_prompt_text,
+    compute_prompt_id,
+)
+
+TASKS = frozenset({"PIR", "MonoRel", "Simplified RuleTaker"})
+CONTEXT_SIZES = frozenset({250, 500, 1000, 2000, 3000})
+PADDING_TYPES = frozenset({"books", "same"})
+DISPERSIONS = frozenset({"first", "middle", "last", "random"})
+FULL_DATASET_ROW_COUNT = 12_000
+
+REQUIRED_COLUMNS = frozenset(
+    {
+        "sample_id",
+        "label",
+        "facts",
+        "padding_type",
+        "dispersion",
+        "ctx_size",
+        "mixin",
+        "dataset",
+        "global_sample_id",
+        "assertion/question",
+        "rule",
+        "statement",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class FlenqaRow:
+    """One normalized source row with its original declared conditions."""
+
+    source_row_id: int
+    problem_id: int
+    sample_id: int
+    task: str
+    label: bool
+    key_texts: tuple[str, ...]
+    rule: object | None
+    question: str
+    mixin: str
+    ctx_size_declared: int
+    padding_type_declared: str
+    dispersion_declared: str
+
+
+@dataclass(frozen=True, slots=True)
+class FlenqaPrompt:
+    """One unique final prompt plus ordered source-row provenance."""
+
+    canonical_index: int
+    prompt_id: str
+    problem_id: int
+    task: str
+    text: str
+    question: str
+    key_texts: tuple[str, ...]
+    rule: object | None
+    label: bool
+    mixin: str
+    ctx_size_declared: int
+    source_row_ids: tuple[int, ...]
+    padding_type_declared: tuple[str, ...]
+    dispersion_declared: tuple[str, ...]
+
+
+def _valid_label(value: object) -> bool:
+    return type(value) is bool or (
+        isinstance(value, str) and value in {"True", "False"}
+    )
+
+
+def _validate_full_counts(rows: Sequence[Mapping[str, Any]]) -> None:
+    if len(rows) != FULL_DATASET_ROW_COUNT:
+        raise ValueError(
+            "Full FLenQA dataset must contain exactly 12,000 rows; "
+            f"received {len(rows):,}"
+        )
+
+    expected_marginals: tuple[tuple[str, dict[object, int]], ...] = (
+        ("task", {task: 4_000 for task in TASKS}),
+        ("ctx_size", {ctx_size: 2_400 for ctx_size in CONTEXT_SIZES}),
+        ("padding_type", {padding_type: 6_000 for padding_type in PADDING_TYPES}),
+        ("dispersion", {dispersion: 3_000 for dispersion in DISPERSIONS}),
+    )
+    for logical_name, expected in expected_marginals:
+        source_name = "dataset" if logical_name == "task" else logical_name
+        actual = Counter(row[source_name] for row in rows)
+        if actual != expected:
+            raise ValueError(
+                f"Full FLenQA {logical_name} counts do not match "
+                f"the published dataset: {dict(actual)!r}"
+            )
+
+    labels = Counter(
+        value if type(value) is bool else value == "True"
+        for value in (row["label"] for row in rows)
+    )
+    if labels != {True: 6_000, False: 6_000}:
+        raise ValueError(
+            "Full FLenQA label counts do not match the published dataset: "
+            f"{dict(labels)!r}"
+        )
+
+
+def verify_schema(
+    raw_rows: Iterable[Mapping[str, Any]],
+    *,
+    full: bool = False,
+) -> None:
+    """Validate required source columns and published categorical values."""
+    rows = tuple(raw_rows)
+    if not rows:
+        if full:
+            _validate_full_counts(rows)
+        raise ValueError("FLenQA rows must not be empty")
+
+    for source_row_id, row in enumerate(rows):
+        missing = REQUIRED_COLUMNS.difference(row)
+        if missing:
+            missing_columns = ", ".join(sorted(missing))
+            raise ValueError(
+                f"FLenQA source row {source_row_id} is missing required columns: "
+                f"{missing_columns}"
+            )
+        task = row["dataset"]
+        if task not in TASKS:
+            raise ValueError(f"Invalid task in source row {source_row_id}: {task!r}")
+        ctx_size = row["ctx_size"]
+        if ctx_size not in CONTEXT_SIZES:
+            raise ValueError(
+                f"Invalid ctx_size in source row {source_row_id}: {ctx_size!r}"
+            )
+        padding_type = row["padding_type"]
+        if padding_type not in PADDING_TYPES:
+            raise ValueError(
+                "Invalid padding_type in source row "
+                f"{source_row_id}: {padding_type!r}"
+            )
+        dispersion = row["dispersion"]
+        if dispersion not in DISPERSIONS:
+            raise ValueError(
+                f"Invalid dispersion in source row {source_row_id}: {dispersion!r}"
+            )
+        label = row["label"]
+        if not _valid_label(label):
+            raise ValueError(
+                f"Invalid label in source row {source_row_id}: {label!r}"
+            )
+
+    if full:
+        _validate_full_counts(rows)
+
+
+def _text_tuple(value: object, *, column: str, source_row_id: int) -> tuple[str, ...]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise ValueError(
+            f"{column} in source row {source_row_id} must be a sequence of strings"
+        )
+    texts = tuple(value)
+    if not all(isinstance(text, str) for text in texts):
+        raise ValueError(
+            f"{column} in source row {source_row_id} must contain only strings"
+        )
+    return texts
+
+
+def _text(value: object, *, column: str, source_row_id: int) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{column} in source row {source_row_id} must be a string")
+    return value
+
+
+def normalize_rows(raw_rows: Iterable[Mapping[str, Any]]) -> tuple[FlenqaRow, ...]:
+    """Normalize published FLenQA rows and assign sequential provenance IDs."""
+    rows = tuple(raw_rows)
+    verify_schema(rows)
+    normalized: list[FlenqaRow] = []
+    for source_row_id, raw in enumerate(rows):
+        task = raw["dataset"]
+        key_column = "statement" if task == "Simplified RuleTaker" else "facts"
+        key_texts = _text_tuple(
+            raw[key_column],
+            column=key_column,
+            source_row_id=source_row_id,
+        )
+        label = raw["label"]
+        normalized.append(
+            FlenqaRow(
+                source_row_id=source_row_id,
+                problem_id=raw["global_sample_id"],
+                sample_id=raw["sample_id"],
+                task=task,
+                label=label if type(label) is bool else label == "True",
+                key_texts=key_texts,
+                rule=raw["rule"] if task == "Simplified RuleTaker" else None,
+                question=_text(
+                    raw["assertion/question"],
+                    column="assertion/question",
+                    source_row_id=source_row_id,
+                ),
+                mixin=_text(
+                    raw["mixin"],
+                    column="mixin",
+                    source_row_id=source_row_id,
+                ),
+                ctx_size_declared=raw["ctx_size"],
+                padding_type_declared=raw["padding_type"],
+                dispersion_declared=raw["dispersion"],
+            )
+        )
+    return tuple(normalized)
+
+
+def _ordered_unique(values: Iterable[str]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(values))
+
+
+def deduplicate(rows: Iterable[FlenqaRow]) -> tuple[FlenqaPrompt, ...]:
+    """Collapse exact final-text duplicates in first-occurrence order."""
+    grouped: dict[str, list[FlenqaRow]] = {}
+    for row in rows:
+        text = build_prompt_text(
+            task=row.task,
+            question=row.question,
+            mixin=row.mixin,
+            rule=row.rule,
+        )
+        grouped.setdefault(text, []).append(row)
+
+    prompts: list[FlenqaPrompt] = []
+    for canonical_index, (text, source_rows) in enumerate(grouped.items()):
+        first = source_rows[0]
+        for row in source_rows[1:]:
+            for field in ("problem_id", "label", "ctx_size_declared", "task"):
+                if getattr(row, field) != getattr(first, field):
+                    raise ValueError(
+                        "Identical FLenQA prompt text mixes invariant "
+                        f"{field}: {getattr(first, field)!r} != "
+                        f"{getattr(row, field)!r}"
+                    )
+        prompts.append(
+            FlenqaPrompt(
+                canonical_index=canonical_index,
+                prompt_id=compute_prompt_id(text),
+                problem_id=first.problem_id,
+                task=first.task,
+                text=text,
+                question=first.question,
+                key_texts=first.key_texts,
+                rule=first.rule,
+                label=first.label,
+                mixin=first.mixin,
+                ctx_size_declared=first.ctx_size_declared,
+                source_row_ids=tuple(row.source_row_id for row in source_rows),
+                padding_type_declared=_ordered_unique(
+                    row.padding_type_declared for row in source_rows
+                ),
+                dispersion_declared=_ordered_unique(
+                    row.dispersion_declared for row in source_rows
+                ),
+            )
+        )
+    return tuple(prompts)
