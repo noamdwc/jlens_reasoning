@@ -8,8 +8,12 @@ SHARED_NOTEBOOKS = [
     Path("notebooks/_template.ipynb"),
     Path("notebooks/00_environment_check.ipynb"),
 ]
+FLENQA_NOTEBOOKS = [
+    Path("notebooks/flenqa_smoke.ipynb"),
+    Path("notebooks/flenqa_full_run.ipynb"),
+]
 EXPERIMENT_NOTEBOOKS = sorted(Path("experiments").glob("*/*.ipynb"))
-NOTEBOOKS = [*SHARED_NOTEBOOKS, *EXPERIMENT_NOTEBOOKS]
+NOTEBOOKS = [*SHARED_NOTEBOOKS, *FLENQA_NOTEBOOKS, *EXPERIMENT_NOTEBOOKS]
 ASSET_NOTEBOOK = Path("notebooks/01_download_assets.ipynb")
 ALL_NOTEBOOKS = [*NOTEBOOKS, ASSET_NOTEBOOK]
 
@@ -42,6 +46,7 @@ def test_notebooks_have_no_saved_outputs_or_execution_counts() -> None:
 def test_notebooks_share_one_canonical_drive_loader_cell() -> None:
     recurring_paths = [
         Path("notebooks/_template.ipynb"),
+        *FLENQA_NOTEBOOKS,
         *EXPERIMENT_NOTEBOOKS,
     ]
     recurring_loaders = [
@@ -105,34 +110,27 @@ def test_notebooks_use_the_colab_environment_module() -> None:
         assert "rev-parse" not in source
 
 
-def test_experiment_notebooks_are_discovered_without_a_registry() -> None:
+def test_experiment_notebooks_exclude_flenqa_benchmark_drivers() -> None:
     assert EXPERIMENT_NOTEBOOKS == [
-        Path("experiments/flenqa_length_drift/flenqa_length_drift.ipynb"),
-        Path("experiments/flenqa_length_drift/flenqa_smoke.ipynb"),
         Path("experiments/jlens_readout_sanity/jlens_readout_sanity.ipynb"),
     ]
     assert not Path("notebooks/01_jlens_readout_sanity.ipynb").exists()
 
 
-def test_flenqa_notebooks_are_thin_drivers() -> None:
-    paths = (
-        Path("experiments/flenqa_length_drift/flenqa_length_drift.ipynb"),
-        Path("experiments/flenqa_length_drift/flenqa_smoke.ipynb"),
-    )
+def test_flenqa_notebooks_are_benchmark_drivers() -> None:
     forbidden = (
+        "run_preflight(",
+        "score_binary_answer(",
+        "select_summary_positions(",
+        "reduce_readout(",
         "ParquetWriter",
         "TABLE_SCHEMAS",
-        "prepare_prompt",
-        "run_shard",
-        "reduce_readout",
-        "span_match_count",
     )
 
-    for path in paths:
+    for path in FLENQA_NOTEBOOKS:
         source = "\n".join(cell.source for cell in load_notebook(path).cells)
-        assert "bridge_gate(" in source
-        assert "run_preflight(" in source
-        assert "run_experiment(" in source
+        assert "from jlens_reasoning.benchmarks.flenqa.runner import" in source
+        assert "run_benchmark(" in source
         assert not any(fragment in source for fragment in forbidden)
 
 
