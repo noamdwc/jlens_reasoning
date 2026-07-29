@@ -543,3 +543,53 @@ def test_bridge_extraction_and_gate_validate_applicable_problems() -> None:
 def test_bridge_gate_rejects_silently_missing_applicable_problem() -> None:
     with pytest.raises(ValueError, match="2"):
         bridge_gate((_bridge_prompt(),), expected_applicable=2)
+
+
+def test_prepare_prompt_selects_only_semantic_and_padding_content_positions() -> None:
+    key_texts = (
+        "John's living room is marble-floored.",
+        "Ethan Washington is in John's living room.",
+    )
+    padding = "Padding, text."
+    mixin = f"{key_texts[0]}\n{padding}\n{key_texts[1]}"
+    question = "Is Ethan Washington in a marble-floored room?"
+    prompt = FlenqaPrompt(
+        canonical_index=0,
+        prompt_id="1" * 64,
+        problem_id=0,
+        task="PIR",
+        text=build_prompt_text(
+            task="PIR",
+            question=question,
+            mixin=mixin,
+            rule=None,
+        ),
+        question=question,
+        key_texts=key_texts,
+        rule=None,
+        label=True,
+        mixin=mixin,
+        provenance=(SourceProvenance(0, 500, "books", "middle"),),
+    )
+
+    prepared = validate_prepared_prompt(
+        prepare_prompt(prompt, RecordingCharTokenizer())
+    )
+
+    labels = {item.label for item in prepared.positions}
+    assert {
+        "fact_a_end",
+        "fact_b_end",
+        "bridge_fact_a",
+        "bridge_fact_b",
+        "question_end",
+        "final_prompt",
+        "sampled_padding",
+    } <= labels
+    padding_start = prompt.text.index(padding)
+    padding_end = padding_start + len(padding)
+    assert all(
+        padding_start <= prepared.offsets[item.position][0] < padding_end
+        for item in prepared.positions
+        if item.label == "sampled_padding"
+    )

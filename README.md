@@ -138,16 +138,18 @@ scoring separate, distinguishes paper-faithful metrics from semantic
 correctness, and records adoption status for evaluators that still need to be
 migrated.
 
-## FLenQA length-drift experiment
+## FLenQA benchmark runner
 
-Run
-`experiments/flenqa_length_drift/flenqa_smoke.ipynb` before the full
-`flenqa_length_drift.ipynb`. Both are thin Colab drivers over the same tested
-library path: the 200-problem bridge gate, exact-token-count preflight,
-untruncated prompt preparation, `run_experiment`, and manifest-backed resume.
-Outputs are written as typed Parquet tables under
-`runs/flenqa-length-drift[-smoke]/`; a run or shard is complete only when its
-completion manifest exists.
+Run `notebooks/flenqa_smoke.ipynb` before
+`notebooks/flenqa_full_run.ipynb`. Both are thin Colab drivers over
+`jlens_reasoning.benchmarks.flenqa`: they validate the dataset and bridge
+spans, select meaningful fact, bridge, question, final-prompt, and
+padding-content positions, then save Jacobian Lens and Logit Lens top-k values
+at those positions.
+
+Each immutable shard contains typed `prompts`, `positions`, and `topk` Parquet
+tables. Temporary or partial shard files are rebuilt on resume; a shard or run
+is complete only when its validated completion manifest exists.
 
 ## CI policy
 

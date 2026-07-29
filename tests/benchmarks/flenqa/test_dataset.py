@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+from pathlib import Path
 from typing import get_type_hints
 
 import pytest
@@ -557,6 +558,10 @@ def test_pir_prompt_matches_authors_template_byte_for_byte() -> None:
         "True/False Question: Is the key in the study?\n"
         "Answer only True or False.\n"
     )
+
+
+def test_legacy_flenqa_experiment_package_is_absent() -> None:
+    assert not Path("experiments/flenqa_length_drift/__init__.py").exists()
 
 
 def test_monorel_prompt_matches_authors_template_byte_for_byte() -> None:
