@@ -2,22 +2,13 @@
 
 ## Goal
 
-Turn `flenqa_length_drift` from an experiment package into a small FLenQA
-benchmark runner that:
+Replace `experiments.flenqa_length_drift` with a small benchmark runner that
+loads FLenQA, finds validated meaningful positions, runs both Jacobian Lens and
+Logit Lens at those positions, and saves compact resumable outputs.
 
-1. loads and validates the FLenQA dataset;
-2. finds and validates meaningful token positions;
-3. runs both Jacobian Lens and Logit Lens at only those positions; and
-4. saves compact, resumable outputs.
+There are no compatibility shims for the old experiment import path.
 
-The two tracked FLenQA driver notebooks move from
-`experiments/flenqa_length_drift/` to `notebooks/`. The old
-`experiments.flenqa_length_drift` Python package is removed without
-compatibility shims.
-
-## Package Layout
-
-The implementation lives under:
+## Package
 
 ```text
 src/jlens_reasoning/benchmarks/flenqa/
@@ -28,205 +19,138 @@ src/jlens_reasoning/benchmarks/flenqa/
 └── storage.py
 ```
 
-### `dataset.py`
+- `dataset.py`: validate and normalize source rows, construct prompts, and
+  deduplicate them.
+- `positions.py`: tokenize each prompt once, extract bridges, resolve fact,
+  bridge, question, and padding-content spans, validate the results, and select
+  labeled anchors.
+- `runner.py`: run both lens modes at the selected positions, validate their
+  outputs, reduce them to deterministic top-k rows, and orchestrate shards.
+- `storage.py`: define the three Arrow tables and atomically write, validate,
+  and resume shards.
 
-Owns the FLenQA data model and prompt construction:
+## Meaningful Positions
 
-- source-row schema and count validation;
-- row normalization;
-- prompt text and stable prompt ID construction;
-- deduplication with source-row provenance.
-
-### `positions.py`
-
-Owns all logic required to choose trustworthy JLens positions:
-
-- one untruncated tokenization of each final prompt;
-- key-fact, bridge, question, and paragraph span resolution;
-- task-specific bridge extraction;
-- padding-token identification;
-- deterministic semantic-anchor selection; and
-- dataset-level and per-prompt validation gates.
-
-The public result is a prepared prompt with exact input IDs and labeled anchor
-positions. Bridge extraction, span resolution, and gates are implementation
-details of position selection rather than separate analysis subsystems.
-
-### `runner.py`
-
-Owns lens execution:
-
-- adapters around `JacobianLens.apply`;
-- one Jacobian Lens pass and one Logit Lens pass using identical anchors;
-- strict agreement checks for prepared input IDs and model logits;
-- layer/position tensor-shape validation;
-- deterministic top-k reduction at anchor positions only; and
-- shard orchestration.
-
-`top_k` remains configurable and defaults to 25.
-
-### `storage.py`
-
-Owns output persistence:
-
-- typed Arrow schemas;
-- immutable Parquet shard writing;
-- completion manifests written last;
-- configuration and prompt-membership validation on resume; and
-- run-level completion validation.
-
-## Position Selection
-
-The runner requests lens output only for labeled meaningful positions:
+Lens output is requested only at:
 
 - the end of each key fact;
 - each bridge mention in the key facts when the task has a bridge;
 - the end of the question;
 - the final prompt token; and
-- up to four deterministically sampled padding positions.
+- up to four positions sampled from tokens overlapping known padding-content
+  spans.
 
-Positions must be unique, sorted for lens execution, within the tokenized
-prompt, and traceable to one or more semantic labels. The saved position table
-retains the labels even when multiple labels resolve to the same token.
+Padding sampling is deterministic. The random generator seed is derived from
+`prompt_id` and a fixed sampling seed recorded in the run configuration.
+Sampling is without replacement.
 
-The former 48-position summary set is removed. In particular, the runner no
-longer adds fact-tail tokens, the final four-token window, or padding positions
-merely to fill a fixed summary budget. It also no longer computes entropy,
-maximum-logit, or top-1 summaries for those positions.
+Multiple labels may resolve to the same token position. Every
+`(prompt_id, position, label)` row is saved in `positions`, while lens execution
+receives the sorted unique positions only once. Expected `topk` row counts are
+therefore calculated from unique positions, not position-label rows.
 
-## Validation Gates
+The former 48-position summary set and its entropy/top-1 summaries are removed.
 
-Validation must prevent a run from quietly producing incomplete or
-semantically misaligned results.
+## Validation
 
-Before lens execution:
+The runner fails rather than silently saving partial or misaligned data:
 
-- source schema and full-dataset count invariants are checked when a full
-  dataset is supplied;
+- full-dataset schema and count invariants are checked;
 - prompt IDs and canonical indices must be unique and deterministic;
-- every applicable PIR and MonoRel problem must have one consistent bridge;
-- the bridge must not appear in the question;
-- required fact, bridge, and question spans must resolve unambiguously;
-- anchors must have the expected labels and valid token indices; and
-- prompts must not exceed the configured lens sequence limit.
+- each applicable PIR and MonoRel problem must have one consistent bridge that
+  does not appear in its question;
+- required fact, bridge, and question spans, plus declared padding-content
+  spans when present, must resolve consistently;
+- anchor positions must be in range and carry the expected labels;
+- both lens passes must return the prepared input IDs;
+- both lens passes must return the same layer keys;
+- layer tensors must match the unique requested positions; and
+- saved table membership, schemas, and row counts must match the shard plan.
 
-After each pair of lens passes:
+The two passes may differ slightly because of numerical execution. Their model
+logits are compared with:
 
-- both passes must use the exact prepared input IDs;
-- both passes must return identical model logits;
-- requested layers and positions must have compatible tensor shapes; and
-- top-k results must contain the expected number of deterministic rows.
+```python
+torch.allclose(jacobian_logits, logit_logits, rtol=1e-5, atol=1e-6)
+```
 
-During persistence:
+These tolerances are part of the recorded run configuration. The maximum
+absolute difference is stored for each prompt and summarized in the run
+manifest.
 
-- every prompt in a shard must appear in all required tables;
-- shard files must match their declared Arrow schemas;
-- a completion manifest is written only after all shard files close
-  successfully; and
-- resume is rejected when the configuration or prompt membership differs.
+The saved `layer` value is the exact integer layer key returned by
+`JacobianLens.apply`. It identifies the transformer readout layer and is not
+renumbered by the runner. The requested and returned layer keys are recorded in
+run metadata.
 
-Smoke or subset runs may supply explicit expected dataset and bridge counts.
-They do not silently disable validation.
+Smoke or subset runs supply explicit expected dataset and bridge counts; they
+do not disable validation.
 
 ## Saved Data
 
-Each shard contains three typed tables.
+Each shard contains three typed Parquet tables:
 
-### `prompts`
+- `prompts`: prompt identity, task and label, exact text and input IDs,
+  extracted bridge, maximum model-logit difference, and complete source
+  provenance.
+- `positions`: every semantic label attached to each selected position.
+- `topk`: prompt ID, lens kind, returned layer index, unique position, rank,
+  token ID, and logit.
 
-One row per deduplicated prompt:
+Source provenance is ordered by `source_row_id` and stored as complete records
+so values from one source row cannot be incorrectly paired with values from
+another:
 
-- prompt ID and canonical index;
-- problem ID, task, and label;
-- final prompt text and exact input IDs;
-- token count;
-- source-row IDs;
-- declared context-size, padding-type, and dispersion provenance; and
-- extracted bridge when applicable.
+```python
+provenance = [
+    {
+        "source_row_id": ...,
+        "ctx_size": ...,
+        "padding_type": ...,
+        "dispersion": ...,
+    }
+]
+```
 
-List-valued provenance stays on the prompt row instead of using a separate
-source-row table.
+`top_k` is configurable and defaults to 25. Both lens modes use identical
+unique positions.
 
-### `positions`
+## Atomic Shards and Resume
 
-One row per prompt, token position, and semantic label:
+Each shard is written to shard-specific temporary files. After all three files
+are closed and validated, they are atomically moved to their final paths. The
+completion manifest is also written through a temporary file and atomically
+replaced last.
 
-- prompt ID;
-- token position; and
-- label such as `fact_a_end`, `bridge_fact_a`, `question_end`,
-  `final_prompt`, or `sampled_padding`.
-
-### `topk`
-
-One row per retained value:
-
-- prompt ID;
-- lens kind (`jacobian` or `logit`);
-- layer;
-- token position;
-- top-k rank;
-- token ID; and
-- logit.
-
-Top-k output is produced only for positions present in `positions`.
-
-Run metadata and shard manifests record model, lens, tokenizer, code revision,
-configuration hash, table checksums, and prompt membership.
+A shard without a valid completion manifest is incomplete. On resume, the
+runner removes only that shard's known temporary and partial files and rebuilds
+the shard from the beginning. A completed shard is reused only when its
+configuration hash, prompt membership, schemas, row counts, and checksums
+match.
 
 ## Removed Scope
 
-The refactor removes:
+Remove generated-answer scoring, synthetic preflight prompts, padding-content
+placement classification, bridge-target-specific ranks, entropy summaries, the
+48-position summary budget, and the old experiment package.
 
-- generated True/False answers and scoring;
-- answer-token ranks and correctness fields;
-- synthetic exact-length preflight prompts;
-- the rule requiring Jacobian Lens to beat Logit Lens in preflight;
-- padding-condition classification and fractional placement analysis;
-- bridge-target-specific ranks and logits;
-- entropy, maximum-logit, and top-1 summary tables;
-- the 48-position summary budget; and
-- the `experiments.flenqa_length_drift` import path.
+Both Jacobian Lens and Logit Lens outputs remain.
 
-Both lens modes remain because their saved outputs are useful for later
-experiments.
+## Notebooks and Tests
 
-## Notebook and Documentation Migration
-
-Move the tracked notebooks to:
+Move and rename the tracked drivers to:
 
 ```text
 notebooks/flenqa_smoke.ipynb
-notebooks/flenqa_length_drift.ipynb
+notebooks/flenqa_full_run.ipynb
 ```
 
-They remain thin drivers that load the dataset and model/lens assets, construct
-the runners and configuration, invoke the benchmark runner, and report the
-saved run location. Preflight, scoring, and direct data-reduction code do not
-remain in notebook cells.
-
-The untracked
+They remain thin drivers over the package. The untracked
 `experiments/flenqa_length_drift/flenqa_smoke_output.ipynb` is user-owned and
 must not be edited or moved.
 
-README and notebook-location tests are updated to describe FLenQA as a
-benchmark runner rather than an experiment. Historical design and plan
-documents remain historical records unless a live link or instruction would
-otherwise point users to a removed path.
-
-## Testing
-
-Tests move under `tests/benchmarks/flenqa/` and are consolidated around the
-four responsibilities:
-
-- dataset validation, normalization, prompt construction, and deduplication;
-- bridge/span/padding/anchor selection and failure gates;
-- paired lens execution, agreement checks, and deterministic top-k output; and
-- typed shard writing, interruption behavior, resume checks, and final
-  manifests.
-
-Notebook tests assert the new locations, thin-driver imports, absence of saved
-outputs and credentials, and removal of scoring/preflight calls.
-
-The migration is complete when no runtime code or tests import
-`experiments.flenqa_length_drift`, both tracked notebooks use the new runner,
-the focused and full test suites pass, and Ruff reports no violations.
+Tests move under `tests/benchmarks/flenqa/` and cover dataset preparation,
+bridge/span/anchor gates, unique-position paired-lens execution, tolerant logit
+comparison, deterministic top-k output, provenance records, atomic shard
+recovery, and resume validation. Notebook and README references are updated to
+the new benchmark-runner names and locations.
