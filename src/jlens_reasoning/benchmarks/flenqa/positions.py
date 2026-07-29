@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import operator
+import random
+import re
 import struct
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
-from jlens_reasoning.benchmarks.flenqa import FlenqaPrompt
+from jlens_reasoning.benchmarks.flenqa.dataset import FlenqaPrompt
 from jlens_reasoning.experiments_utils.spans import (
     CharSpan,
     SpanDiagnostic,
@@ -18,6 +20,30 @@ from jlens_reasoning.experiments_utils.spans import (
     find_all_spans,
     parse_paragraph_payload_spans,
 )
+
+PIR_TASK = "PIR"
+MONOREL_TASK = "MonoRel"
+RULETAKER_TASK = "Simplified RuleTaker"
+PADDING_SAMPLE_COUNT = 4
+FACT_LABELS = ("fact_a_end", "fact_b_end")
+BRIDGE_LABELS = ("bridge_fact_a", "bridge_fact_b")
+QUESTION_LABEL = "question_end"
+FINAL_LABEL = "final_prompt"
+PADDING_LABEL = "sampled_padding"
+
+_PERSON = re.compile(r"\b[A-Z][a-z]+ [A-Z][a-z]+\b")
+_POSSESSIVE_PHRASE = re.compile(
+    r"\b[A-Z][A-Za-z'-]*'s(?:\s+[a-z][A-Za-z'-]*)+?"
+    r"(?=\s+(?:is|was|has|contains|appears|looks)\b|[,.;])"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class LabeledPosition:
+    """One semantic label attached to a token position."""
+
+    label: str
+    position: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +62,9 @@ class PreparedPrompt:
     context_token_span: CharSpan | None
     paragraph_payload_spans: tuple[CharSpan, ...]
     diagnostics: tuple[SpanDiagnostic, ...]
+    bridge: str | None
+    positions: tuple[LabeledPosition, ...]
+    special_token_ids: frozenset[int]
 
     @property
     def fact_token_spans(self) -> tuple[CharSpan, ...]:
@@ -59,6 +88,89 @@ class PreparedPrompt:
             ):
                 return CharSpan(diagnostic.token_start, diagnostic.token_end)
         return None
+
+    @property
+    def unique_positions(self) -> tuple[int, ...]:
+        return unique_positions(self.positions)
+
+
+def unique_positions(
+    positions: Sequence[LabeledPosition],
+) -> tuple[int, ...]:
+    """Return sorted positions while preserving labels in the source sequence."""
+    return tuple(sorted({item.position for item in positions}))
+
+
+def _shared_candidates(
+    prompt: FlenqaPrompt,
+    pattern: re.Pattern[str],
+) -> tuple[str, ...]:
+    if not prompt.key_texts:
+        return ()
+    per_fact = [set(pattern.findall(fact)) for fact in prompt.key_texts]
+    shared = set.intersection(*per_fact)
+    return tuple(
+        sorted(
+            (
+                candidate
+                for candidate in shared
+                if candidate.casefold() not in prompt.question.casefold()
+            ),
+            key=lambda candidate: (-len(candidate), candidate),
+        )
+    )
+
+
+def extract_bridge(prompt: FlenqaPrompt) -> str | None:
+    """Return the unique task-specific bridge, or ``None`` when unresolved."""
+    if prompt.task == RULETAKER_TASK:
+        return None
+    if prompt.task == PIR_TASK:
+        candidates = _shared_candidates(prompt, _POSSESSIVE_PHRASE)
+    elif prompt.task == MONOREL_TASK:
+        candidates = _shared_candidates(prompt, _PERSON)
+    else:
+        raise ValueError(f"Unknown FLenQA task: {prompt.task!r}")
+    return candidates[0] if len(candidates) == 1 else None
+
+
+@dataclass(frozen=True, slots=True)
+class BridgeGateResult:
+    applicable: int
+    resolved: int
+
+
+def bridge_gate(
+    prompts: Sequence[FlenqaPrompt],
+    *,
+    expected_applicable: int,
+) -> BridgeGateResult:
+    """Require one consistent, non-leaking bridge per applicable problem."""
+    by_problem: dict[int, list[FlenqaPrompt]] = {}
+    for prompt in prompts:
+        if prompt.task in {PIR_TASK, MONOREL_TASK}:
+            by_problem.setdefault(prompt.problem_id, []).append(prompt)
+    applicable = len(by_problem)
+    if applicable != expected_applicable:
+        raise ValueError(
+            f"Bridge gate expected {expected_applicable} applicable problems; "
+            f"found {applicable}"
+        )
+
+    for problem_id, problem_prompts in by_problem.items():
+        bridges = {extract_bridge(prompt) for prompt in problem_prompts}
+        if None in bridges or len(bridges) != 1:
+            raise ValueError(
+                f"Bridge unresolved or inconsistent for problem {problem_id}"
+            )
+        bridge = next(iter(bridges))
+        assert bridge is not None
+        if any(
+            bridge.casefold() in prompt.question.casefold()
+            for prompt in problem_prompts
+        ):
+            raise ValueError(f"Bridge leaks into question for problem {problem_id}")
+    return BridgeGateResult(applicable=applicable, resolved=applicable)
 
 
 def _diagnostic(
@@ -367,11 +479,184 @@ def _bridge_diagnostic(
     )
 
 
+def _fact_diagnostics(prepared: PreparedPrompt) -> tuple[SpanDiagnostic, ...]:
+    return tuple(
+        diagnostic for diagnostic in prepared.diagnostics if diagnostic.kind == "fact"
+    )
+
+
+def _padding_content_spans(prepared: PreparedPrompt) -> tuple[CharSpan, ...]:
+    key_spans = {
+        (diagnostic.char_start, diagnostic.char_end)
+        for diagnostic in _fact_diagnostics(prepared)
+        if diagnostic.status is SpanStatus.OK
+    }
+    return tuple(
+        span
+        for span in prepared.paragraph_payload_spans
+        if (span.start, span.end) not in key_spans
+    )
+
+
+def _eligible_padding_position(
+    *,
+    token_id: int,
+    offset: tuple[int, int],
+    text: str,
+    padding_spans: Sequence[CharSpan],
+    special_ids: frozenset[int],
+) -> bool:
+    start, end = offset
+    if token_id in special_ids or end <= start:
+        return False
+    if not text[start:end].strip():
+        return False
+    return any(start < span.end and end > span.start for span in padding_spans)
+
+
+def padding_content_positions(prepared: PreparedPrompt) -> tuple[int, ...]:
+    """Return eligible tokens overlapping declared padding-content spans."""
+    padding_spans = _padding_content_spans(prepared)
+    return tuple(
+        position
+        for position, (token_id, offset) in enumerate(
+            zip(prepared.input_ids, prepared.offsets, strict=True)
+        )
+        if _eligible_padding_position(
+            token_id=token_id,
+            offset=offset,
+            text=prepared.prompt.text,
+            padding_spans=padding_spans,
+            special_ids=prepared.special_token_ids,
+        )
+    )
+
+
+def sample_padding_positions(
+    positions: Sequence[int],
+    *,
+    prompt_id: str,
+    sample_seed: int,
+    count: int = PADDING_SAMPLE_COUNT,
+) -> tuple[int, ...]:
+    """Sample sorted padding positions from a prompt-stable random seed."""
+    unique = sorted(set(positions))
+    if type(count) is not int or count < 0:
+        raise ValueError("padding sample count must be a non-negative integer")
+    if type(sample_seed) is not int:
+        raise ValueError("padding sample seed must be an integer")
+    if not unique or count == 0:
+        return ()
+    try:
+        prompt_seed = int(prompt_id[:16], 16)
+    except ValueError as exc:
+        raise ValueError("prompt_id must begin with hexadecimal characters") from exc
+    rng = random.Random(prompt_seed ^ sample_seed)
+    return tuple(sorted(rng.sample(unique, min(count, len(unique)))))
+
+
+def _select_positions(
+    prepared: PreparedPrompt,
+    *,
+    sample_seed: int,
+) -> tuple[LabeledPosition, ...]:
+    selected: list[LabeledPosition] = []
+    for label, diagnostic in zip(
+        FACT_LABELS,
+        _fact_diagnostics(prepared),
+        strict=False,
+    ):
+        if diagnostic.status is SpanStatus.OK and diagnostic.token_end is not None:
+            selected.append(LabeledPosition(label, diagnostic.token_end - 1))
+    bridge_diagnostics = tuple(
+        diagnostic
+        for diagnostic in prepared.diagnostics
+        if diagnostic.kind == "bridge"
+    )
+    for label, diagnostic in zip(
+        BRIDGE_LABELS,
+        bridge_diagnostics,
+        strict=False,
+    ):
+        if diagnostic.status is SpanStatus.OK and diagnostic.token_end is not None:
+            selected.append(LabeledPosition(label, diagnostic.token_end - 1))
+    question = prepared.question_token_span
+    if question is not None:
+        selected.append(LabeledPosition(QUESTION_LABEL, question.end - 1))
+    selected.append(LabeledPosition(FINAL_LABEL, len(prepared.input_ids) - 1))
+    selected.extend(
+        LabeledPosition(PADDING_LABEL, position)
+        for position in sample_padding_positions(
+            padding_content_positions(prepared),
+            prompt_id=prepared.prompt.prompt_id,
+            sample_seed=sample_seed,
+        )
+    )
+    if any(
+        item.position < 0 or item.position >= len(prepared.input_ids)
+        for item in selected
+    ):
+        raise ValueError("Semantic position is outside the prepared prompt")
+    return tuple(selected)
+
+
+def validate_prepared_prompt(prepared: PreparedPrompt) -> PreparedPrompt:
+    """Require every semantic input needed by the benchmark positions."""
+    facts = _fact_diagnostics(prepared)
+    if len(facts) != len(prepared.prompt.key_texts) or any(
+        diagnostic.status is not SpanStatus.OK
+        or diagnostic.token_start is None
+        or diagnostic.token_end is None
+        for diagnostic in facts
+    ):
+        raise ValueError("Required FLenQA fact spans are unresolved")
+    questions = tuple(
+        diagnostic
+        for diagnostic in prepared.diagnostics
+        if diagnostic.kind == "question"
+    )
+    if len(questions) != 1 or any(
+        diagnostic.status is not SpanStatus.OK
+        or diagnostic.token_start is None
+        or diagnostic.token_end is None
+        for diagnostic in questions
+    ):
+        raise ValueError("Required FLenQA question span is unresolved")
+    if prepared.prompt.task in {PIR_TASK, MONOREL_TASK}:
+        bridges = tuple(
+            diagnostic
+            for diagnostic in prepared.diagnostics
+            if diagnostic.kind == "bridge"
+        )
+        if prepared.bridge is None or len(bridges) != len(facts) or any(
+            diagnostic.status is not SpanStatus.OK
+            or diagnostic.token_start is None
+            or diagnostic.token_end is None
+            for diagnostic in bridges
+        ):
+            raise ValueError("Required FLenQA bridge spans are unresolved")
+    expected_labels = {
+        *FACT_LABELS[: len(facts)],
+        QUESTION_LABEL,
+        FINAL_LABEL,
+    }
+    if prepared.prompt.task in {PIR_TASK, MONOREL_TASK}:
+        expected_labels.update(BRIDGE_LABELS[: len(facts)])
+    actual_labels = {item.label for item in prepared.positions}
+    if not expected_labels <= actual_labels:
+        missing = sorted(expected_labels - actual_labels)
+        raise ValueError(f"Required FLenQA position labels are missing: {missing}")
+    if prepared.unique_positions != tuple(sorted(set(prepared.unique_positions))):
+        raise ValueError("FLenQA execution positions must be sorted and unique")
+    return prepared
+
+
 def prepare_prompt(
     prompt: FlenqaPrompt,
     tokenizer: Any,
     max_seq_len: int = 4096,
     bridge: str | None = None,
+    sample_seed: int = 1729,
 ) -> PreparedPrompt:
     """Prepare one final author prompt without truncation or re-tokenization."""
     input_ids, offsets = _tokenize_once(prompt, tokenizer)
@@ -383,6 +668,8 @@ def prepare_prompt(
         )
     if bridge == "":
         raise ValueError("bridge must be nonempty when provided")
+    if bridge is None:
+        bridge = extract_bridge(prompt)
 
     context = _add_token_bounds(_context_diagnostic(prompt), offsets)
     local_facts = resolve_key_paragraphs(prompt)
@@ -439,7 +726,11 @@ def prepare_prompt(
         context_char_span = None
         context_token_span = None
 
-    return PreparedPrompt(
+    raw_special_ids = getattr(tokenizer, "all_special_ids", ())
+    special_token_ids = frozenset(
+        int(token_id) for token_id in (() if raw_special_ids is None else raw_special_ids)
+    )
+    prepared = PreparedPrompt(
         prompt=prompt,
         input_ids=input_ids,
         offsets=offsets,
@@ -448,4 +739,11 @@ def prepare_prompt(
         context_token_span=context_token_span,
         paragraph_payload_spans=paragraph_payload_spans,
         diagnostics=tuple(diagnostics),
+        bridge=bridge,
+        positions=(),
+        special_token_ids=special_token_ids,
+    )
+    return replace(
+        prepared,
+        positions=_select_positions(prepared, sample_seed=sample_seed),
     )

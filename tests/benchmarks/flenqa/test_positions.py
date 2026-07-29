@@ -9,13 +9,23 @@ from typing import Any
 import pytest
 import torch
 
-from jlens_reasoning.benchmarks.flenqa import FlenqaPrompt
-from jlens_reasoning.benchmarks.flenqa_preparation import (
+from jlens_reasoning.benchmarks.flenqa.dataset import (
+    FlenqaPrompt,
+    SourceProvenance,
+    build_prompt_text,
+)
+from jlens_reasoning.benchmarks.flenqa.positions import (
+    LabeledPosition,
     PreparedPrompt,
+    _eligible_padding_position,
+    bridge_gate,
+    extract_bridge,
     prepare_prompt,
     resolve_key_paragraphs,
+    sample_padding_positions,
+    unique_positions,
+    validate_prepared_prompt,
 )
-from jlens_reasoning.benchmarks.flenqa_prompts import build_prompt_text
 from jlens_reasoning.experiments_utils.spans import CharSpan, SpanStatus
 
 
@@ -35,7 +45,7 @@ def _prompt(
     )
     return FlenqaPrompt(
         canonical_index=0,
-        prompt_id="prompt-0",
+        prompt_id="0" * 64,
         problem_id=1,
         task=task,
         text=final_text,
@@ -44,10 +54,7 @@ def _prompt(
         rule=rule,
         label=True,
         mixin=mixin,
-        ctx_size_declared=250,
-        source_row_ids=(0,),
-        padding_type_declared=("books",),
-        dispersion_declared=("first",),
+        provenance=(SourceProvenance(0, 250, "books", "first"),),
     )
 
 
@@ -414,3 +421,125 @@ def test_prepare_prompt_rejects_malformed_tokenizer_outputs(
 
     with pytest.raises(ValueError, match="tokenizer"):
         prepare_prompt(_prompt(), MalformedTokenizer())
+
+
+@pytest.mark.parametrize(
+    ("token_id", "offset", "special_ids", "expected"),
+    [
+        (0, (0, 4), frozenset({0}), False),
+        (10, (4, 6), frozenset(), False),
+        (11, (6, 7), frozenset(), True),
+        (12, (7, 11), frozenset(), True),
+    ],
+)
+def test_padding_candidates_exclude_special_and_whitespace_only_tokens(
+    token_id: int,
+    offset: tuple[int, int],
+    special_ids: frozenset[int],
+    expected: bool,
+) -> None:
+    assert (
+        _eligible_padding_position(
+            token_id=token_id,
+            offset=offset,
+            text="word \n,tail",
+            padding_spans=(CharSpan(0, 11),),
+            special_ids=special_ids,
+        )
+        is expected
+    )
+
+
+def test_unique_positions_keeps_labels_but_deduplicates_execution_positions() -> None:
+    positions = (
+        LabeledPosition("question_end", 9),
+        LabeledPosition("final_prompt", 9),
+    )
+
+    assert unique_positions(positions) == (9,)
+
+
+def test_padding_sample_depends_only_on_prompt_id_and_fixed_seed() -> None:
+    candidates = tuple(range(20))
+
+    first = sample_padding_positions(
+        candidates,
+        prompt_id="a" * 64,
+        sample_seed=1729,
+        count=4,
+    )
+    second = sample_padding_positions(
+        tuple(reversed(candidates)),
+        prompt_id="a" * 64,
+        sample_seed=1729,
+        count=4,
+    )
+
+    assert first == second
+    assert len(first) == 4
+
+
+def test_validate_prepared_prompt_rejects_unresolved_required_fact() -> None:
+    prepared = prepare_prompt(
+        _prompt(key_texts=("Missing fact.", "Beta fact.")),
+        RecordingCharTokenizer(),
+    )
+
+    with pytest.raises(ValueError, match="fact"):
+        validate_prepared_prompt(prepared)
+
+
+def _bridge_prompt(
+    *,
+    task: str = "PIR",
+    problem_id: int = 0,
+    question: str = "Is Ethan Washington in a marble-floored room?",
+) -> FlenqaPrompt:
+    key_texts = (
+        (
+            "John's living room is marble-floored.",
+            "Ethan Washington is in John's living room.",
+        )
+        if task == "PIR"
+        else (
+            "Julie Baker is younger than Julian Barton.",
+            "Samantha Arnold is younger than Julie Baker.",
+        )
+    )
+    mixin = "\n".join(key_texts)
+    return FlenqaPrompt(
+        canonical_index=problem_id,
+        prompt_id=f"{problem_id:064x}",
+        problem_id=problem_id,
+        task=task,
+        text=build_prompt_text(
+            task=task,
+            question=question,
+            mixin=mixin,
+            rule=None,
+        ),
+        question=question,
+        key_texts=key_texts,
+        rule=None,
+        label=True,
+        mixin=mixin,
+        provenance=(SourceProvenance(problem_id, 250, "books", "first"),),
+    )
+
+
+def test_bridge_extraction_and_gate_validate_applicable_problems() -> None:
+    pir = _bridge_prompt()
+    monorel = _bridge_prompt(
+        task="MonoRel",
+        problem_id=1,
+        question="Is Samantha Arnold younger than Julian Barton?",
+    )
+
+    assert extract_bridge(pir) == "John's living room"
+    assert extract_bridge(monorel) == "Julie Baker"
+    assert bridge_gate((pir, monorel), expected_applicable=2).resolved == 2
+
+
+def test_bridge_gate_rejects_silently_missing_applicable_problem() -> None:
+    with pytest.raises(ValueError, match="2"):
+        bridge_gate((_bridge_prompt(),), expected_applicable=2)
