@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -9,6 +10,7 @@ import torch
 
 from jlens_reasoning.benchmarks.flenqa.dataset import (
     FlenqaPrompt,
+    FlenqaRow,
     SourceProvenance,
 )
 from jlens_reasoning.benchmarks.flenqa.positions import (
@@ -18,9 +20,17 @@ from jlens_reasoning.benchmarks.flenqa.positions import (
 from jlens_reasoning.benchmarks.flenqa.runner import (
     LensPassResult,
     LensRunners,
+    PromptShard,
     RunConfig,
     deterministic_topk,
+    run_benchmark,
     run_prompt,
+    run_shard,
+)
+from jlens_reasoning.benchmarks.flenqa.storage import (
+    REQUIRED_TABLES,
+    TABLE_SCHEMAS,
+    is_shard_complete,
 )
 
 
@@ -211,3 +221,163 @@ def test_deterministic_topk_breaks_logit_ties_by_lower_token_id() -> None:
         (2, 2, 5.0),
         (3, 4, 5.0),
     ]
+
+
+def test_incomplete_shard_is_rebuilt_from_the_beginning(tmp_path: Path) -> None:
+    partial = tmp_path / "topk" / "shard-00000.parquet"
+    partial.parent.mkdir(parents=True)
+    partial.write_bytes(b"partial")
+
+    manifest = run_shard(
+        PromptShard(0, (0,)),
+        (_prepared(),),
+        output_dir=tmp_path,
+        runners=_runners(),
+        config=_config(),
+    )
+
+    assert manifest.prompt_ids == ("a" * 64,)
+    assert is_shard_complete(
+        tmp_path,
+        shard_id=0,
+        schemas=TABLE_SCHEMAS,
+        required_tables=REQUIRED_TABLES,
+    )
+
+
+class FailingRunner:
+    def run(
+        self,
+        prompt: str,
+        *,
+        positions: Sequence[int],
+        max_seq_len: int,
+    ) -> LensPassResult:
+        raise AssertionError("completed shard must not rerun")
+
+
+def test_completed_shard_resumes_without_rerunning(tmp_path: Path) -> None:
+    shard = PromptShard(0, (0,))
+    first = run_shard(
+        shard,
+        (_prepared(),),
+        output_dir=tmp_path,
+        runners=_runners(),
+        config=_config(),
+    )
+
+    resumed = run_shard(
+        shard,
+        (_prepared(),),
+        output_dir=tmp_path,
+        runners=LensRunners(FailingRunner(), FailingRunner()),
+        config=_config(),
+    )
+
+    assert resumed == first
+
+
+class CharTokenizer:
+    all_special_ids: tuple[int, ...] = ()
+
+    def __call__(self, text: str, **kwargs: object) -> dict[str, object]:
+        return {
+            "input_ids": [[*range(len(text))]],
+            "offset_mapping": [
+                [(index, index + 1) for index in range(len(text))]
+            ],
+        }
+
+
+class DynamicRunner:
+    def __init__(self, *, model_logit_offset: float = 0.0) -> None:
+        self.model_logit_offset = model_logit_offset
+
+    def run(
+        self,
+        prompt: str,
+        *,
+        positions: Sequence[int],
+        max_seq_len: int,
+    ) -> LensPassResult:
+        rows = len(positions)
+        logits = torch.arange(rows * 5, dtype=torch.float32).reshape(rows, 5)
+        return LensPassResult(
+            logits_by_layer={4: logits},
+            model_logits=logits + self.model_logit_offset,
+            input_ids=[[*range(len(prompt))]],
+        )
+
+
+def _ruletaker_row() -> FlenqaRow:
+    return FlenqaRow(
+        source_row_id=0,
+        problem_id=0,
+        sample_id=0,
+        task="Simplified RuleTaker",
+        label=True,
+        key_texts=("The cow is young.", "The cow is kind."),
+        rule="If someone is young then they are blue.",
+        question="The cow is blue.",
+        mixin="The cow is young.\nThe cow is kind.",
+        ctx_size_declared=250,
+        padding_type_declared="books",
+        dispersion_declared="first",
+    )
+
+
+def test_run_manifest_summarizes_max_logit_difference(tmp_path: Path) -> None:
+    offset = 2**-20
+    manifest = run_benchmark(
+        (_ruletaker_row(),),
+        output_dir=tmp_path,
+        tokenizer=CharTokenizer(),
+        runners=LensRunners(
+            DynamicRunner(),
+            DynamicRunner(model_logit_offset=offset),
+        ),
+        config=_config(),
+    )
+
+    assert manifest.max_abs_logit_diff == pytest.approx(offset)
+    assert manifest.returned_layers == (4,)
+
+
+def test_completed_run_resumes_without_rerunning_lenses(tmp_path: Path) -> None:
+    config = _config()
+    first = run_benchmark(
+        (_ruletaker_row(),),
+        output_dir=tmp_path,
+        tokenizer=CharTokenizer(),
+        runners=LensRunners(DynamicRunner(), DynamicRunner()),
+        config=config,
+    )
+
+    resumed = run_benchmark(
+        (_ruletaker_row(),),
+        output_dir=tmp_path,
+        tokenizer=CharTokenizer(),
+        runners=LensRunners(FailingRunner(), FailingRunner()),
+        config=config,
+    )
+
+    assert resumed == first
+
+
+def test_resume_rejects_changed_configuration(tmp_path: Path) -> None:
+    run_benchmark(
+        (_ruletaker_row(),),
+        output_dir=tmp_path,
+        tokenizer=CharTokenizer(),
+        runners=LensRunners(DynamicRunner(), DynamicRunner()),
+        config=_config(),
+    )
+
+    with pytest.raises(RuntimeError, match="configuration"):
+        run_benchmark(
+            (_ruletaker_row(),),
+            output_dir=tmp_path,
+            tokenizer=CharTokenizer(),
+            runners=LensRunners(DynamicRunner(), DynamicRunner()),
+            config=_config(top_k=1),
+        )

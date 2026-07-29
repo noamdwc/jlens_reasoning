@@ -2,15 +2,40 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any, Protocol
 
 import pyarrow as pa
+import pyarrow.parquet as pq
 import torch
 
-from jlens_reasoning.benchmarks.flenqa.positions import PreparedPrompt
-from jlens_reasoning.benchmarks.flenqa.storage import record_batch
+from jlens_reasoning.benchmarks.flenqa.dataset import (
+    FlenqaRow,
+    deduplicate,
+)
+from jlens_reasoning.benchmarks.flenqa.positions import (
+    BridgeGateResult,
+    PreparedPrompt,
+    bridge_gate,
+    prepare_prompt,
+    validate_prepared_prompt,
+)
+from jlens_reasoning.benchmarks.flenqa.storage import (
+    REQUIRED_TABLES,
+    TABLE_SCHEMAS,
+    ShardManifest,
+    ShardWriter,
+    is_shard_complete,
+    read_shard_manifest,
+    record_batch,
+    reset_incomplete_shard,
+    validate_shard_manifest,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +53,22 @@ class RunConfig:
     logits_atol: float = 1e-6
     expected_source_rows: int = 12_000
     expected_bridge_problems: int = 200
+
+
+@dataclass(frozen=True, slots=True)
+class PromptShard:
+    shard_id: int
+    prompt_indices: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RunManifest:
+    config_hash: str
+    prompt_ids: tuple[str, ...]
+    shard_ids: tuple[int, ...]
+    returned_layers: tuple[int, ...]
+    max_abs_logit_diff: float
+    bridge_gate: BridgeGateResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -330,3 +371,341 @@ def run_prompt(
         "positions": position_batch,
         "topk": topk,
     }
+
+
+def _validate_config(config: RunConfig) -> None:
+    if type(config.top_k) is not int or config.top_k < 0:
+        raise ValueError("top_k must be a non-negative integer")
+    if type(config.shard_size) is not int or config.shard_size <= 0:
+        raise ValueError("shard_size must be a positive integer")
+    if type(config.max_seq_len) is not int or config.max_seq_len <= 0:
+        raise ValueError("max_seq_len must be a positive integer")
+    if (
+        type(config.expected_source_rows) is not int
+        or config.expected_source_rows <= 0
+    ):
+        raise ValueError("expected_source_rows must be a positive integer")
+    if (
+        type(config.expected_bridge_problems) is not int
+        or config.expected_bridge_problems < 0
+    ):
+        raise ValueError("expected_bridge_problems must be non-negative")
+    if config.logits_rtol < 0 or config.logits_atol < 0:
+        raise ValueError("logit tolerances must be non-negative")
+    if config.layers is not None and (
+        any(type(layer) is not int for layer in config.layers)
+        or len(set(config.layers)) != len(config.layers)
+    ):
+        raise ValueError("configured layers must be unique integers")
+
+
+def plan_shards(
+    prepared_prompts: Sequence[PreparedPrompt],
+    *,
+    shard_size: int,
+) -> tuple[PromptShard, ...]:
+    """Assign immutable shards from the canonical prompt order."""
+    if type(shard_size) is not int or shard_size <= 0:
+        raise ValueError("shard_size must be a positive integer")
+    indices = tuple(
+        prepared.prompt.canonical_index for prepared in prepared_prompts
+    )
+    if indices != tuple(sorted(set(indices))):
+        raise ValueError("Prepared prompt indices must be sorted and unique")
+    return tuple(
+        PromptShard(
+            shard_id=start // shard_size,
+            prompt_indices=indices[start : start + shard_size],
+        )
+        for start in range(0, len(indices), shard_size)
+    )
+
+
+def run_shard(
+    shard: PromptShard,
+    prepared_prompts: Sequence[PreparedPrompt],
+    *,
+    output_dir: Path,
+    runners: LensRunners,
+    config: RunConfig,
+) -> ShardManifest:
+    """Run or resume one manifest-committed FLenQA shard."""
+    if type(shard.shard_id) is not int or shard.shard_id < 0:
+        raise ValueError("shard_id must be a non-negative integer")
+    by_index = {
+        prepared.prompt.canonical_index: prepared for prepared in prepared_prompts
+    }
+    if len(by_index) != len(prepared_prompts):
+        raise ValueError("Prepared prompt canonical indices must be unique")
+    try:
+        selected = tuple(by_index[index] for index in shard.prompt_indices)
+    except KeyError as exc:
+        raise ValueError(
+            f"Shard references unknown canonical index {exc.args[0]}"
+        ) from exc
+    prompt_ids = tuple(prepared.prompt.prompt_id for prepared in selected)
+    root = Path(output_dir)
+    if is_shard_complete(
+        root,
+        shard_id=shard.shard_id,
+        schemas=TABLE_SCHEMAS,
+        required_tables=REQUIRED_TABLES,
+    ):
+        manifest = read_shard_manifest(root, shard_id=shard.shard_id)
+        if manifest.prompt_ids != prompt_ids:
+            raise RuntimeError("Completed shard prompt membership does not match")
+        return validate_shard_manifest(
+            root,
+            manifest,
+            schemas=TABLE_SCHEMAS,
+            required_tables=REQUIRED_TABLES,
+        )
+
+    reset_incomplete_shard(root, shard_id=shard.shard_id)
+    writer = ShardWriter(
+        root,
+        shard_id=shard.shard_id,
+        schemas=TABLE_SCHEMAS,
+        required_tables=REQUIRED_TABLES,
+        prompt_ids=prompt_ids,
+    )
+    try:
+        for prepared in selected:
+            batches = run_prompt(prepared, runners=runners, config=config)
+            if tuple(batches) != REQUIRED_TABLES:
+                raise RuntimeError("run_prompt did not return every required table")
+            for table in REQUIRED_TABLES:
+                writer.append(table, batches[table])
+        return writer.commit()
+    except BaseException:
+        writer.abort()
+        raise
+
+
+def _config_hash(config: RunConfig) -> str:
+    payload = json.dumps(
+        asdict(config),
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(payload, sort_keys=True, indent=2, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, path)
+
+
+def _read_json(path: Path) -> Mapping[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, Mapping):
+        raise RuntimeError(f"{path.name} must contain a JSON object")
+    return payload
+
+
+def _run_meta_payload(
+    config: RunConfig,
+    *,
+    config_hash: str,
+    returned_layers: Sequence[int] | None,
+) -> dict[str, Any]:
+    return {
+        "config": asdict(config),
+        "config_hash": config_hash,
+        "requested_layers": (
+            None if config.layers is None else list(config.layers)
+        ),
+        "returned_layers": (
+            None if returned_layers is None else list(returned_layers)
+        ),
+    }
+
+
+def _manifest_payload(manifest: RunManifest) -> dict[str, Any]:
+    return {
+        "config_hash": manifest.config_hash,
+        "prompt_ids": list(manifest.prompt_ids),
+        "shard_ids": list(manifest.shard_ids),
+        "returned_layers": list(manifest.returned_layers),
+        "max_abs_logit_diff": manifest.max_abs_logit_diff,
+        "bridge_gate": asdict(manifest.bridge_gate),
+    }
+
+
+def _read_run_manifest(path: Path) -> RunManifest:
+    payload = _read_json(path)
+    gate = payload["bridge_gate"]
+    if not isinstance(gate, Mapping):
+        raise RuntimeError("run manifest bridge_gate must be an object")
+    return RunManifest(
+        config_hash=str(payload["config_hash"]),
+        prompt_ids=tuple(str(value) for value in payload["prompt_ids"]),
+        shard_ids=tuple(int(value) for value in payload["shard_ids"]),
+        returned_layers=tuple(int(value) for value in payload["returned_layers"]),
+        max_abs_logit_diff=float(payload["max_abs_logit_diff"]),
+        bridge_gate=BridgeGateResult(
+            applicable=int(gate["applicable"]),
+            resolved=int(gate["resolved"]),
+        ),
+    )
+
+
+def _scan_run_outputs(
+    root: Path,
+    shard_ids: Sequence[int],
+) -> tuple[tuple[int, ...], float]:
+    layer_sets: dict[str, set[int]] = {}
+    max_differences: list[float] = []
+    for shard_id in shard_ids:
+        stem = f"shard-{shard_id:05d}.parquet"
+        prompts = pq.read_table(root / "prompts" / stem).to_pydict()
+        max_differences.extend(
+            float(value) for value in prompts["max_abs_logit_diff"]
+        )
+        topk = pq.read_table(root / "topk" / stem).to_pydict()
+        for prompt_id, layer in zip(
+            topk["prompt_id"],
+            topk["layer"],
+            strict=True,
+        ):
+            layer_sets.setdefault(str(prompt_id), set()).add(int(layer))
+    if not max_differences or not layer_sets:
+        raise RuntimeError("Completed run outputs must be nonempty")
+    distinct = {tuple(sorted(layers)) for layers in layer_sets.values()}
+    if len(distinct) != 1:
+        raise RuntimeError("Returned layer keys differ between prompts")
+    return next(iter(distinct)), max(max_differences)
+
+
+def _validate_run_shards(
+    root: Path,
+    manifest: RunManifest,
+) -> None:
+    actual_prompt_ids: list[str] = []
+    for shard_id in manifest.shard_ids:
+        if not is_shard_complete(
+            root,
+            shard_id=shard_id,
+            schemas=TABLE_SCHEMAS,
+            required_tables=REQUIRED_TABLES,
+        ):
+            raise RuntimeError(f"Run shard {shard_id} is incomplete")
+        actual_prompt_ids.extend(
+            read_shard_manifest(root, shard_id=shard_id).prompt_ids
+        )
+    if tuple(actual_prompt_ids) != manifest.prompt_ids:
+        raise RuntimeError("Run shard prompt membership does not match manifest")
+
+
+def run_benchmark(
+    rows: Sequence[FlenqaRow],
+    *,
+    output_dir: Path,
+    tokenizer: Any,
+    runners: LensRunners,
+    config: RunConfig,
+) -> RunManifest:
+    """Run or safely resume the complete prepared FLenQA benchmark."""
+    _validate_config(config)
+    if len(rows) != config.expected_source_rows:
+        raise ValueError(
+            f"Expected {config.expected_source_rows} source rows; found {len(rows)}"
+        )
+    prompts = deduplicate(rows)
+    if not prompts:
+        raise ValueError("FLenQA benchmark requires at least one prompt")
+    gate_result = bridge_gate(
+        prompts,
+        expected_applicable=config.expected_bridge_problems,
+    )
+    prepared_prompts = tuple(
+        validate_prepared_prompt(
+            prepare_prompt(
+                prompt,
+                tokenizer,
+                max_seq_len=config.max_seq_len,
+                sample_seed=config.padding_sample_seed,
+            )
+        )
+        for prompt in prompts
+    )
+    shards = plan_shards(prepared_prompts, shard_size=config.shard_size)
+    prompt_ids = tuple(prompt.prompt_id for prompt in prompts)
+    shard_ids = tuple(shard.shard_id for shard in shards)
+    root = Path(output_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    config_hash = _config_hash(config)
+    meta_path = root / "run-meta.json"
+    if meta_path.exists():
+        existing_meta = _read_json(meta_path)
+        if existing_meta.get("config_hash") != config_hash:
+            raise RuntimeError("Existing run configuration does not match")
+    else:
+        if (root / "run-manifest.json").exists() or (root / "manifests").exists():
+            raise RuntimeError("Cannot resume shards without run metadata")
+        _atomic_json(
+            meta_path,
+            _run_meta_payload(
+                config,
+                config_hash=config_hash,
+                returned_layers=None,
+            ),
+        )
+
+    completion_path = root / "run-manifest.json"
+    if completion_path.exists():
+        manifest = _read_run_manifest(completion_path)
+        if (
+            manifest.config_hash != config_hash
+            or manifest.prompt_ids != prompt_ids
+            or manifest.shard_ids != shard_ids
+            or manifest.bridge_gate != gate_result
+        ):
+            raise RuntimeError("Existing run manifest does not match requested run")
+        _validate_run_shards(root, manifest)
+        return manifest
+
+    for shard in shards:
+        run_shard(
+            shard,
+            prepared_prompts,
+            output_dir=root,
+            runners=runners,
+            config=config,
+        )
+    provisional = RunManifest(
+        config_hash=config_hash,
+        prompt_ids=prompt_ids,
+        shard_ids=shard_ids,
+        returned_layers=(),
+        max_abs_logit_diff=0.0,
+        bridge_gate=gate_result,
+    )
+    _validate_run_shards(root, provisional)
+    returned_layers, max_abs_logit_diff = _scan_run_outputs(root, shard_ids)
+    if config.layers is not None and returned_layers != tuple(sorted(config.layers)):
+        raise RuntimeError("Returned layer keys do not match configured layers")
+    manifest = RunManifest(
+        config_hash=config_hash,
+        prompt_ids=prompt_ids,
+        shard_ids=shard_ids,
+        returned_layers=returned_layers,
+        max_abs_logit_diff=max_abs_logit_diff,
+        bridge_gate=gate_result,
+    )
+    _atomic_json(
+        meta_path,
+        _run_meta_payload(
+            config,
+            config_hash=config_hash,
+            returned_layers=returned_layers,
+        ),
+    )
+    _atomic_json(completion_path, _manifest_payload(manifest))
+    return manifest
