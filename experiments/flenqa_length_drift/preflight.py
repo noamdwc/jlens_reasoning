@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 import torch
 
+from experiments.flenqa_length_drift.constants import SUMMARY_POSITION_BUDGET
 from jlens_reasoning.evaluation_utils import best_token_rank
 
 
@@ -46,6 +47,36 @@ def _runner_ids(value: Any) -> tuple[int, ...]:
     return tuple(int(token_id) for token_id in value)
 
 
+def _preflight_positions(
+    *,
+    actual_tokens: int,
+    semantic_tokens: int,
+) -> tuple[int, ...]:
+    if semantic_tokens > SUMMARY_POSITION_BUDGET:
+        raise ValueError(
+            "preflight semantic suffix exceeds the summary position budget"
+        )
+    if semantic_tokens > actual_tokens:
+        raise ValueError("preflight semantic suffix exceeds the padded prompt")
+
+    semantic_start = actual_tokens - semantic_tokens
+    semantic_positions = tuple(range(semantic_start, actual_tokens))
+    padding_budget = SUMMARY_POSITION_BUDGET - semantic_tokens
+    padding_count = min(semantic_start, padding_budget)
+    if padding_count == semantic_start:
+        padding_positions = tuple(range(semantic_start))
+    elif padding_count == 1:
+        padding_positions = (0,)
+    elif padding_count > 1:
+        padding_positions = tuple(
+            index * (semantic_start - 1) // (padding_count - 1)
+            for index in range(padding_count)
+        )
+    else:
+        padding_positions = ()
+    return padding_positions + semantic_positions
+
+
 def evaluate_lens_preflight(
     prompt: str,
     *,
@@ -53,21 +84,31 @@ def evaluate_lens_preflight(
     jacobian_runner: Any,
     logit_runner: Any,
     target_surfaces: Sequence[str],
+    positions: Sequence[int],
     max_seq_len: int = 4096,
 ) -> tuple[int, int]:
     """Return best target ranks across layers/positions for both lens modes."""
     input_ids = _token_ids(tokenizer, prompt)
     if len(input_ids) > max_seq_len:
         raise ValueError("preflight prompt exceeds the lens sequence limit")
-    positions = tuple(range(len(input_ids)))
+    selected_positions = tuple(positions)
+    if not selected_positions:
+        raise ValueError("lens preflight positions must be nonempty")
+    if (
+        len(selected_positions) > SUMMARY_POSITION_BUDGET
+        or selected_positions != tuple(sorted(set(selected_positions)))
+        or selected_positions[0] < 0
+        or selected_positions[-1] >= len(input_ids)
+    ):
+        raise ValueError("lens preflight positions are invalid")
     jacobian = jacobian_runner.run(
         prompt,
-        positions=positions,
+        positions=selected_positions,
         max_seq_len=max_seq_len,
     )
     logit = logit_runner.run(
         prompt,
-        positions=positions,
+        positions=selected_positions,
         max_seq_len=max_seq_len,
     )
     if (
@@ -160,16 +201,26 @@ class PreflightResult:
     passed: bool
 
 
+class PreflightEvaluator(Protocol):
+    def __call__(
+        self,
+        prompt: str,
+        *,
+        positions: Sequence[int],
+    ) -> tuple[int, int]: ...
+
+
 def run_preflight(
     *,
     prompt: str,
     filler: str,
     target_tokens: Sequence[int],
     tokenizer: Any,
-    evaluate: Callable[[str], tuple[int, int]],
+    evaluate: PreflightEvaluator,
 ) -> PreflightResult:
     """Require the Jacobian target rank to beat logit lens at every token length."""
     results: list[PreflightCaseResult] = []
+    semantic_tokens = _token_count(tokenizer, prompt)
     for target in target_tokens:
         padded = pad_to_token_count(
             prompt,
@@ -178,7 +229,11 @@ def run_preflight(
             tokenizer=tokenizer,
         )
         actual = _token_count(tokenizer, padded)
-        jacobian_rank, logit_rank = evaluate(padded)
+        positions = _preflight_positions(
+            actual_tokens=actual,
+            semantic_tokens=semantic_tokens,
+        )
+        jacobian_rank, logit_rank = evaluate(padded, positions=positions)
         passed = jacobian_rank < logit_rank
         results.append(
             PreflightCaseResult(

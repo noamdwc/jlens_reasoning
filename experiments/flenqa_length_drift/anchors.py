@@ -119,7 +119,12 @@ def select_summary_positions(
             len(prepared.input_ids),
         )
     )
-    remaining = max(0, SUMMARY_POSITION_BUDGET - len(positions))
+    if len(positions) > SUMMARY_POSITION_BUDGET:
+        raise ValueError(
+            f"Selected {len(positions)} mandatory summary positions, "
+            f"exceeding budget {SUMMARY_POSITION_BUDGET}"
+        )
+    remaining = SUMMARY_POSITION_BUDGET - len(positions)
     candidates = tuple(
         position for position in padding_positions if position not in positions
     )

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from types import SimpleNamespace
 from typing import Any
+
+import pytest
 
 from experiments.flenqa_length_drift.anchors import (
     ANCHOR_FINAL_PROMPT,
@@ -15,6 +18,7 @@ from jlens_reasoning.benchmarks.flenqa import FlenqaPrompt
 from jlens_reasoning.benchmarks.flenqa_conditions import build_padding_positions
 from jlens_reasoning.benchmarks.flenqa_preparation import prepare_prompt
 from jlens_reasoning.benchmarks.flenqa_prompts import build_prompt_text
+from jlens_reasoning.experiments_utils.spans import CharSpan
 
 
 class CharTokenizer:
@@ -115,3 +119,20 @@ def test_unpadded_prompt_never_gets_sampled_padding_anchor() -> None:
     )
 
     assert all(anchor.label != ANCHOR_SAMPLED_PADDING for anchor in anchors)
+
+
+def test_summary_selection_rejects_mandatory_positions_over_budget() -> None:
+    prepared = SimpleNamespace(
+        input_ids=tuple(range(104)),
+        fact_token_spans=tuple(
+            CharSpan(start, start + 12) for start in (0, 20, 40, 60, 80)
+        ),
+    )
+
+    with pytest.raises(ValueError, match="mandatory summary positions"):
+        select_summary_positions(
+            prepared,
+            anchors=(),
+            padding_positions=(),
+            seed=0,
+        )

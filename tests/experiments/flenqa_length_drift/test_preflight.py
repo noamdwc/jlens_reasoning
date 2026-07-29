@@ -63,7 +63,7 @@ def test_run_preflight_requires_jacobian_to_beat_logit_at_every_length() -> None
         filler="padding",
         target_tokens=(250, 1000, 3000),
         tokenizer=tokenizer,
-        evaluate=lambda prompt: (1, 3),
+        evaluate=lambda prompt, *, positions: (1, 3),
     )
 
     assert passed.passed is True
@@ -74,9 +74,43 @@ def test_run_preflight_requires_jacobian_to_beat_logit_at_every_length() -> None
         filler="padding",
         target_tokens=(250, 1000, 3000),
         tokenizer=tokenizer,
-        evaluate=lambda prompt: (4, 3) if len(prompt.split()) == 3000 else (1, 3),
+        evaluate=lambda prompt, *, positions: (
+            (4, 3) if len(prompt.split()) == 3000 else (1, 3)
+        ),
     )
     assert failed.passed is False
+
+
+def test_run_preflight_bounds_positions_and_keeps_semantic_suffix() -> None:
+    tokenizer = WordTokenizer()
+    observed: list[tuple[int, ...]] = []
+
+    def evaluate(prompt: str, *, positions) -> tuple[int, int]:
+        observed.append(tuple(positions))
+        return 1, 3
+
+    run_preflight(
+        prompt="spider case",
+        filler="padding",
+        target_tokens=(3000,),
+        tokenizer=tokenizer,
+        evaluate=evaluate,
+    )
+    first = observed[0]
+
+    observed.clear()
+    run_preflight(
+        prompt="spider case",
+        filler="padding",
+        target_tokens=(3000,),
+        tokenizer=tokenizer,
+        evaluate=evaluate,
+    )
+
+    assert len(first) == 48
+    assert first[-1] == 2999
+    assert {2998, 2999} <= set(first)
+    assert observed == [first]
 
 
 def test_lens_preflight_uses_identical_untruncated_ids_and_best_token_rank() -> None:
@@ -111,6 +145,7 @@ def test_lens_preflight_uses_identical_untruncated_ids_and_best_token_rank() -> 
         jacobian_runner=jacobian,
         logit_runner=logit,
         target_surfaces=(" spider", "two tokens"),
+        positions=(0, 1, 2),
     )
 
     assert ranks == (1, 8)
