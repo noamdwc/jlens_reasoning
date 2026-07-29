@@ -293,6 +293,11 @@ def run_prompt(
         raise RuntimeError("Jacobian and Logit Lens vocabulary sizes differ")
     if jacobian.model_logits.shape != logit.model_logits.shape:
         raise RuntimeError("Jacobian and Logit Lens model-logit shapes differ")
+    if (
+        jacobian.model_logits.ndim != 2
+        or jacobian.model_logits.shape[0] != len(positions)
+    ):
+        raise RuntimeError("Lens model-logit rows must match unique positions")
     if jacobian.model_logits.numel() == 0:
         raise RuntimeError("Lens model logits must be nonempty")
     if not torch.allclose(

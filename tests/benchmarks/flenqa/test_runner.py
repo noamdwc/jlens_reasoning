@@ -211,6 +211,17 @@ def test_run_prompt_rejects_different_layer_keys() -> None:
         )
 
 
+def test_run_prompt_rejects_model_logits_with_wrong_position_rows() -> None:
+    wrong = _pass(model_logits=torch.zeros(1, 5))
+
+    with pytest.raises(RuntimeError, match="model-logit rows"):
+        run_prompt(
+            _prepared(),
+            runners=_runners(jacobian=wrong, logit=wrong),
+            config=_config(),
+        )
+
+
 def test_deterministic_topk_breaks_logit_ties_by_lower_token_id() -> None:
     logits = torch.tensor([1.0, 5.0, 5.0, 4.0, 5.0])
 
