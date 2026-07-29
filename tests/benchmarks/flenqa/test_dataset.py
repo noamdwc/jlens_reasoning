@@ -5,15 +5,17 @@ from typing import get_type_hints
 
 import pytest
 
-import jlens_reasoning.benchmarks.flenqa as flenqa_module
-from jlens_reasoning.benchmarks.flenqa import (
+import jlens_reasoning.benchmarks.flenqa.dataset as flenqa_module
+from jlens_reasoning.benchmarks.flenqa.dataset import (
     FlenqaPrompt,
     FlenqaRow,
+    SourceProvenance,
+    build_prompt_text,
+    compute_prompt_id,
     deduplicate,
     normalize_rows,
     verify_schema,
 )
-from jlens_reasoning.benchmarks.flenqa_prompts import compute_prompt_id
 
 
 def _raw_row(**overrides: object) -> dict[str, object]:
@@ -223,6 +225,11 @@ def test_verify_schema_can_require_the_full_published_row_count() -> None:
         verify_schema([_raw_row()], full=True)
 
 
+def test_normalize_rows_can_require_the_full_published_row_count() -> None:
+    with pytest.raises(ValueError, match="12,000"):
+        normalize_rows([_raw_row()], full=True)
+
+
 def _compact_count_rows() -> list[dict[str, object]]:
     return [
         _raw_row(
@@ -414,9 +421,11 @@ def test_deduplicate_collapses_identical_prompts_and_aggregates_provenance() -> 
     assert len(prompts) == 1
     assert isinstance(prompts[0], FlenqaPrompt)
     assert prompts[0].canonical_index == 0
-    assert prompts[0].source_row_ids == (10, 11, 12)
-    assert prompts[0].padding_type_declared == ("books", "same")
-    assert prompts[0].dispersion_declared == ("first", "middle")
+    assert prompts[0].provenance == (
+        SourceProvenance(10, 250, "books", "first"),
+        SourceProvenance(11, 250, "same", "middle"),
+        SourceProvenance(12, 250, "books", "middle"),
+    )
     assert prompts[0].prompt_id == compute_prompt_id(prompts[0].text)
 
 
@@ -505,4 +514,80 @@ def test_deduplicate_preserves_first_occurrence_order() -> None:
 
     assert [prompt.canonical_index for prompt in prompts] == [0, 1]
     assert [prompt.problem_id for prompt in prompts] == [2, 1]
-    assert prompts[0].source_row_ids == (20, 22)
+    assert prompts[0].provenance == (
+        SourceProvenance(20, 250, "books", "first"),
+        SourceProvenance(22, 250, "same", "first"),
+    )
+
+
+def test_deduplicate_sorts_complete_source_provenance_records() -> None:
+    prompts = deduplicate(
+        [
+            _row(
+                source_row_id=7,
+                ctx_size_declared=500,
+                padding_type_declared="books",
+                dispersion_declared="first",
+            ),
+            _row(
+                source_row_id=3,
+                ctx_size_declared=500,
+                padding_type_declared="same",
+                dispersion_declared="last",
+            ),
+        ]
+    )
+
+    assert prompts[0].provenance == (
+        SourceProvenance(3, 500, "same", "last"),
+        SourceProvenance(7, 500, "books", "first"),
+    )
+
+
+def test_pir_prompt_matches_authors_template_byte_for_byte() -> None:
+    prompt = build_prompt_text(
+        task="PIR",
+        question="Is the key in the study?",
+        mixin="The key is in the study.\nThe lamp is in the hall.",
+        rule=None,
+    )
+
+    assert prompt == (
+        "The key is in the study.\nThe lamp is in the hall.\n"
+        "True/False Question: Is the key in the study?\n"
+        "Answer only True or False.\n"
+    )
+
+
+def test_monorel_prompt_matches_authors_template_byte_for_byte() -> None:
+    prompt = build_prompt_text(
+        task="MonoRel",
+        question="Is Ada older than Bea?",
+        mixin="Ada is older than Cy.\nCy is older than Bea.",
+        rule=None,
+    )
+
+    assert prompt == (
+        "Here are some facts. Answer the exact following question based on the "
+        "text: Is Ada older than Bea? Answer the question as it appears exactly.\n"
+        "Ada is older than Cy.\nCy is older than Bea.\n"
+        "Is Ada older than Bea?\n"
+        "Answer only True or False.\n"
+    )
+
+
+def test_ruletaker_prompt_preserves_raw_rule_typo_and_trailing_newline() -> None:
+    prompt = build_prompt_text(
+        task="Simplified RuleTaker",
+        question="The cow is blue.",
+        mixin="The cow is young.\nThe cow is kind.",
+        rule=["If someone is young then they are blue."],
+    )
+
+    assert prompt == (
+        "Answer whether the statement The cow is blue. can be derived from the "
+        'rule and the facts. Answer with either "True" or "False".\n'
+        "Rule: ['If someone is young then they are blue.']\n"
+        "Facts: The cow is young.\nThe cow is kind.\n"
+        'Answer with either "True or "False".\n'
+    )

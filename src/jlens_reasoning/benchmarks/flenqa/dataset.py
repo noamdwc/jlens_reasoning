@@ -2,15 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
-
-from jlens_reasoning.benchmarks.flenqa_prompts import (
-    build_prompt_text,
-    compute_prompt_id,
-)
 
 TASKS = frozenset({"PIR", "MonoRel", "Simplified RuleTaker"})
 CONTEXT_SIZES = frozenset({250, 500, 1000, 2000, 3000})
@@ -36,6 +32,44 @@ REQUIRED_COLUMNS = frozenset(
 )
 
 
+def build_prompt_text(
+    *,
+    task: str,
+    question: str,
+    mixin: str,
+    rule: object,
+) -> str:
+    """Render the authors' task-specific FLenQA prompt byte for byte."""
+    if task == "PIR":
+        return (
+            f"{mixin}\n"
+            f"True/False Question: {question}\n"
+            "Answer only True or False.\n"
+        )
+    if task == "MonoRel":
+        return (
+            "Here are some facts. Answer the exact following question based on the "
+            f"text: {question} Answer the question as it appears exactly.\n"
+            f"{mixin}\n"
+            f"{question}\n"
+            "Answer only True or False.\n"
+        )
+    if task == "Simplified RuleTaker":
+        return (
+            f"Answer whether the statement {question} can be derived from the "
+            'rule and the facts. Answer with either "True" or "False".\n'
+            f"Rule: {rule}\n"
+            f"Facts: {mixin}\n"
+            'Answer with either "True or "False".\n'
+        )
+    raise ValueError(f"Unknown FLenQA task: {task!r}")
+
+
+def compute_prompt_id(text: str) -> str:
+    """Return the full SHA-256 digest of the exact final prompt."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 @dataclass(frozen=True, slots=True)
 class FlenqaRow:
     """One normalized source row with its original declared conditions."""
@@ -55,6 +89,16 @@ class FlenqaRow:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceProvenance:
+    """Declared conditions retained together for one source row."""
+
+    source_row_id: int
+    ctx_size: int
+    padding_type: str
+    dispersion: str
+
+
+@dataclass(frozen=True, slots=True)
 class FlenqaPrompt:
     """One unique final prompt plus ordered source-row provenance."""
 
@@ -68,10 +112,7 @@ class FlenqaPrompt:
     rule: str | None
     label: bool
     mixin: str
-    ctx_size_declared: int
-    source_row_ids: tuple[int, ...]
-    padding_type_declared: tuple[str, ...]
-    dispersion_declared: tuple[str, ...]
+    provenance: tuple[SourceProvenance, ...]
 
 
 def _valid_label(value: object) -> bool:
@@ -245,10 +286,14 @@ def _text(value: object, *, column: str, source_row_id: int) -> str:
     return value
 
 
-def normalize_rows(raw_rows: Iterable[Mapping[str, Any]]) -> tuple[FlenqaRow, ...]:
+def normalize_rows(
+    raw_rows: Iterable[Mapping[str, Any]],
+    *,
+    full: bool = False,
+) -> tuple[FlenqaRow, ...]:
     """Normalize published FLenQA rows and assign sequential provenance IDs."""
     rows = tuple(raw_rows)
-    verify_schema(rows)
+    verify_schema(rows, full=full)
     normalized: list[FlenqaRow] = []
     for source_row_id, raw in enumerate(rows):
         task = raw["dataset"]
@@ -286,10 +331,6 @@ def normalize_rows(raw_rows: Iterable[Mapping[str, Any]]) -> tuple[FlenqaRow, ..
     return tuple(normalized)
 
 
-def _ordered_unique(values: Iterable[str]) -> tuple[str, ...]:
-    return tuple(dict.fromkeys(values))
-
-
 def deduplicate(rows: Iterable[FlenqaRow]) -> tuple[FlenqaPrompt, ...]:
     """Collapse exact final-text duplicates in first-occurrence order."""
     grouped: dict[str, list[FlenqaRow]] = {}
@@ -325,13 +366,19 @@ def deduplicate(rows: Iterable[FlenqaRow]) -> tuple[FlenqaPrompt, ...]:
                 rule=first.rule,
                 label=first.label,
                 mixin=first.mixin,
-                ctx_size_declared=first.ctx_size_declared,
-                source_row_ids=tuple(row.source_row_id for row in source_rows),
-                padding_type_declared=_ordered_unique(
-                    row.padding_type_declared for row in source_rows
-                ),
-                dispersion_declared=_ordered_unique(
-                    row.dispersion_declared for row in source_rows
+                provenance=tuple(
+                    sorted(
+                        (
+                            SourceProvenance(
+                                source_row_id=row.source_row_id,
+                                ctx_size=row.ctx_size_declared,
+                                padding_type=row.padding_type_declared,
+                                dispersion=row.dispersion_declared,
+                            )
+                            for row in source_rows
+                        ),
+                        key=lambda item: item.source_row_id,
+                    )
                 ),
             )
         )
