@@ -42,7 +42,10 @@ Lens output is requested only at:
 
 Padding sampling is deterministic. The random generator seed is derived from
 `prompt_id` and a fixed sampling seed recorded in the run configuration.
-Sampling is without replacement.
+Sampling is without replacement. An eligible token must overlap a declared
+padding-content span. Special tokens and tokens that overlap only whitespace
+are excluded. Punctuation tokens remain eligible when they are part of actual
+padding content.
 
 Multiple labels may resolve to the same token position. Every
 `(prompt_id, position, label)` row is saved in `positions`, while lens execution
@@ -75,8 +78,15 @@ torch.allclose(jacobian_logits, logit_logits, rtol=1e-5, atol=1e-6)
 ```
 
 These tolerances are part of the recorded run configuration. The maximum
-absolute difference is stored for each prompt and summarized in the run
-manifest.
+absolute difference is defined exactly as:
+
+```python
+max_abs_logit_diff = (
+    jacobian_logits - logit_logits
+).abs().max().item()
+```
+
+It is stored in the `prompts` table and summarized in the run manifest.
 
 The saved `layer` value is the exact integer layer key returned by
 `JacobianLens.apply`. It identifies the transformer readout layer and is not
@@ -97,19 +107,16 @@ Each shard contains three typed Parquet tables:
 - `topk`: prompt ID, lens kind, returned layer index, unique position, rank,
   token ID, and logit.
 
-Source provenance is ordered by `source_row_id` and stored as complete records
-so values from one source row cannot be incorrectly paired with values from
-another:
+Source provenance is ordered by `source_row_id` and stored directly in Arrow as
+a typed field, not JSON or a serialized string:
 
-```python
-provenance = [
-    {
-        "source_row_id": ...,
-        "ctx_size": ...,
-        "padding_type": ...,
-        "dispersion": ...,
-    }
-]
+```text
+provenance: list<struct<
+    source_row_id: int32,
+    ctx_size: int32,
+    padding_type: string,
+    dispersion: string
+>>
 ```
 
 `top_k` is configurable and defaults to 25. Both lens modes use identical
