@@ -41,11 +41,7 @@ def build_prompt_text(
 ) -> str:
     """Render the authors' task-specific FLenQA prompt byte for byte."""
     if task == "PIR":
-        return (
-            f"{mixin}\n"
-            f"True/False Question: {question}\n"
-            "Answer only True or False.\n"
-        )
+        return f"{mixin}\nTrue/False Question: {question}\nAnswer only True or False.\n"
     if task == "MonoRel":
         return (
             "Here are some facts. Answer the exact following question based on the "

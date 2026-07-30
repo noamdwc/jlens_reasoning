@@ -200,9 +200,7 @@ def _validate_layer_logits(
         if type(layer) is not int:
             raise RuntimeError("Lens layer keys must be integers")
         if logits.ndim != 2 or logits.shape[0] != position_count:
-            raise RuntimeError(
-                f"Layer {layer} logits rows must match unique positions"
-            )
+            raise RuntimeError(f"Layer {layer} logits rows must match unique positions")
         vocabulary_sizes.add(int(logits.shape[1]))
     if len(vocabulary_sizes) != 1:
         raise RuntimeError("Lens layers must use one vocabulary size")
@@ -246,10 +244,7 @@ def _merge_columns(
     first: Mapping[str, Sequence[Any]],
     second: Mapping[str, Sequence[Any]],
 ) -> dict[str, list[Any]]:
-    return {
-        name: [*first[name], *second[name]]
-        for name in first
-    }
+    return {name: [*first[name], *second[name]] for name in first}
 
 
 def run_prompt(
@@ -293,9 +288,8 @@ def run_prompt(
         raise RuntimeError("Jacobian and Logit Lens vocabulary sizes differ")
     if jacobian.model_logits.shape != logit.model_logits.shape:
         raise RuntimeError("Jacobian and Logit Lens model-logit shapes differ")
-    if (
-        jacobian.model_logits.ndim != 2
-        or jacobian.model_logits.shape[0] != len(positions)
+    if jacobian.model_logits.ndim != 2 or jacobian.model_logits.shape[0] != len(
+        positions
     ):
         raise RuntimeError("Lens model-logit rows must match unique positions")
     if jacobian.model_logits.numel() == 0:
@@ -307,9 +301,7 @@ def run_prompt(
         atol=config.logits_atol,
     ):
         raise RuntimeError("Jacobian and Logit Lens model logits are not allclose")
-    max_abs_logit_diff = (
-        jacobian.model_logits - logit.model_logits
-    ).abs().max().item()
+    max_abs_logit_diff = (jacobian.model_logits - logit.model_logits).abs().max().item()
 
     prompt = prepared.prompt
     prompts = record_batch(
@@ -364,10 +356,7 @@ def run_prompt(
         _merge_columns(jacobian_topk, logit_topk),
     )
     expected_topk_rows = (
-        2
-        * len(jacobian_layers)
-        * len(positions)
-        * min(config.top_k, jacobian_vocab)
+        2 * len(jacobian_layers) * len(positions) * min(config.top_k, jacobian_vocab)
     )
     if topk.num_rows != expected_topk_rows:
         raise RuntimeError("Top-k row count does not match unique positions")
@@ -385,10 +374,7 @@ def _validate_config(config: RunConfig) -> None:
         raise ValueError("shard_size must be a positive integer")
     if type(config.max_seq_len) is not int or config.max_seq_len <= 0:
         raise ValueError("max_seq_len must be a positive integer")
-    if (
-        type(config.expected_source_rows) is not int
-        or config.expected_source_rows <= 0
-    ):
+    if type(config.expected_source_rows) is not int or config.expected_source_rows <= 0:
         raise ValueError("expected_source_rows must be a positive integer")
     if (
         type(config.expected_bridge_problems) is not int
@@ -412,9 +398,7 @@ def plan_shards(
     """Assign immutable shards from the canonical prompt order."""
     if type(shard_size) is not int or shard_size <= 0:
         raise ValueError("shard_size must be a positive integer")
-    indices = tuple(
-        prepared.prompt.canonical_index for prepared in prepared_prompts
-    )
+    indices = tuple(prepared.prompt.canonical_index for prepared in prepared_prompts)
     if indices != tuple(sorted(set(indices))):
         raise ValueError("Prepared prompt indices must be sorted and unique")
     return tuple(
@@ -523,12 +507,8 @@ def _run_meta_payload(
     return {
         "config": asdict(config),
         "config_hash": config_hash,
-        "requested_layers": (
-            None if config.layers is None else list(config.layers)
-        ),
-        "returned_layers": (
-            None if returned_layers is None else list(returned_layers)
-        ),
+        "requested_layers": (None if config.layers is None else list(config.layers)),
+        "returned_layers": (None if returned_layers is None else list(returned_layers)),
     }
 
 
@@ -570,9 +550,7 @@ def _scan_run_outputs(
     for shard_id in shard_ids:
         stem = f"shard-{shard_id:05d}.parquet"
         prompts = pq.read_table(root / "prompts" / stem).to_pydict()
-        max_differences.extend(
-            float(value) for value in prompts["max_abs_logit_diff"]
-        )
+        max_differences.extend(float(value) for value in prompts["max_abs_logit_diff"])
         topk = pq.read_table(root / "topk" / stem).to_pydict()
         for prompt_id, layer in zip(
             topk["prompt_id"],

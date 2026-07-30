@@ -163,12 +163,10 @@ def test_run_prompt_accepts_allclose_logits_and_records_exact_max_diff() -> None
 
     batches = run_prompt(_prepared(), runners=runners, config=_config())
 
-    expected = (
-        jacobian_logits - logit_logits
-    ).abs().max().item()
-    assert batches["prompts"].to_pydict()[
-        "max_abs_logit_diff"
-    ] == pytest.approx([expected])
+    expected = (jacobian_logits - logit_logits).abs().max().item()
+    assert batches["prompts"].to_pydict()["max_abs_logit_diff"] == pytest.approx(
+        [expected]
+    )
 
 
 def test_run_prompt_rejects_logits_outside_tolerance() -> None:
@@ -294,9 +292,7 @@ class CharTokenizer:
     def __call__(self, text: str, **kwargs: object) -> dict[str, object]:
         return {
             "input_ids": [[*range(len(text))]],
-            "offset_mapping": [
-                [(index, index + 1) for index in range(len(text))]
-            ],
+            "offset_mapping": [[(index, index + 1) for index in range(len(text))]],
         }
 
 
