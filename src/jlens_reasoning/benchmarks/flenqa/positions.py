@@ -206,7 +206,7 @@ def _unique_status(match_count: int) -> SpanStatus:
 
 
 def resolve_key_paragraphs(prompt: FlenqaPrompt) -> tuple[SpanDiagnostic, ...]:
-    """Resolve logical fact targets to mixin-relative paragraph bounds."""
+    """Resolve every occurrence of each logical fact to paragraph bounds."""
     payload_spans = parse_paragraph_payload_spans(prompt.mixin)
     diagnostics: list[SpanDiagnostic] = []
     for ordinal, surface in enumerate(prompt.key_texts):
@@ -224,16 +224,27 @@ def resolve_key_paragraphs(prompt: FlenqaPrompt) -> tuple[SpanDiagnostic, ...]:
                 for payload_span in payload_spans
                 if prompt.mixin[payload_span.start : payload_span.end] == surface
             )
-        status = _unique_status(len(matches))
-        diagnostics.append(
+        if not matches:
+            diagnostics.append(
+                _diagnostic(
+                    kind="fact",
+                    ordinal=ordinal,
+                    surface=surface,
+                    status=SpanStatus.UNRESOLVED,
+                    match_count=0,
+                )
+            )
+            continue
+        diagnostics.extend(
             _diagnostic(
                 kind="fact",
                 ordinal=ordinal,
                 surface=surface,
-                status=status,
+                status=SpanStatus.OK,
                 match_count=len(matches),
-                span=matches[0] if status is SpanStatus.OK else None,
+                span=match,
             )
+            for match in matches
         )
     return tuple(diagnostics)
 
@@ -561,25 +572,29 @@ def _select_positions(
     sample_seed: int,
 ) -> tuple[LabeledPosition, ...]:
     selected: list[LabeledPosition] = []
-    for label, diagnostic in zip(
-        FACT_LABELS,
-        _fact_diagnostics(prepared),
-        strict=False,
-    ):
+    for diagnostic in _fact_diagnostics(prepared):
         if diagnostic.status is SpanStatus.OK and diagnostic.token_end is not None:
-            selected.append(LabeledPosition(label, diagnostic.token_end - 1))
+            selected.append(
+                LabeledPosition(
+                    FACT_LABELS[diagnostic.ordinal],
+                    diagnostic.token_end - 1,
+                )
+            )
     bridge_diagnostics = tuple(
-        diagnostic
-        for diagnostic in prepared.diagnostics
-        if diagnostic.kind == "bridge"
+        diagnostic for diagnostic in prepared.diagnostics if diagnostic.kind == "bridge"
     )
-    for label, diagnostic in zip(
-        BRIDGE_LABELS,
-        bridge_diagnostics,
-        strict=False,
-    ):
-        if diagnostic.status is SpanStatus.OK and diagnostic.token_end is not None:
-            selected.append(LabeledPosition(label, diagnostic.token_end - 1))
+    for diagnostic in bridge_diagnostics:
+        if (
+            diagnostic.status is SpanStatus.OK
+            and diagnostic.token_end is not None
+            and diagnostic.fact_ordinal is not None
+        ):
+            selected.append(
+                LabeledPosition(
+                    BRIDGE_LABELS[diagnostic.fact_ordinal],
+                    diagnostic.token_end - 1,
+                )
+            )
     question = prepared.question_token_span
     if question is not None:
         selected.append(LabeledPosition(QUESTION_LABEL, question.end - 1))
@@ -603,11 +618,23 @@ def _select_positions(
 def validate_prepared_prompt(prepared: PreparedPrompt) -> PreparedPrompt:
     """Require every semantic input needed by the benchmark positions."""
     facts = _fact_diagnostics(prepared)
-    if len(facts) != len(prepared.prompt.key_texts) or any(
-        diagnostic.status is not SpanStatus.OK
-        or diagnostic.token_start is None
-        or diagnostic.token_end is None
+    expected_ordinals = set(range(len(prepared.prompt.key_texts)))
+    resolved_ordinals = {
+        diagnostic.ordinal
         for diagnostic in facts
+        if diagnostic.status is SpanStatus.OK
+        and diagnostic.token_start is not None
+        and diagnostic.token_end is not None
+    }
+    if (
+        {diagnostic.ordinal for diagnostic in facts} != expected_ordinals
+        or resolved_ordinals != expected_ordinals
+        or any(
+            diagnostic.status is not SpanStatus.OK
+            or diagnostic.token_start is None
+            or diagnostic.token_end is None
+            for diagnostic in facts
+        )
     ):
         raise ValueError("Required FLenQA fact spans are unresolved")
     questions = tuple(
@@ -628,20 +655,24 @@ def validate_prepared_prompt(prepared: PreparedPrompt) -> PreparedPrompt:
             for diagnostic in prepared.diagnostics
             if diagnostic.kind == "bridge"
         )
-        if prepared.bridge is None or len(bridges) != len(facts) or any(
-            diagnostic.status is not SpanStatus.OK
-            or diagnostic.token_start is None
-            or diagnostic.token_end is None
-            for diagnostic in bridges
+        if (
+            prepared.bridge is None
+            or len(bridges) != len(facts)
+            or any(
+                diagnostic.status is not SpanStatus.OK
+                or diagnostic.token_start is None
+                or diagnostic.token_end is None
+                for diagnostic in bridges
+            )
         ):
             raise ValueError("Required FLenQA bridge spans are unresolved")
     expected_labels = {
-        *FACT_LABELS[: len(facts)],
+        *FACT_LABELS[: len(prepared.prompt.key_texts)],
         QUESTION_LABEL,
         FINAL_LABEL,
     }
     if prepared.prompt.task in {PIR_TASK, MONOREL_TASK}:
-        expected_labels.update(BRIDGE_LABELS[: len(facts)])
+        expected_labels.update(BRIDGE_LABELS[: len(prepared.prompt.key_texts)])
     actual_labels = {item.label for item in prepared.positions}
     if not expected_labels <= actual_labels:
         missing = sorted(expected_labels - actual_labels)
@@ -728,7 +759,8 @@ def prepare_prompt(
 
     raw_special_ids = getattr(tokenizer, "all_special_ids", ())
     special_token_ids = frozenset(
-        int(token_id) for token_id in (() if raw_special_ids is None else raw_special_ids)
+        int(token_id)
+        for token_id in (() if raw_special_ids is None else raw_special_ids)
     )
     prepared = PreparedPrompt(
         prompt=prompt,

@@ -20,6 +20,7 @@ from jlens_reasoning.benchmarks.flenqa.positions import (
     _eligible_padding_position,
     bridge_gate,
     extract_bridge,
+    padding_content_positions,
     prepare_prompt,
     resolve_key_paragraphs,
     sample_padding_positions,
@@ -81,7 +82,7 @@ def _diagnostics(prepared: PreparedPrompt, kind: str) -> list[Any]:
     ]
 
 
-def test_resolve_pir_facts_records_exact_ambiguous_and_unresolved_separately() -> None:
+def test_resolve_facts_preserves_every_matching_paragraph() -> None:
     prompt = _prompt(
         mixin="Exact.\nRepeated.\nRepeated.",
         key_texts=("Exact.", "Repeated.", "Missing."),
@@ -89,15 +90,17 @@ def test_resolve_pir_facts_records_exact_ambiguous_and_unresolved_separately() -
 
     diagnostics = resolve_key_paragraphs(prompt)
 
-    assert [(item.status, item.match_count) for item in diagnostics] == [
-        (SpanStatus.OK, 1),
-        (SpanStatus.AMBIGUOUS, 2),
-        (SpanStatus.UNRESOLVED, 0),
+    assert [(item.ordinal, item.status, item.match_count) for item in diagnostics] == [
+        (0, SpanStatus.OK, 1),
+        (1, SpanStatus.OK, 2),
+        (1, SpanStatus.OK, 2),
+        (2, SpanStatus.UNRESOLVED, 0),
     ]
-    assert diagnostics[0].char_start == 0
-    assert diagnostics[0].char_end == len("Exact.")
-    assert diagnostics[1].char_start is None
-    assert diagnostics[2].char_start is None
+    assert [
+        prompt.mixin[item.char_start : item.char_end]
+        for item in diagnostics
+        if item.status is SpanStatus.OK
+    ] == ["Exact.", "Repeated.", "Repeated."]
 
 
 def test_resolve_pir_requires_an_exact_full_paragraph_payload() -> None:
@@ -149,25 +152,26 @@ def test_ruletaker_counts_containing_paragraphs_not_sentence_repetitions() -> No
     assert diagnostic.match_count == 1
 
 
-@pytest.mark.parametrize(
-    ("mixin", "expected_status", "expected_count"),
-    [
-        (
-            "The cow is young.\nThe cow is young and kind.",
-            SpanStatus.AMBIGUOUS,
-            2,
-        ),
-        ("The dog sleeps.", SpanStatus.UNRESOLVED, 0),
-    ],
-)
-def test_ruletaker_reports_ambiguous_or_missing_enclosing_paragraphs(
-    mixin: str,
-    expected_status: SpanStatus,
-    expected_count: int,
-) -> None:
+def test_ruletaker_preserves_multiple_containing_paragraphs() -> None:
     prompt = _prompt(
         task="Simplified RuleTaker",
-        mixin=mixin,
+        mixin="The cow is young.\nThe cow is young and kind.",
+        key_texts=("The cow is young",),
+        question="The cow is blue.",
+        rule="If someone is young then they are blue.",
+    )
+
+    diagnostics = resolve_key_paragraphs(prompt)
+
+    assert len(diagnostics) == 2
+    assert all(diagnostic.status is SpanStatus.OK for diagnostic in diagnostics)
+    assert all(diagnostic.match_count == 2 for diagnostic in diagnostics)
+
+
+def test_ruletaker_reports_missing_enclosing_paragraph() -> None:
+    prompt = _prompt(
+        task="Simplified RuleTaker",
+        mixin="The dog sleeps.",
         key_texts=("The cow is young",),
         question="The cow is blue.",
         rule="If someone is young then they are blue.",
@@ -175,8 +179,8 @@ def test_ruletaker_reports_ambiguous_or_missing_enclosing_paragraphs(
 
     (diagnostic,) = resolve_key_paragraphs(prompt)
 
-    assert diagnostic.status is expected_status
-    assert diagnostic.match_count == expected_count
+    assert diagnostic.status is SpanStatus.UNRESOLVED
+    assert diagnostic.match_count == 0
     assert diagnostic.char_start is None
 
 
@@ -487,6 +491,67 @@ def test_validate_prepared_prompt_rejects_unresolved_required_fact() -> None:
 
     with pytest.raises(ValueError, match="fact"):
         validate_prepared_prompt(prepared)
+
+
+def test_prepare_prompt_labels_all_repeated_ruletaker_facts() -> None:
+    first = "Dave is good. First expansion."
+    second = "Dave is small. Second expansion."
+    prompt = _prompt(
+        task="Simplified RuleTaker",
+        mixin=f"{first}\nPadding content.\n{second}\n{first}",
+        key_texts=("Dave is good.", "Dave is small."),
+        question="Dave is loud.",
+        rule="If someone is good and small then they are loud.",
+    )
+
+    prepared = validate_prepared_prompt(
+        prepare_prompt(prompt, RecordingCharTokenizer())
+    )
+
+    fact_a_positions = {
+        item.position for item in prepared.positions if item.label == "fact_a_end"
+    }
+    assert fact_a_positions == {
+        prompt.text.index(first) + len(first),
+        prompt.text.rindex(first) + len(first),
+    }
+    fact_spans = {
+        (item.char_start, item.char_end)
+        for item in _diagnostics(prepared, "fact")
+        if item.status is SpanStatus.OK
+    }
+    assert all(
+        not any(
+            start < span_end and end > span_start for span_start, span_end in fact_spans
+        )
+        for position in padding_content_positions(prepared)
+        for start, end in (prepared.offsets[position],)
+    )
+
+
+def test_identical_logical_facts_share_positions_without_duplicate_execution() -> None:
+    fact = "Gary is dumb. Expanded fact."
+    prompt = _prompt(
+        task="Simplified RuleTaker",
+        mixin=f"{fact}\n{fact}",
+        key_texts=("Gary is dumb.", "Gary is dumb."),
+        question="Gary is red.",
+        rule="If someone is dumb then they are red.",
+    )
+
+    prepared = validate_prepared_prompt(
+        prepare_prompt(prompt, RecordingCharTokenizer())
+    )
+
+    fact_a = {
+        item.position for item in prepared.positions if item.label == "fact_a_end"
+    }
+    fact_b = {
+        item.position for item in prepared.positions if item.label == "fact_b_end"
+    }
+    assert fact_a == fact_b
+    assert len(fact_a) == 2
+    assert set(fact_a) <= set(prepared.unique_positions)
 
 
 def _bridge_prompt(
