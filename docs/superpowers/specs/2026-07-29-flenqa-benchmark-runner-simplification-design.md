@@ -40,6 +40,11 @@ Lens output is requested only at:
 - up to four positions sampled from tokens overlapping known padding-content
   spans.
 
+Every paragraph containing a declared key fact is a meaningful fact span.
+Repeated matching paragraphs retain the same logical fact label, and all are
+excluded from padding-content sampling. A fact is unresolved only when it has
+no matching paragraph.
+
 Padding sampling is deterministic. The random generator seed is derived from
 `prompt_id` and a fixed sampling seed recorded in the run configuration.
 Sampling is without replacement. An eligible token must overlap a declared
