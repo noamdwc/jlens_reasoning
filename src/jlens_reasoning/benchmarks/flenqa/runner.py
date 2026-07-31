@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -13,6 +13,7 @@ from typing import Any, Protocol
 import pyarrow as pa
 import pyarrow.parquet as pq
 import torch
+from tqdm.auto import tqdm
 
 from jlens_reasoning.benchmarks.flenqa.dataset import (
     FlenqaRow,
@@ -417,6 +418,7 @@ def run_shard(
     output_dir: Path,
     runners: LensRunners,
     config: RunConfig,
+    on_prompts_completed: Callable[[int], None] | None = None,
 ) -> ShardManifest:
     """Run or resume one manifest-committed FLenQA shard."""
     if type(shard.shard_id) is not int or shard.shard_id < 0:
@@ -443,12 +445,15 @@ def run_shard(
         manifest = read_shard_manifest(root, shard_id=shard.shard_id)
         if manifest.prompt_ids != prompt_ids:
             raise RuntimeError("Completed shard prompt membership does not match")
-        return validate_shard_manifest(
+        validated = validate_shard_manifest(
             root,
             manifest,
             schemas=TABLE_SCHEMAS,
             required_tables=REQUIRED_TABLES,
         )
+        if on_prompts_completed is not None:
+            on_prompts_completed(len(selected))
+        return validated
 
     reset_incomplete_shard(root, shard_id=shard.shard_id)
     writer = ShardWriter(
@@ -465,6 +470,8 @@ def run_shard(
                 raise RuntimeError("run_prompt did not return every required table")
             for table in REQUIRED_TABLES:
                 writer.append(table, batches[table])
+            if on_prompts_completed is not None:
+                on_prompts_completed(1)
         return writer.commit()
     except BaseException:
         writer.abort()
@@ -593,6 +600,7 @@ def run_benchmark(
     tokenizer: Any,
     runners: LensRunners,
     config: RunConfig,
+    show_progress: bool = True,
 ) -> RunManifest:
     """Run or safely resume the complete prepared FLenQA benchmark."""
     _validate_config(config)
@@ -652,16 +660,31 @@ def run_benchmark(
         ):
             raise RuntimeError("Existing run manifest does not match requested run")
         _validate_run_shards(root, manifest)
-        return manifest
+        with tqdm(
+            total=len(prepared_prompts),
+            initial=len(prepared_prompts),
+            desc="FLenQA prompts",
+            unit="prompt",
+            disable=not show_progress,
+        ):
+            return manifest
 
-    for shard in shards:
-        run_shard(
-            shard,
-            prepared_prompts,
-            output_dir=root,
-            runners=runners,
-            config=config,
-        )
+    with tqdm(
+        total=len(prepared_prompts),
+        desc="FLenQA prompts",
+        unit="prompt",
+        disable=not show_progress,
+    ) as progress:
+        for shard in shards:
+            run_shard(
+                shard,
+                prepared_prompts,
+                output_dir=root,
+                runners=runners,
+                config=config,
+                on_prompts_completed=progress.update,
+            )
+
     provisional = RunManifest(
         config_hash=config_hash,
         prompt_ids=prompt_ids,

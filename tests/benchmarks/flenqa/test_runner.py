@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 import torch
 
+import jlens_reasoning.benchmarks.flenqa.runner as runner_module
 from jlens_reasoning.benchmarks.flenqa.dataset import (
     FlenqaPrompt,
     FlenqaRow,
@@ -331,6 +332,98 @@ def _ruletaker_row() -> FlenqaRow:
         padding_type_declared="books",
         dispersion_declared="first",
     )
+
+
+class RecordingProgress:
+    def __init__(self, **kwargs: object) -> None:
+        self.options = kwargs
+        self.updates: list[int] = []
+        self.closed = False
+
+    def __enter__(self) -> RecordingProgress:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.closed = True
+
+    def update(self, amount: int = 1) -> None:
+        self.updates.append(amount)
+
+
+def test_run_benchmark_tracks_individual_prompts_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    progress_bars: list[RecordingProgress] = []
+
+    def recording_progress(**kwargs: object) -> RecordingProgress:
+        progress = RecordingProgress(**kwargs)
+        progress_bars.append(progress)
+        return progress
+
+    monkeypatch.setattr(runner_module, "tqdm", recording_progress, raising=False)
+    rows = (
+        _ruletaker_row(),
+        replace(
+            _ruletaker_row(),
+            source_row_id=1,
+            problem_id=1,
+            question="The cow is green.",
+        ),
+    )
+
+    run_benchmark(
+        rows,
+        output_dir=tmp_path,
+        tokenizer=CharTokenizer(),
+        runners=LensRunners(DynamicRunner(), DynamicRunner()),
+        config=_config(expected_source_rows=2, shard_size=1),
+    )
+
+    assert len(progress_bars) == 1
+    assert progress_bars[0].options == {
+        "total": 2,
+        "desc": "FLenQA prompts",
+        "unit": "prompt",
+        "disable": False,
+    }
+    assert progress_bars[0].updates == [1, 1]
+    assert progress_bars[0].closed
+
+
+def test_run_benchmark_counts_completed_prompts_when_resuming(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    row = _ruletaker_row()
+    config = _config()
+    run_benchmark(
+        (row,),
+        output_dir=tmp_path,
+        tokenizer=CharTokenizer(),
+        runners=LensRunners(DynamicRunner(), DynamicRunner()),
+        config=config,
+    )
+    (tmp_path / "run-manifest.json").unlink()
+    progress_bars: list[RecordingProgress] = []
+
+    def recording_progress(**kwargs: object) -> RecordingProgress:
+        progress = RecordingProgress(**kwargs)
+        progress_bars.append(progress)
+        return progress
+
+    monkeypatch.setattr(runner_module, "tqdm", recording_progress, raising=False)
+
+    run_benchmark(
+        (row,),
+        output_dir=tmp_path,
+        tokenizer=CharTokenizer(),
+        runners=LensRunners(FailingRunner(), FailingRunner()),
+        config=config,
+    )
+
+    assert progress_bars[0].updates == [1]
+    assert progress_bars[0].closed
 
 
 def test_run_manifest_summarizes_max_logit_difference(tmp_path: Path) -> None:
