@@ -151,6 +151,29 @@ Each immutable shard contains typed `prompts`, `positions`, and `topk` Parquet
 tables. Temporary or partial shard files are rebuilt on resume; a shard or run
 is complete only when its validated completion manifest exists.
 
+## FLenQA accuracy by prompt length
+
+Open `notebooks/flenqa_accuracy.ipynb` in a Colab GPU runtime after uploading
+the current wheel. The notebook evaluates all 9,862 unique final FLenQA prompts
+by default and resumes validated Parquet shards beneath:
+
+```text
+runs/flenqa-accuracy/
+```
+
+Generation is greedy with a 64-token safety limit. For paper compatibility,
+the behavioral score uses the final standalone, case-insensitive `True` or
+`False` in each response and reports the published nominal length buckets of
+250, 500, 1000, 2000, and 3000 tokens. The raw generation, exact Qwen token
+count, parsed verdict, correctness, and complete source provenance remain in
+the result table.
+
+The headline curve restores the paper's random-placement source-row weighting.
+A second curve weights each unique prompt once, avoiding duplicate input weight
+at the shortest length and for incidental prompt collisions. The notebook also
+shows task-level accuracy, verdict frequencies, and measured token-length
+diagnostics.
+
 ## CI policy
 
 CI installs the committed `uv.lock`, disables W&B, sets Hugging Face and
