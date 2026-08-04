@@ -10,6 +10,7 @@ from .evaluation_utils import (
     answer_token_variants,
     best_token_rank,
     extract_answer,
+    extract_last_binary_verdict,
     log_rank_gain,
     match_reference,
     no_reasoning,
@@ -52,6 +53,22 @@ class ModelOutput:
         expects_error = self.generation_status is GenerationStatus.GENERATION_ERROR
         if has_error != expects_error:
             raise ValueError("generation_error status and message must agree")
+
+
+@dataclass(frozen=True, slots=True)
+class BinaryVerdictResult:
+    raw_output: ModelOutput
+    expected: bool
+    verdict: bool | None
+    correct: bool
+
+    def __post_init__(self) -> None:
+        if type(self.expected) is not bool:
+            raise TypeError("expected binary verdict must be boolean")
+        if self.verdict is not None and type(self.verdict) is not bool:
+            raise TypeError("extracted binary verdict must be boolean or None")
+        if self.correct is not (self.verdict is self.expected):
+            raise ValueError("binary correctness must match verdict and label")
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,6 +239,24 @@ def evaluate(
     else:
         references = tuple(accepted_references)
     return (evaluator or SimpleFactualEvaluator())(model_output, references)
+
+
+def evaluate_paper_binary(
+    output: str | ModelOutput,
+    *,
+    expected: bool,
+) -> BinaryVerdictResult:
+    """Apply the FLenQA paper's final-occurrence behavioral scoring rule."""
+    if type(expected) is not bool:
+        raise TypeError("expected binary verdict must be boolean")
+    model_output = ModelOutput(output) if isinstance(output, str) else output
+    verdict = extract_last_binary_verdict(model_output.text)
+    return BinaryVerdictResult(
+        raw_output=model_output,
+        expected=expected,
+        verdict=verdict,
+        correct=verdict is expected,
+    )
 
 
 def evaluate_next_token(

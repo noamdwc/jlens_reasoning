@@ -246,3 +246,17 @@ matching defined above, and accept only an extracted `True` or `False`.
 Store the generated verdict, correctness, and agreement with constrained
 scoring separately. An absent or unparseable generated verdict never changes
 the constrained verdict.
+
+## FLenQA Paper-Compatible Generated Verdict
+
+Behavioral comparisons with the published FLenQA results use a separate,
+explicitly paper-compatible rule. Search the raw generated response for
+standalone `True` and `False` words without receiving the gold label, ignore
+case, and use the final occurrence as the verdict. A response with no verdict
+is incorrect. A response truncated at the declared generation limit is scored
+from the text that was actually generated; it is incorrect when that text has
+no verdict.
+
+This rule exists only to reproduce the paper's generated-answer methodology.
+It does not replace constrained-logit scoring, and it must not be substituted
+for the front-loaded factual evaluator in other experiments.

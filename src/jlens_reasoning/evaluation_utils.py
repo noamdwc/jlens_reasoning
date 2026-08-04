@@ -21,6 +21,17 @@ def no_reasoning(text: str) -> tuple[str, ReasoningStatus]:
 
 # Matches complete, non-nested reasoning spans. Any leftover tag is malformed.
 _THINK_SPAN = re.compile(r"<think>(?:(?!</?think>).)*</think>", re.DOTALL)
+_BINARY_VERDICT = re.compile(r"\b(true|false)\b", re.IGNORECASE)
+
+
+def extract_last_binary_verdict(text: str) -> bool | None:
+    """Return the last standalone True/False verdict in response order."""
+    if not isinstance(text, str):
+        raise TypeError("binary verdict extraction requires text")
+    matches = tuple(_BINARY_VERDICT.finditer(text))
+    if not matches:
+        return None
+    return matches[-1].group(1).casefold() == "true"
 
 
 def parse_think_tags(text: str) -> tuple[str, ReasoningStatus]:
