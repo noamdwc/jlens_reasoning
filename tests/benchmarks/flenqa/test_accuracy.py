@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -229,3 +230,20 @@ def test_expected_prompt_count_is_checked_before_generation(tmp_path: Path) -> N
         )
 
     assert generator.calls == []
+
+
+def test_result_loading_rejects_run_configuration_mismatch(tmp_path: Path) -> None:
+    manifest = run_accuracy(
+        (_row(),),
+        output_dir=tmp_path,
+        tokenizer=FakeTokenizer(),
+        generate=RecordingGenerator(),
+        config=_config(),
+    )
+    metadata_path = tmp_path / "run-meta.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["config_hash"] = "different"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="configuration"):
+        load_accuracy_results(tmp_path, manifest)

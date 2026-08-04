@@ -427,6 +427,12 @@ def load_accuracy_results(
 ) -> pa.Table:
     """Load and validate every completed accuracy shard in run order."""
     root = Path(root)
+    try:
+        metadata = _read_json(root / "run-meta.json")
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Accuracy run configuration is unreadable") from exc
+    if metadata.get("config_hash") != manifest.config_hash:
+        raise RuntimeError("Accuracy run configuration does not match manifest")
     if not _run_shards_complete(root, manifest):
         raise RuntimeError("Accuracy run shards are incomplete or invalid")
     tables = [
