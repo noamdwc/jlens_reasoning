@@ -8,10 +8,12 @@ SHARED_NOTEBOOKS = [
     Path("notebooks/_template.ipynb"),
     Path("notebooks/00_environment_check.ipynb"),
 ]
-FLENQA_NOTEBOOKS = [
+FLENQA_BENCHMARK_NOTEBOOKS = [
     Path("notebooks/flenqa_smoke.ipynb"),
     Path("notebooks/flenqa_full_run.ipynb"),
 ]
+FLENQA_ACCURACY_NOTEBOOK = Path("notebooks/flenqa_accuracy.ipynb")
+FLENQA_NOTEBOOKS = [*FLENQA_BENCHMARK_NOTEBOOKS, FLENQA_ACCURACY_NOTEBOOK]
 EXPERIMENT_NOTEBOOKS = sorted(Path("experiments").glob("*/*.ipynb"))
 NOTEBOOKS = [*SHARED_NOTEBOOKS, *FLENQA_NOTEBOOKS, *EXPERIMENT_NOTEBOOKS]
 ASSET_NOTEBOOK = Path("notebooks/01_download_assets.ipynb")
@@ -127,11 +129,31 @@ def test_flenqa_notebooks_are_benchmark_drivers() -> None:
         "TABLE_SCHEMAS",
     )
 
-    for path in FLENQA_NOTEBOOKS:
+    for path in FLENQA_BENCHMARK_NOTEBOOKS:
         source = "\n".join(cell.source for cell in load_notebook(path).cells)
         assert "from jlens_reasoning.benchmarks.flenqa.runner import" in source
         assert "run_benchmark(" in source
         assert not any(fragment in source for fragment in forbidden)
+
+
+def test_flenqa_accuracy_notebook_has_visible_full_run_workflow() -> None:
+    notebook = load_notebook(FLENQA_ACCURACY_NOTEBOOK)
+    cells = notebook_cells_by_id(FLENQA_ACCURACY_NOTEBOOK)
+    source = "\n".join(cell.source for cell in notebook.cells)
+
+    assert "initialize_colab(enable_wandb=False, require_cuda=True)" in source
+    assert "normalize_rows(raw_rows, full=True)" in source
+    assert "len(prompts) == 9_862" in source
+    assert "AccuracyRunConfig(" in source
+    assert "expected_source_rows=12_000" in source
+    assert "expected_prompts=9_862" in source
+    assert "do_sample=False" in cells["define-generation"]
+    assert "max_new_tokens=max_new_tokens" in cells["define-generation"]
+    assert "run_accuracy(" in cells["run-accuracy"]
+    assert "summarize_paper_random" in cells["paper-curve"]
+    assert "summarize_unique_prompts" in cells["unique-curve"]
+    assert "run_benchmark(" not in source
+    assert "JacobianLens" not in source
 
 
 def test_readout_sanity_notebook_has_pinned_gpu_workflow() -> None:
