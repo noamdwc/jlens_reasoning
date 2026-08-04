@@ -144,14 +144,22 @@ def test_flenqa_accuracy_notebook_has_visible_full_run_workflow() -> None:
     assert "initialize_colab(enable_wandb=False, require_cuda=True)" in source
     assert "normalize_rows(raw_rows, full=True)" in source
     assert "len(prompts) == 9_862" in source
-    assert "AccuracyRunConfig(" in source
-    assert "expected_source_rows=12_000" in source
-    assert "expected_prompts=9_862" in source
+    assert "for prompt in tqdm(prompts" in cells["run-accuracy"]
+    assert "evaluate_paper_binary" in cells["run-accuracy"]
+    assert "MAX_SEQ_LEN = 4096" in source
+    assert "MAX_NEW_TOKENS = 64" in source
     assert "do_sample=False" in cells["define-generation"]
-    assert "max_new_tokens=max_new_tokens" in cells["define-generation"]
-    assert "run_accuracy(" in cells["run-accuracy"]
-    assert "summarize_paper_random" in cells["paper-curve"]
-    assert "summarize_unique_prompts" in cells["unique-curve"]
+    assert "paper_weight" in cells["run-accuracy"]
+    assert "pa.Table.from_pylist" in cells["save-results"]
+    assert "pq.write_table" in cells["save-results"]
+    assert '"results.parquet"' in cells["save-results"]
+    assert "weighted_correct" in cells["paper-curve"]
+    assert ".groupby(" in cells["paper-curve"]
+    assert ".groupby(" in cells["unique-curve"]
+    assert "run_accuracy(" not in source
+    assert "load_accuracy_results(" not in source
+    assert "run-manifest" not in source
+    assert "shard" not in source.casefold()
     assert "run_benchmark(" not in source
     assert "JacobianLens" not in source
 

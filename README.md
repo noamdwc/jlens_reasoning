@@ -155,18 +155,22 @@ is complete only when its validated completion manifest exists.
 
 Open `notebooks/flenqa_accuracy.ipynb` in a Colab GPU runtime after uploading
 the current wheel. The notebook evaluates all 9,862 unique final FLenQA prompts
-by default and resumes validated Parquet shards beneath:
+by default, then writes one result table after the full run completes:
 
 ```text
-runs/flenqa-accuracy/
+runs/flenqa-accuracy/results.parquet
 ```
+
+The deliberately simple notebook does not checkpoint or resume partial runs;
+if generation is interrupted, rerun it from the beginning.
 
 Generation is greedy with a 64-token safety limit. For paper compatibility,
 the behavioral score uses the final standalone, case-insensitive `True` or
 `False` in each response and reports the published nominal length buckets of
 250, 500, 1000, 2000, and 3000 tokens. The raw generation, exact Qwen token
-count, parsed verdict, correctness, and complete source provenance remain in
-the result table.
+count, parsed verdict, correctness, and paper source-row weight remain in the
+result table. The notebook asserts the expected unique-prompt and paper-weighted
+counts before saving.
 
 The headline curve restores the paper's random-placement source-row weighting.
 A second curve weights each unique prompt once, avoiding duplicate input weight
