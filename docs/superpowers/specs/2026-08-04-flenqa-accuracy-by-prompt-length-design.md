@@ -107,8 +107,9 @@ It tokenizes without truncation and rejects an input longer than the configured
 Write results beneath `context.runs_dir / "flenqa-accuracy"` as atomic Parquet
 shards plus completion manifests. A shard is reusable only when its prompt
 membership, configuration hash, schema, row count, and checksum validate.
-Missing, temporary, corrupt, or configuration-mismatched shards are rebuilt;
-valid completed shards are never regenerated.
+Missing, temporary, or corrupt shards are rebuilt; valid completed shards are
+never regenerated. A run-level configuration mismatch is rejected before any
+shard is changed.
 
 Each prompt result stores:
 
