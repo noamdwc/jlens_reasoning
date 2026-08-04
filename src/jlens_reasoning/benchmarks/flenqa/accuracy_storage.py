@@ -32,9 +32,7 @@ TABLE_SCHEMAS = {
             pa.field("n_input_tokens", pa.int32(), nullable=False),
             pa.field("provenance", PROVENANCE_TYPE, nullable=False),
             pa.field("generated_token_ids", pa.list_(pa.int32()), nullable=False),
-            pa.field(
-                "generated_token_pieces", pa.list_(pa.string()), nullable=False
-            ),
+            pa.field("generated_token_pieces", pa.list_(pa.string()), nullable=False),
             pa.field("generated_text", pa.string(), nullable=False),
             pa.field("generation_status", pa.string(), nullable=False),
             pa.field("finish_reason", pa.string()),
