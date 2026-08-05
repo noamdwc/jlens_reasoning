@@ -164,13 +164,20 @@ runs/flenqa-accuracy/results.parquet
 The deliberately simple notebook does not checkpoint or resume partial runs;
 if generation is interrupted, rerun it from the beginning.
 
-Generation is greedy with a 64-token safety limit. For paper compatibility,
-the behavioral score uses the final standalone, case-insensitive `True` or
-`False` in each response and reports the published nominal length buckets of
-250, 500, 1000, 2000, and 3000 tokens. The raw generation, exact Qwen token
-count, parsed verdict, correctness, and paper source-row weight remain in the
-result table. The notebook asserts the expected unique-prompt and paper-weighted
-counts before saving.
+Generation uses the shared Hugging Face chat-inference module. The
+paper-compatible curve runs Qwen in direct mode with its native chat template,
+thinking explicitly disabled, deterministic decoding, and the paper wrapper's
+400-token completion allowance. The saved table records the effective inference
+mode and decoding settings alongside raw output, structured reasoning/answer
+fields, exact wrapped input length, parsed verdict, and correctness.
+
+Results produced by the earlier raw-prompt, 64-token notebook are not comparable
+and should be regenerated rather than appended to the corrected result table.
+
+For paper compatibility, the behavioral score uses the final standalone,
+case-insensitive `True` or `False` in each response and reports the published
+nominal length buckets of 250, 500, 1000, 2000, and 3000 tokens. The notebook
+asserts the expected unique-prompt and paper-weighted counts before saving.
 
 The headline curve restores the paper's random-placement source-row weighting.
 A second curve weights each unique prompt once, avoiding duplicate input weight

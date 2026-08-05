@@ -247,6 +247,21 @@ Store the generated verdict, correctness, and agreement with constrained
 scoring separately. An absent or unparseable generated verdict never changes
 the constrained verdict.
 
+## Chat Inference Boundary
+
+Inference and grading are separate contracts. Instruction-tuned Hugging Face
+models are invoked through `jlens_reasoning.inference.generate_chat`, never by
+tokenizing a user prompt as raw completion text. `InferenceConfig.direct()`
+disables native thinking and uses deterministic direct-answer generation;
+`InferenceConfig.reasoning(max_new_tokens=budget)` enables the model's native thinking template
+and requires an explicit shared completion budget.
+
+`InferenceResult` preserves raw generated text and exposes reasoning and final
+answer text separately. Evaluators consume the appropriate visible answer or
+`ModelOutput`; they do not choose chat templates, sampling settings, or token
+budgets. A response truncated before its reasoning boundary has no clean final
+answer and must remain distinguishable from an incorrect answer.
+
 ## FLenQA Paper-Compatible Generated Verdict
 
 Behavioral comparisons with the published FLenQA results use a separate,
