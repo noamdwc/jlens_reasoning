@@ -146,9 +146,17 @@ def test_flenqa_accuracy_notebook_has_visible_full_run_workflow() -> None:
     assert "len(prompts) == 9_862" in source
     assert "for prompt in tqdm(prompts" in cells["run-accuracy"]
     assert "evaluate_paper_binary" in cells["run-accuracy"]
-    assert "MAX_SEQ_LEN = 4096" in source
-    assert "MAX_NEW_TOKENS = 64" in source
-    assert "do_sample=False" in cells["define-generation"]
+    assert "from jlens_reasoning.inference import" in source
+    assert "InferenceConfig.direct(" in source
+    assert "max_input_tokens=4096" in source
+    assert "generate_chat(" in cells["run-accuracy"]
+    assert "causal_lm.generate(" not in source
+    assert "generated_text" in cells["run-accuracy"]
+    assert "reasoning_text" in cells["run-accuracy"]
+    assert "answer_text" in cells["run-accuracy"]
+    assert "reasoning_status" in cells["run-accuracy"]
+    assert "inference_mode" in cells["run-accuracy"]
+    assert "max_new_tokens" in cells["run-accuracy"]
     assert "paper_weight" in cells["run-accuracy"]
     assert "pa.Table.from_pylist" in cells["save-results"]
     assert "pq.write_table" in cells["save-results"]
