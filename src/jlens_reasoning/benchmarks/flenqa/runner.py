@@ -24,7 +24,6 @@ from jlens_reasoning.benchmarks.flenqa.positions import (
     PreparedPrompt,
     bridge_gate,
     prepare_prompt,
-    validate_prepared_prompt,
 )
 from jlens_reasoning.benchmarks.flenqa.storage import (
     REQUIRED_TABLES,
@@ -616,13 +615,11 @@ def run_benchmark(
         expected_applicable=config.expected_bridge_problems,
     )
     prepared_prompts = tuple(
-        validate_prepared_prompt(
-            prepare_prompt(
-                prompt,
-                tokenizer,
-                max_seq_len=config.max_seq_len,
-                sample_seed=config.padding_sample_seed,
-            )
+        prepare_prompt(
+            prompt,
+            tokenizer,
+            max_seq_len=config.max_seq_len,
+            sample_seed=config.padding_sample_seed,
         )
         for prompt in prompts
     )

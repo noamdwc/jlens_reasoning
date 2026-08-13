@@ -17,6 +17,7 @@ from jlens_reasoning.benchmarks.flenqa.dataset import (
 from jlens_reasoning.benchmarks.flenqa.positions import (
     LabeledPosition,
     PreparedPrompt,
+    ResolvedSpan,
 )
 from jlens_reasoning.benchmarks.flenqa.runner import (
     LensPassResult,
@@ -33,6 +34,7 @@ from jlens_reasoning.benchmarks.flenqa.storage import (
     TABLE_SCHEMAS,
     is_shard_complete,
 )
+from jlens_reasoning.experiments_utils.spans import CharSpan
 
 
 class RecordingRunner:
@@ -77,10 +79,20 @@ def _prepared(
         input_ids=(10, 11, 12),
         offsets=((0, 1), (1, 2), (2, 3)),
         token_signature="signature",
-        context_char_span=None,
-        context_token_span=None,
+        context=ResolvedSpan("context", "ab", CharSpan(0, 2), CharSpan(0, 2)),
         paragraph_payload_spans=(),
-        diagnostics=(),
+        facts=(
+            ResolvedSpan("fact_a_end", "a", CharSpan(0, 1), CharSpan(0, 1)),
+            ResolvedSpan("fact_b_end", "b", CharSpan(1, 2), CharSpan(1, 2)),
+        ),
+        bridges=(),
+        question=ResolvedSpan(
+            "question_end",
+            "c",
+            CharSpan(2, 3),
+            CharSpan(2, 3),
+        ),
+        rule=None,
         bridge=None,
         positions=positions,
         special_token_ids=frozenset(),

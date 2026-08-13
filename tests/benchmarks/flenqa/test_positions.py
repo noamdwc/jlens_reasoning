@@ -16,7 +16,6 @@ from jlens_reasoning.benchmarks.flenqa.dataset import (
 )
 from jlens_reasoning.benchmarks.flenqa.positions import (
     LabeledPosition,
-    PreparedPrompt,
     _eligible_padding_position,
     bridge_gate,
     extract_bridge,
@@ -25,14 +24,13 @@ from jlens_reasoning.benchmarks.flenqa.positions import (
     resolve_key_paragraphs,
     sample_padding_positions,
     unique_positions,
-    validate_prepared_prompt,
 )
-from jlens_reasoning.experiments_utils.spans import CharSpan, SpanStatus
+from jlens_reasoning.experiments_utils.spans import CharSpan
 
 
 def _prompt(
     *,
-    task: str = "PIR",
+    task: str = "Simplified RuleTaker",
     mixin: str = "Alpha fact.\nBeta fact.",
     key_texts: tuple[str, ...] = ("Alpha fact.", "Beta fact."),
     question: str = "Is beta true?",
@@ -76,45 +74,39 @@ class RecordingCharTokenizer:
         return {"input_ids": [input_ids], "offset_mapping": [offsets]}
 
 
-def _diagnostics(prepared: PreparedPrompt, kind: str) -> list[Any]:
-    return [
-        diagnostic for diagnostic in prepared.diagnostics if diagnostic.kind == kind
-    ]
-
-
 def test_resolve_facts_preserves_every_matching_paragraph() -> None:
     prompt = _prompt(
         mixin="Exact.\nRepeated.\nRepeated.",
-        key_texts=("Exact.", "Repeated.", "Missing."),
+        key_texts=("Exact.", "Missing."),
     )
 
-    diagnostics = resolve_key_paragraphs(prompt)
+    with pytest.raises(ValueError, match="Missing"):
+        resolve_key_paragraphs(prompt)
 
-    assert [(item.ordinal, item.status, item.match_count) for item in diagnostics] == [
-        (0, SpanStatus.OK, 1),
-        (1, SpanStatus.OK, 2),
-        (1, SpanStatus.OK, 2),
-        (2, SpanStatus.UNRESOLVED, 0),
+    resolved = resolve_key_paragraphs(
+        _prompt(
+            mixin="Exact.\nRepeated.\nRepeated.",
+            key_texts=("Exact.", "Repeated."),
+        )
+    )
+    assert [prompt.mixin[span.start : span.end] for _, _, span in resolved] == [
+        "Exact.",
+        "Repeated.",
+        "Repeated.",
     ]
-    assert [
-        prompt.mixin[item.char_start : item.char_end]
-        for item in diagnostics
-        if item.status is SpanStatus.OK
-    ] == ["Exact.", "Repeated.", "Repeated."]
 
 
 def test_resolve_pir_requires_an_exact_full_paragraph_payload() -> None:
     prompt = _prompt(
+        task="PIR",
         mixin="Prefix Exact. Suffix\nExact.",
         key_texts=("Exact.",),
     )
 
-    (diagnostic,) = resolve_key_paragraphs(prompt)
+    ((label, surface, span),) = resolve_key_paragraphs(prompt)
 
-    assert diagnostic.status is SpanStatus.OK
-    assert diagnostic.match_count == 1
-    assert diagnostic.char_start == prompt.mixin.rindex("Exact.")
-    assert diagnostic.char_end == len(prompt.mixin)
+    assert (label, surface) == ("fact_a_end", "Exact.")
+    assert span == CharSpan(prompt.mixin.rindex("Exact."), len(prompt.mixin))
 
 
 def test_ruletaker_expands_statement_to_unique_enclosing_paragraph() -> None:
@@ -127,13 +119,11 @@ def test_ruletaker_expands_statement_to_unique_enclosing_paragraph() -> None:
         rule="If someone is young then they are blue.",
     )
 
-    (diagnostic,) = resolve_key_paragraphs(prompt)
+    ((label, surface, span),) = resolve_key_paragraphs(prompt)
 
     paragraph = "The cow is young and the cow is kind."
-    assert diagnostic.status is SpanStatus.OK
-    assert diagnostic.match_count == 1
-    assert diagnostic.surface == "The cow is young"
-    assert (diagnostic.char_start, diagnostic.char_end) == (0, len(paragraph))
+    assert (label, surface) == ("fact_a_end", "The cow is young")
+    assert span == CharSpan(0, len(paragraph))
 
 
 def test_ruletaker_counts_containing_paragraphs_not_sentence_repetitions() -> None:
@@ -146,10 +136,9 @@ def test_ruletaker_counts_containing_paragraphs_not_sentence_repetitions() -> No
         rule="If someone is young then they are blue.",
     )
 
-    (diagnostic,) = resolve_key_paragraphs(prompt)
+    ((_, _, span),) = resolve_key_paragraphs(prompt)
 
-    assert diagnostic.status is SpanStatus.OK
-    assert diagnostic.match_count == 1
+    assert span == CharSpan(0, len(prompt.mixin.splitlines()[0]))
 
 
 def test_ruletaker_preserves_multiple_containing_paragraphs() -> None:
@@ -161,11 +150,13 @@ def test_ruletaker_preserves_multiple_containing_paragraphs() -> None:
         rule="If someone is young then they are blue.",
     )
 
-    diagnostics = resolve_key_paragraphs(prompt)
+    resolved = resolve_key_paragraphs(prompt)
 
-    assert len(diagnostics) == 2
-    assert all(diagnostic.status is SpanStatus.OK for diagnostic in diagnostics)
-    assert all(diagnostic.match_count == 2 for diagnostic in diagnostics)
+    assert len(resolved) == 2
+    assert [surface for _, surface, _ in resolved] == [
+        "The cow is young",
+        "The cow is young",
+    ]
 
 
 def test_ruletaker_reports_missing_enclosing_paragraph() -> None:
@@ -177,11 +168,8 @@ def test_ruletaker_reports_missing_enclosing_paragraph() -> None:
         rule="If someone is young then they are blue.",
     )
 
-    (diagnostic,) = resolve_key_paragraphs(prompt)
-
-    assert diagnostic.status is SpanStatus.UNRESOLVED
-    assert diagnostic.match_count == 0
-    assert diagnostic.char_start is None
+    with pytest.raises(ValueError, match="fact"):
+        resolve_key_paragraphs(prompt)
 
 
 def test_prepare_prompt_tokenizes_final_text_once_and_retains_tokenization() -> None:
@@ -214,6 +202,23 @@ def test_prepare_prompt_tokenizes_final_text_once_and_retains_tokenization() -> 
         prepared.token_signature = "changed"  # type: ignore[misc]
 
 
+def test_prepared_prompt_exposes_explicit_resolved_spans() -> None:
+    prompt = _prompt(
+        mixin="Ada called Bob, then Bob thanked Bob.\nBob greeted Ada.",
+        key_texts=(
+            "Ada called Bob, then Bob thanked Bob.",
+            "Bob greeted Ada.",
+        ),
+    )
+
+    prepared = prepare_prompt(prompt, RecordingCharTokenizer(), bridge="Bob")
+
+    assert hasattr(prepared, "facts")
+    assert hasattr(prepared, "bridges")
+    assert hasattr(prepared, "question")
+    assert not hasattr(prepared, "diagnostics")
+
+
 def test_prepare_prompt_maps_context_payload_facts_and_question_from_one_offsets_map() -> (
     None
 ):
@@ -222,43 +227,41 @@ def test_prepare_prompt_maps_context_payload_facts_and_question_from_one_offsets
     prepared = prepare_prompt(prompt, RecordingCharTokenizer())
 
     context_start = prompt.text.index(prompt.mixin)
-    assert prepared.context_char_span == CharSpan(
+    assert prepared.context.char_span == CharSpan(
         context_start,
         context_start + len(prompt.mixin),
     )
-    assert prepared.context_token_span == CharSpan(
+    assert prepared.context.token_span == CharSpan(
         context_start + 1,
         context_start + len(prompt.mixin) + 1,
     )
     assert tuple(
         prompt.text[span.start : span.end] for span in prepared.paragraph_payload_spans
     ) == ("Alpha fact.", "Beta fact.")
-    facts = _diagnostics(prepared, "fact")
+    facts = prepared.facts
     assert len(facts) == 2
-    assert all(item.status is SpanStatus.OK for item in facts)
-    assert prompt.text[facts[0].char_start : facts[0].char_end] == "Alpha fact."
-    assert prepared.fact_token_spans == (
-        CharSpan(facts[0].char_start + 1, facts[0].char_end + 1),
-        CharSpan(facts[1].char_start + 1, facts[1].char_end + 1),
+    assert prompt.text[facts[0].char_span.start : facts[0].char_span.end] == (
+        "Alpha fact."
     )
-    question = _diagnostics(prepared, "question")
-    assert len(question) == 1
-    assert prepared.question_token_span == CharSpan(
-        question[0].char_start + 1,
-        question[0].char_end + 1,
+    assert tuple(fact.token_span for fact in prepared.facts) == (
+        CharSpan(facts[0].char_span.start + 1, facts[0].char_span.end + 1),
+        CharSpan(facts[1].char_span.start + 1, facts[1].char_span.end + 1),
+    )
+    assert prepared.question.token_span == CharSpan(
+        prepared.question.char_span.start + 1,
+        prepared.question.char_span.end + 1,
     )
 
 
 def test_monorel_question_chooses_last_of_two_author_template_occurrences() -> None:
     prompt = _prompt(task="MonoRel")
 
-    prepared = prepare_prompt(prompt, RecordingCharTokenizer())
+    prepared = prepare_prompt(prompt, RecordingCharTokenizer(), bridge="fact")
 
-    (question,) = _diagnostics(prepared, "question")
-    assert question.status is SpanStatus.OK
-    assert question.match_count == 2
-    assert question.char_start == prompt.text.rindex(prompt.question)
-    assert question.char_end == question.char_start + len(prompt.question)
+    assert prepared.question.char_span.start == prompt.text.rindex(prompt.question)
+    assert prepared.question.char_span.end == (
+        prepared.question.char_span.start + len(prompt.question)
+    )
 
 
 def test_prepare_prompt_records_rule_and_each_logical_target_separately() -> None:
@@ -272,15 +275,32 @@ def test_prepare_prompt_records_rule_and_each_logical_target_separately() -> Non
 
     prepared = prepare_prompt(prompt, RecordingCharTokenizer())
 
-    assert len(_diagnostics(prepared, "context")) == 1
-    assert len(_diagnostics(prepared, "fact")) == 2
-    assert len(_diagnostics(prepared, "question")) == 1
-    assert len(_diagnostics(prepared, "rule")) == 1
-    first_fact = _diagnostics(prepared, "fact")[0]
+    assert prepared.context.surface == prompt.mixin
+    assert len(prepared.facts) == 2
+    assert prepared.question.surface == prompt.question
+    assert prepared.rule is not None
+    assert prepared.rule.surface == prompt.rule
+    first_fact = prepared.facts[0]
     assert (
-        prompt.text[first_fact.char_start : first_fact.char_end]
+        prompt.text[first_fact.char_span.start : first_fact.char_span.end]
         == "The cow is young and kind."
     )
+
+
+def test_prepare_prompt_uses_the_designated_rule_when_rule_text_is_repeated() -> None:
+    rule = "The cow is young."
+    prompt = _prompt(
+        task="Simplified RuleTaker",
+        mixin=f"{rule}\nThe dog is quiet.",
+        key_texts=(rule, "The dog is quiet."),
+        question="The cow is blue.",
+        rule=rule,
+    )
+
+    prepared = prepare_prompt(prompt, RecordingCharTokenizer())
+
+    assert prepared.rule is not None
+    assert prepared.rule.char_span.start == prompt.text.index("Rule: ") + len("Rule: ")
 
 
 def test_prepare_prompt_records_bridge_per_fact_and_chooses_last_occurrence() -> None:
@@ -294,48 +314,32 @@ def test_prepare_prompt_records_bridge_per_fact_and_chooses_last_occurrence() ->
 
     prepared = prepare_prompt(prompt, RecordingCharTokenizer(), bridge="Bob")
 
-    bridges = _diagnostics(prepared, "bridge")
-    facts = _diagnostics(prepared, "fact")
-    assert [(item.fact_ordinal, item.status, item.match_count) for item in bridges] == [
-        (0, SpanStatus.OK, 3),
-        (1, SpanStatus.OK, 1),
+    assert [(item.label, item.surface) for item in prepared.bridges] == [
+        ("bridge_fact_a", "Bob"),
+        ("bridge_fact_b", "Bob"),
     ]
-    assert bridges[0].char_start == prompt.text.rindex(
+    assert prepared.bridges[0].char_span.start == prompt.text.rindex(
         "Bob",
-        facts[0].char_start,
-        facts[0].char_end,
+        prepared.facts[0].char_span.start,
+        prepared.facts[0].char_span.end,
     )
 
 
-def test_prepare_prompt_records_unresolved_bridge_for_each_resolved_fact() -> None:
-    prepared = prepare_prompt(_prompt(), RecordingCharTokenizer(), bridge="Nobody")
-
-    bridges = _diagnostics(prepared, "bridge")
-    assert len(bridges) == 2
-    assert all(item.status is SpanStatus.UNRESOLVED for item in bridges)
-    assert all(item.match_count == 0 for item in bridges)
+def test_prepare_prompt_rejects_unresolved_bridge() -> None:
+    with pytest.raises(ValueError, match="bridge"):
+        prepare_prompt(_prompt(), RecordingCharTokenizer(), bridge="Nobody")
 
 
-def test_ambiguous_context_nulls_dependent_final_bounds() -> None:
+def test_prepare_prompt_rejects_ambiguous_context() -> None:
     prompt = _prompt()
     malformed_text = f"{prompt.mixin}\nscaffold\n{prompt.mixin}\n{prompt.question}"
     prompt = _prompt(text=malformed_text)
 
-    prepared = prepare_prompt(prompt, RecordingCharTokenizer())
-
-    context = _diagnostics(prepared, "context")[0]
-    assert context.status is SpanStatus.AMBIGUOUS
-    assert context.match_count == 2
-    assert prepared.context_char_span is None
-    assert prepared.context_token_span is None
-    assert prepared.paragraph_payload_spans == ()
-    assert all(
-        item.status is SpanStatus.AMBIGUOUS for item in _diagnostics(prepared, "fact")
-    )
-    assert all(item.char_start is None for item in _diagnostics(prepared, "fact"))
+    with pytest.raises(ValueError, match="context.*ambiguous"):
+        prepare_prompt(prompt, RecordingCharTokenizer())
 
 
-def test_ambiguous_context_preserves_local_bridge_resolution_semantics() -> None:
+def test_prepare_prompt_rejects_ambiguous_context_before_bridge_resolution() -> None:
     prompt = _prompt(
         mixin="Ada called Bob.",
         key_texts=("Ada called Bob.",),
@@ -346,20 +350,8 @@ def test_ambiguous_context_preserves_local_bridge_resolution_semantics() -> None
         text=f"{prompt.mixin}\nscaffold\n{prompt.mixin}\n{prompt.question}",
     )
 
-    found = prepare_prompt(prompt, RecordingCharTokenizer(), bridge="Bob")
-    missing = prepare_prompt(prompt, RecordingCharTokenizer(), bridge="Nobody")
-
-    (found_bridge,) = _diagnostics(found, "bridge")
-    (missing_bridge,) = _diagnostics(missing, "bridge")
-    assert (found_bridge.status, found_bridge.match_count) == (
-        SpanStatus.AMBIGUOUS,
-        1,
-    )
-    assert found_bridge.char_start is None
-    assert (missing_bridge.status, missing_bridge.match_count) == (
-        SpanStatus.UNRESOLVED,
-        0,
-    )
+    with pytest.raises(ValueError, match="context.*ambiguous"):
+        prepare_prompt(prompt, RecordingCharTokenizer(), bridge="Bob")
 
 
 class FixedLengthTokenizer:
@@ -483,14 +475,12 @@ def test_padding_sample_depends_only_on_prompt_id_and_fixed_seed() -> None:
     assert len(first) == 4
 
 
-def test_validate_prepared_prompt_rejects_unresolved_required_fact() -> None:
-    prepared = prepare_prompt(
-        _prompt(key_texts=("Missing fact.", "Beta fact.")),
-        RecordingCharTokenizer(),
-    )
-
+def test_prepare_prompt_rejects_unresolved_required_fact() -> None:
     with pytest.raises(ValueError, match="fact"):
-        validate_prepared_prompt(prepared)
+        prepare_prompt(
+            _prompt(key_texts=("Missing fact.", "Beta fact.")),
+            RecordingCharTokenizer(),
+        )
 
 
 def test_prepare_prompt_labels_all_repeated_ruletaker_facts() -> None:
@@ -504,9 +494,7 @@ def test_prepare_prompt_labels_all_repeated_ruletaker_facts() -> None:
         rule="If someone is good and small then they are loud.",
     )
 
-    prepared = validate_prepared_prompt(
-        prepare_prompt(prompt, RecordingCharTokenizer())
-    )
+    prepared = prepare_prompt(prompt, RecordingCharTokenizer())
 
     fact_a_positions = {
         item.position for item in prepared.positions if item.label == "fact_a_end"
@@ -516,9 +504,7 @@ def test_prepare_prompt_labels_all_repeated_ruletaker_facts() -> None:
         prompt.text.rindex(first) + len(first),
     }
     fact_spans = {
-        (item.char_start, item.char_end)
-        for item in _diagnostics(prepared, "fact")
-        if item.status is SpanStatus.OK
+        (item.char_span.start, item.char_span.end) for item in prepared.facts
     }
     assert all(
         not any(
@@ -539,9 +525,7 @@ def test_identical_logical_facts_share_positions_without_duplicate_execution() -
         rule="If someone is dumb then they are red.",
     )
 
-    prepared = validate_prepared_prompt(
-        prepare_prompt(prompt, RecordingCharTokenizer())
-    )
+    prepared = prepare_prompt(prompt, RecordingCharTokenizer())
 
     fact_a = {
         item.position for item in prepared.positions if item.label == "fact_a_end"
@@ -637,9 +621,7 @@ def test_prepare_prompt_selects_only_semantic_and_padding_content_positions() ->
         provenance=(SourceProvenance(0, 500, "books", "middle"),),
     )
 
-    prepared = validate_prepared_prompt(
-        prepare_prompt(prompt, RecordingCharTokenizer())
-    )
+    prepared = prepare_prompt(prompt, RecordingCharTokenizer())
 
     labels = {item.label for item in prepared.positions}
     assert {
