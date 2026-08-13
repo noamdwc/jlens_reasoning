@@ -85,7 +85,6 @@ def _prepared(
             ResolvedSpan("fact_a_end", "a", CharSpan(0, 1), CharSpan(0, 1)),
             ResolvedSpan("fact_b_end", "b", CharSpan(1, 2), CharSpan(1, 2)),
         ),
-        bridges=(),
         question=ResolvedSpan(
             "question_end",
             "c",
@@ -93,7 +92,6 @@ def _prepared(
             CharSpan(2, 3),
         ),
         rule=None,
-        bridge=None,
         positions=positions,
         special_token_ids=frozenset(),
     )
@@ -146,7 +144,6 @@ def _config(**overrides: Any) -> RunConfig:
         tokenizer_name="tokenizer",
         code_revision="code",
         expected_source_rows=1,
-        expected_bridge_problems=0,
     )
     return replace(config, **overrides)
 

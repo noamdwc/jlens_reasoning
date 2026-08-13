@@ -142,8 +142,8 @@ migrated.
 
 Run `notebooks/flenqa_smoke.ipynb` before
 `notebooks/flenqa_full_run.ipynb`. Both are thin Colab drivers over
-`jlens_reasoning.benchmarks.flenqa`: they validate the dataset and bridge
-spans, select meaningful fact, bridge, question, final-prompt, and
+`jlens_reasoning.benchmarks.flenqa`: they validate the dataset and fact spans,
+select meaningful fact, question, final-prompt, and
 padding-content positions, then save Jacobian Lens and Logit Lens top-k values
 at those positions.
 

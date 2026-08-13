@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
 
-SpanKind = Literal["fact", "question", "rule", "bridge", "context"]
+SpanKind = Literal["fact", "question", "rule", "context"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,7 +40,6 @@ class SpanDiagnostic:
 
     kind: SpanKind
     ordinal: int
-    fact_ordinal: int | None
     surface: str
     status: SpanStatus
     match_count: int
@@ -50,14 +49,10 @@ class SpanDiagnostic:
     token_end: int | None
 
     def __post_init__(self) -> None:
-        if self.kind not in {"fact", "question", "rule", "bridge", "context"}:
+        if self.kind not in {"fact", "question", "rule", "context"}:
             raise ValueError(f"unknown span kind: {self.kind!r}")
         if type(self.ordinal) is not int or self.ordinal < 0:
             raise ValueError("span ordinal must be a non-negative integer")
-        if self.fact_ordinal is not None and (
-            type(self.fact_ordinal) is not int or self.fact_ordinal < 0
-        ):
-            raise ValueError("fact ordinal must be null or a non-negative integer")
         if type(self.match_count) is not int or self.match_count < 0:
             raise ValueError("span match count must be a non-negative integer")
         _validate_optional_bounds(

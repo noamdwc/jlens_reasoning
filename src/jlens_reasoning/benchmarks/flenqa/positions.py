@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import random
-import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -20,23 +19,12 @@ from jlens_reasoning.experiments_utils.spans import (
 PIR_TASK = "PIR"
 MONOREL_TASK = "MonoRel"
 RULETAKER_TASK = "Simplified RuleTaker"
-BRIDGE_TASKS = frozenset({PIR_TASK, MONOREL_TASK})
 
 PADDING_SAMPLE_COUNT = 4
 FACT_LABELS = ("fact_a_end", "fact_b_end")
-BRIDGE_LABEL_BY_FACT = {
-    "fact_a_end": "bridge_fact_a",
-    "fact_b_end": "bridge_fact_b",
-}
 QUESTION_LABEL = "question_end"
 FINAL_LABEL = "final_prompt"
 PADDING_LABEL = "sampled_padding"
-
-_PERSON = re.compile(r"\b[A-Z][a-z]+ [A-Z][a-z]+\b")
-_POSSESSIVE_PHRASE = re.compile(
-    r"\b[A-Z][A-Za-z'-]*'s(?:\s+[a-z][A-Za-z'-]*)+?"
-    r"(?=\s+(?:is|was|has|contains|appears|looks)\b|[,.;])"
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,10 +54,8 @@ class PreparedPrompt:
     context: ResolvedSpan
     paragraph_payload_spans: tuple[CharSpan, ...]
     facts: tuple[ResolvedSpan, ...]
-    bridges: tuple[ResolvedSpan, ...]
     question: ResolvedSpan
     rule: ResolvedSpan | None
-    bridge: str | None
     positions: tuple[LabeledPosition, ...]
     special_token_ids: frozenset[int]
 
@@ -78,91 +64,8 @@ class PreparedPrompt:
         return unique_positions(self.positions)
 
 
-@dataclass(frozen=True, slots=True)
-class BridgeGateResult:
-    applicable: int
-    resolved: int
-
-
 def unique_positions(positions: Sequence[LabeledPosition]) -> tuple[int, ...]:
     return tuple(sorted({item.position for item in positions}))
-
-
-def _shared_candidate(prompt: FlenqaPrompt, pattern: re.Pattern[str]) -> str | None:
-    if not prompt.key_texts:
-        return None
-    shared = set.intersection(*(set(pattern.findall(fact)) for fact in prompt.key_texts))
-    candidates = sorted(
-        (
-            candidate
-            for candidate in shared
-            if candidate.casefold() not in prompt.question.casefold()
-        ),
-        key=lambda candidate: (-len(candidate), candidate),
-    )
-    return candidates[0] if len(candidates) == 1 else None
-
-
-def _pir_bridge(prompt: FlenqaPrompt) -> str | None:
-    return _shared_candidate(prompt, _POSSESSIVE_PHRASE)
-
-
-def _monorel_bridge(prompt: FlenqaPrompt) -> str | None:
-    return _shared_candidate(prompt, _PERSON)
-
-
-def _ruletaker_bridge(prompt: FlenqaPrompt) -> None:
-    return None
-
-
-_BRIDGE_EXTRACTORS: dict[str, Callable[[FlenqaPrompt], str | None]] = {
-    PIR_TASK: _pir_bridge,
-    MONOREL_TASK: _monorel_bridge,
-    RULETAKER_TASK: _ruletaker_bridge,
-}
-
-
-def extract_bridge(prompt: FlenqaPrompt) -> str | None:
-    """Extract the task-specific entity shared by both key facts."""
-    try:
-        extractor = _BRIDGE_EXTRACTORS[prompt.task]
-    except KeyError as exc:
-        raise ValueError(f"Unknown FLenQA task: {prompt.task!r}") from exc
-    return extractor(prompt)
-
-
-def bridge_gate(
-    prompts: Sequence[FlenqaPrompt],
-    *,
-    expected_applicable: int,
-) -> BridgeGateResult:
-    """Require one consistent, non-leaking bridge per applicable problem."""
-    by_problem: dict[int, list[FlenqaPrompt]] = {}
-    for prompt in prompts:
-        if prompt.task in BRIDGE_TASKS:
-            by_problem.setdefault(prompt.problem_id, []).append(prompt)
-
-    applicable = len(by_problem)
-    if applicable != expected_applicable:
-        raise ValueError(
-            f"Bridge gate expected {expected_applicable} applicable problems; "
-            f"found {applicable}"
-        )
-
-    for problem_id, problem_prompts in by_problem.items():
-        bridges = {extract_bridge(prompt) for prompt in problem_prompts}
-        if None in bridges or len(bridges) != 1:
-            raise ValueError(
-                f"Bridge unresolved or inconsistent for problem {problem_id}"
-            )
-        bridge = next(iter(bridges))
-        assert bridge is not None
-        if any(
-            bridge.casefold() in prompt.question.casefold()
-            for prompt in problem_prompts
-        ):
-            raise ValueError(f"Bridge leaks into question for problem {problem_id}")
-    return BridgeGateResult(applicable=applicable, resolved=applicable)
 
 
 FactMatch = tuple[str, str, CharSpan]
@@ -354,7 +257,6 @@ def prepare_prompt(
     prompt: FlenqaPrompt,
     tokenizer: Any,
     max_seq_len: int = 4096,
-    bridge: str | None = None,
     sample_seed: int = 1729,
 ) -> PreparedPrompt:
     """Resolve one prompt and select every position used by the experiment."""
@@ -401,36 +303,6 @@ def prepare_prompt(
         for label, surface, local_span in fact_matches
     )
 
-    # PIR and MonoRel contribute one bridge position inside each resolved fact.
-    if bridge == "":
-        raise ValueError("bridge must be nonempty when provided")
-    bridge = extract_bridge(prompt) if bridge is None else bridge
-    if prompt.task in BRIDGE_TASKS and bridge is None:
-        raise ValueError("Required FLenQA bridge is unresolved")
-
-    bridges: list[ResolvedSpan] = []
-    if bridge is not None:
-        for fact in facts:
-            fact_text = prompt.text[fact.char_span.start : fact.char_span.end]
-            local_bridge = _find_span(
-                fact_text,
-                bridge,
-                name=f"bridge in {fact.label}",
-                choose_last=True,
-            )
-            bridge_chars = CharSpan(
-                fact.char_span.start + local_bridge.start,
-                fact.char_span.start + local_bridge.end,
-            )
-            bridges.append(
-                _resolved_span(
-                    BRIDGE_LABEL_BY_FACT[fact.label],
-                    bridge,
-                    bridge_chars,
-                    tokenized.offsets,
-                )
-            )
-
     # The author template repeats MonoRel questions, so the final occurrence is
     # the experimental question position. Rules are recorded but not selected.
     question_chars = _find_span(
@@ -460,7 +332,7 @@ def prepare_prompt(
     # model position, and four deterministic samples from non-fact paragraphs.
     positions = [
         LabeledPosition(span.label, span.token_span.end - 1)
-        for span in (*facts, *bridges, question)
+        for span in (*facts, question)
     ]
     positions.append(LabeledPosition(FINAL_LABEL, len(tokenized.input_ids) - 1))
     padding_candidates = _padding_content_positions(
@@ -487,10 +359,8 @@ def prepare_prompt(
         context=context,
         paragraph_payload_spans=paragraphs,
         facts=facts,
-        bridges=tuple(bridges),
         question=question,
         rule=rule,
-        bridge=bridge,
         positions=tuple(positions),
         special_token_ids=tokenized.special_token_ids,
     )

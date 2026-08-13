@@ -39,7 +39,6 @@ TABLE_SCHEMAS = {
             pa.field("label", pa.bool_(), nullable=False),
             pa.field("text", pa.string(), nullable=False),
             pa.field("input_ids", pa.list_(pa.int32()), nullable=False),
-            pa.field("bridge", pa.string()),
             pa.field("max_abs_logit_diff", pa.float32(), nullable=False),
             pa.field("provenance", PROVENANCE_TYPE, nullable=False),
         ]

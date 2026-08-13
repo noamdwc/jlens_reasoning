@@ -17,8 +17,6 @@ from jlens_reasoning.benchmarks.flenqa.dataset import (
 from jlens_reasoning.benchmarks.flenqa.positions import (
     LabeledPosition,
     _eligible_padding_position,
-    bridge_gate,
-    extract_bridge,
     padding_content_positions,
     prepare_prompt,
     resolve_key_paragraphs,
@@ -211,10 +209,9 @@ def test_prepared_prompt_exposes_explicit_resolved_spans() -> None:
         ),
     )
 
-    prepared = prepare_prompt(prompt, RecordingCharTokenizer(), bridge="Bob")
+    prepared = prepare_prompt(prompt, RecordingCharTokenizer())
 
     assert hasattr(prepared, "facts")
-    assert hasattr(prepared, "bridges")
     assert hasattr(prepared, "question")
     assert not hasattr(prepared, "diagnostics")
 
@@ -256,7 +253,7 @@ def test_prepare_prompt_maps_context_payload_facts_and_question_from_one_offsets
 def test_monorel_question_chooses_last_of_two_author_template_occurrences() -> None:
     prompt = _prompt(task="MonoRel")
 
-    prepared = prepare_prompt(prompt, RecordingCharTokenizer(), bridge="fact")
+    prepared = prepare_prompt(prompt, RecordingCharTokenizer())
 
     assert prepared.question.char_span.start == prompt.text.rindex(prompt.question)
     assert prepared.question.char_span.end == (
@@ -303,33 +300,6 @@ def test_prepare_prompt_uses_the_designated_rule_when_rule_text_is_repeated() ->
     assert prepared.rule.char_span.start == prompt.text.index("Rule: ") + len("Rule: ")
 
 
-def test_prepare_prompt_records_bridge_per_fact_and_chooses_last_occurrence() -> None:
-    prompt = _prompt(
-        mixin="Ada called Bob, then Bob thanked Bob.\nBob greeted Ada.",
-        key_texts=(
-            "Ada called Bob, then Bob thanked Bob.",
-            "Bob greeted Ada.",
-        ),
-    )
-
-    prepared = prepare_prompt(prompt, RecordingCharTokenizer(), bridge="Bob")
-
-    assert [(item.label, item.surface) for item in prepared.bridges] == [
-        ("bridge_fact_a", "Bob"),
-        ("bridge_fact_b", "Bob"),
-    ]
-    assert prepared.bridges[0].char_span.start == prompt.text.rindex(
-        "Bob",
-        prepared.facts[0].char_span.start,
-        prepared.facts[0].char_span.end,
-    )
-
-
-def test_prepare_prompt_rejects_unresolved_bridge() -> None:
-    with pytest.raises(ValueError, match="bridge"):
-        prepare_prompt(_prompt(), RecordingCharTokenizer(), bridge="Nobody")
-
-
 def test_prepare_prompt_rejects_ambiguous_context() -> None:
     prompt = _prompt()
     malformed_text = f"{prompt.mixin}\nscaffold\n{prompt.mixin}\n{prompt.question}"
@@ -339,7 +309,7 @@ def test_prepare_prompt_rejects_ambiguous_context() -> None:
         prepare_prompt(prompt, RecordingCharTokenizer())
 
 
-def test_prepare_prompt_rejects_ambiguous_context_before_bridge_resolution() -> None:
+def test_prepare_prompt_rejects_ambiguous_context_before_fact_resolution() -> None:
     prompt = _prompt(
         mixin="Ada called Bob.",
         key_texts=("Ada called Bob.",),
@@ -351,7 +321,7 @@ def test_prepare_prompt_rejects_ambiguous_context_before_bridge_resolution() -> 
     )
 
     with pytest.raises(ValueError, match="context.*ambiguous"):
-        prepare_prompt(prompt, RecordingCharTokenizer(), bridge="Bob")
+        prepare_prompt(prompt, RecordingCharTokenizer())
 
 
 class FixedLengthTokenizer:
@@ -538,62 +508,6 @@ def test_identical_logical_facts_share_positions_without_duplicate_execution() -
     assert set(fact_a) <= set(prepared.unique_positions)
 
 
-def _bridge_prompt(
-    *,
-    task: str = "PIR",
-    problem_id: int = 0,
-    question: str = "Is Ethan Washington in a marble-floored room?",
-) -> FlenqaPrompt:
-    key_texts = (
-        (
-            "John's living room is marble-floored.",
-            "Ethan Washington is in John's living room.",
-        )
-        if task == "PIR"
-        else (
-            "Julie Baker is younger than Julian Barton.",
-            "Samantha Arnold is younger than Julie Baker.",
-        )
-    )
-    mixin = "\n".join(key_texts)
-    return FlenqaPrompt(
-        canonical_index=problem_id,
-        prompt_id=f"{problem_id:064x}",
-        problem_id=problem_id,
-        task=task,
-        text=build_prompt_text(
-            task=task,
-            question=question,
-            mixin=mixin,
-            rule=None,
-        ),
-        question=question,
-        key_texts=key_texts,
-        rule=None,
-        label=True,
-        mixin=mixin,
-        provenance=(SourceProvenance(problem_id, 250, "books", "first"),),
-    )
-
-
-def test_bridge_extraction_and_gate_validate_applicable_problems() -> None:
-    pir = _bridge_prompt()
-    monorel = _bridge_prompt(
-        task="MonoRel",
-        problem_id=1,
-        question="Is Samantha Arnold younger than Julian Barton?",
-    )
-
-    assert extract_bridge(pir) == "John's living room"
-    assert extract_bridge(monorel) == "Julie Baker"
-    assert bridge_gate((pir, monorel), expected_applicable=2).resolved == 2
-
-
-def test_bridge_gate_rejects_silently_missing_applicable_problem() -> None:
-    with pytest.raises(ValueError, match="2"):
-        bridge_gate((_bridge_prompt(),), expected_applicable=2)
-
-
 def test_prepare_prompt_selects_only_semantic_and_padding_content_positions() -> None:
     key_texts = (
         "John's living room is marble-floored.",
@@ -627,8 +541,6 @@ def test_prepare_prompt_selects_only_semantic_and_padding_content_positions() ->
     assert {
         "fact_a_end",
         "fact_b_end",
-        "bridge_fact_a",
-        "bridge_fact_b",
         "question_end",
         "final_prompt",
         "sampled_padding",

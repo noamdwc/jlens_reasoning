@@ -46,7 +46,6 @@ def test_record_batch_accepts_typed_provenance_records() -> None:
             "label": [True],
             "text": ["prompt"],
             "input_ids": [[1, 2]],
-            "bridge": ["room"],
             "max_abs_logit_diff": [1e-7],
             "provenance": [
                 [

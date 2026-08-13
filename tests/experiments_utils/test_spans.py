@@ -19,7 +19,6 @@ def test_span_contracts_are_immutable_and_use_stable_status_values() -> None:
     diagnostic = SpanDiagnostic(
         kind="fact",
         ordinal=0,
-        fact_ordinal=None,
         surface="cat",
         status=SpanStatus.OK,
         match_count=1,

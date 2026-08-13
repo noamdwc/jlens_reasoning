@@ -20,9 +20,7 @@ from jlens_reasoning.benchmarks.flenqa.dataset import (
     deduplicate,
 )
 from jlens_reasoning.benchmarks.flenqa.positions import (
-    BridgeGateResult,
     PreparedPrompt,
-    bridge_gate,
     prepare_prompt,
 )
 from jlens_reasoning.benchmarks.flenqa.storage import (
@@ -52,7 +50,6 @@ class RunConfig:
     logits_rtol: float = 1e-5
     logits_atol: float = 1e-6
     expected_source_rows: int = 12_000
-    expected_bridge_problems: int = 200
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,7 +65,6 @@ class RunManifest:
     shard_ids: tuple[int, ...]
     returned_layers: tuple[int, ...]
     max_abs_logit_diff: float
-    bridge_gate: BridgeGateResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -314,7 +310,6 @@ def run_prompt(
             "label": [prompt.label],
             "text": [prompt.text],
             "input_ids": [list(prepared.input_ids)],
-            "bridge": [prepared.bridge],
             "max_abs_logit_diff": [max_abs_logit_diff],
             "provenance": [
                 [
@@ -376,11 +371,6 @@ def _validate_config(config: RunConfig) -> None:
         raise ValueError("max_seq_len must be a positive integer")
     if type(config.expected_source_rows) is not int or config.expected_source_rows <= 0:
         raise ValueError("expected_source_rows must be a positive integer")
-    if (
-        type(config.expected_bridge_problems) is not int
-        or config.expected_bridge_problems < 0
-    ):
-        raise ValueError("expected_bridge_problems must be non-negative")
     if config.logits_rtol < 0 or config.logits_atol < 0:
         raise ValueError("logit tolerances must be non-negative")
     if config.layers is not None and (
@@ -525,25 +515,17 @@ def _manifest_payload(manifest: RunManifest) -> dict[str, Any]:
         "shard_ids": list(manifest.shard_ids),
         "returned_layers": list(manifest.returned_layers),
         "max_abs_logit_diff": manifest.max_abs_logit_diff,
-        "bridge_gate": asdict(manifest.bridge_gate),
     }
 
 
 def _read_run_manifest(path: Path) -> RunManifest:
     payload = _read_json(path)
-    gate = payload["bridge_gate"]
-    if not isinstance(gate, Mapping):
-        raise RuntimeError("run manifest bridge_gate must be an object")
     return RunManifest(
         config_hash=str(payload["config_hash"]),
         prompt_ids=tuple(str(value) for value in payload["prompt_ids"]),
         shard_ids=tuple(int(value) for value in payload["shard_ids"]),
         returned_layers=tuple(int(value) for value in payload["returned_layers"]),
         max_abs_logit_diff=float(payload["max_abs_logit_diff"]),
-        bridge_gate=BridgeGateResult(
-            applicable=int(gate["applicable"]),
-            resolved=int(gate["resolved"]),
-        ),
     )
 
 
@@ -610,10 +592,6 @@ def run_benchmark(
     prompts = deduplicate(rows)
     if not prompts:
         raise ValueError("FLenQA benchmark requires at least one prompt")
-    gate_result = bridge_gate(
-        prompts,
-        expected_applicable=config.expected_bridge_problems,
-    )
     prepared_prompts = tuple(
         prepare_prompt(
             prompt,
@@ -653,7 +631,6 @@ def run_benchmark(
             manifest.config_hash != config_hash
             or manifest.prompt_ids != prompt_ids
             or manifest.shard_ids != shard_ids
-            or manifest.bridge_gate != gate_result
         ):
             raise RuntimeError("Existing run manifest does not match requested run")
         _validate_run_shards(root, manifest)
@@ -688,7 +665,6 @@ def run_benchmark(
         shard_ids=shard_ids,
         returned_layers=(),
         max_abs_logit_diff=0.0,
-        bridge_gate=gate_result,
     )
     _validate_run_shards(root, provisional)
     returned_layers, max_abs_logit_diff = _scan_run_outputs(root, shard_ids)
@@ -700,7 +676,6 @@ def run_benchmark(
         shard_ids=shard_ids,
         returned_layers=returned_layers,
         max_abs_logit_diff=max_abs_logit_diff,
-        bridge_gate=gate_result,
     )
     _atomic_json(
         meta_path,
