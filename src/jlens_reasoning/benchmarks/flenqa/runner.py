@@ -251,6 +251,11 @@ def run_prompt(
 ) -> dict[str, pa.RecordBatch]:
     """Run both lens modes once at each unique meaningful position."""
     positions = prepared.unique_positions
+    labeled_positions = tuple(
+        (label, position)
+        for label, label_positions in prepared.positions.items()
+        for position in label_positions
+    )
     if not positions:
         raise ValueError("Prepared prompt has no execution positions")
     jacobian = runners.jacobian.run(
@@ -327,9 +332,9 @@ def run_prompt(
     position_batch = record_batch(
         "positions",
         {
-            "prompt_id": [prompt.prompt_id] * len(prepared.positions),
-            "position": [item.position for item in prepared.positions],
-            "label": [item.label for item in prepared.positions],
+            "prompt_id": [prompt.prompt_id] * len(labeled_positions),
+            "position": [position for _, position in labeled_positions],
+            "label": [label for label, _ in labeled_positions],
         },
     )
     jacobian_topk = _topk_columns(

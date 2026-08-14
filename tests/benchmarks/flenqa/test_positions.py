@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import hashlib
-import struct
 from collections.abc import Mapping
-from dataclasses import FrozenInstanceError
 from typing import Any
 
 import pytest
@@ -15,13 +12,13 @@ from jlens_reasoning.benchmarks.flenqa.dataset import (
     build_prompt_text,
 )
 from jlens_reasoning.benchmarks.flenqa.positions import (
-    LabeledPosition,
-    _eligible_padding_position,
-    padding_content_positions,
+    PreparedPrompt,
     prepare_prompt,
     resolve_key_paragraphs,
     sample_padding_positions,
-    unique_positions,
+)
+from jlens_reasoning.benchmarks.flenqa.positions_utils import (
+    _eligible_padding_position,
 )
 from jlens_reasoning.experiments_utils.spans import CharSpan
 
@@ -194,59 +191,32 @@ def test_prepare_prompt_tokenizes_final_text_once_and_retains_tokenization() -> 
     )
     assert prepared.input_ids == expected_ids
     assert prepared.offsets == expected_offsets
-    packed = b"".join(struct.pack(">q", token_id) for token_id in expected_ids)
-    assert prepared.token_signature == hashlib.sha256(packed).hexdigest()
-    with pytest.raises(FrozenInstanceError):
-        prepared.token_signature = "changed"  # type: ignore[misc]
 
 
-def test_prepared_prompt_exposes_explicit_resolved_spans() -> None:
-    prompt = _prompt(
-        mixin="Ada called Bob, then Bob thanked Bob.\nBob greeted Ada.",
-        key_texts=(
-            "Ada called Bob, then Bob thanked Bob.",
-            "Bob greeted Ada.",
-        ),
-    )
+def test_prepared_prompt_only_retains_assets_needed_by_runners_and_debugging() -> None:
+    prepared = prepare_prompt(_prompt(), RecordingCharTokenizer())
 
-    prepared = prepare_prompt(prompt, RecordingCharTokenizer())
-
-    assert hasattr(prepared, "facts")
-    assert hasattr(prepared, "question")
-    assert not hasattr(prepared, "diagnostics")
+    assert set(prepared.__dataclass_fields__) == {
+        "prompt",
+        "input_ids",
+        "offsets",
+        "positions",
+    }
 
 
-def test_prepare_prompt_maps_context_payload_facts_and_question_from_one_offsets_map() -> (
-    None
-):
+def test_prepare_prompt_maps_facts_and_question_from_one_offsets_map() -> None:
     prompt = _prompt(mixin="  Alpha fact.  \n\nBeta fact.\n")
 
     prepared = prepare_prompt(prompt, RecordingCharTokenizer())
 
-    context_start = prompt.text.index(prompt.mixin)
-    assert prepared.context.char_span == CharSpan(
-        context_start,
-        context_start + len(prompt.mixin),
+    assert prepared.positions["fact_a_end"] == (
+        prompt.text.index("Alpha fact.") + len("Alpha fact."),
     )
-    assert prepared.context.token_span == CharSpan(
-        context_start + 1,
-        context_start + len(prompt.mixin) + 1,
+    assert prepared.positions["fact_b_end"] == (
+        prompt.text.index("Beta fact.") + len("Beta fact."),
     )
-    assert tuple(
-        prompt.text[span.start : span.end] for span in prepared.paragraph_payload_spans
-    ) == ("Alpha fact.", "Beta fact.")
-    facts = prepared.facts
-    assert len(facts) == 2
-    assert prompt.text[facts[0].char_span.start : facts[0].char_span.end] == (
-        "Alpha fact."
-    )
-    assert tuple(fact.token_span for fact in prepared.facts) == (
-        CharSpan(facts[0].char_span.start + 1, facts[0].char_span.end + 1),
-        CharSpan(facts[1].char_span.start + 1, facts[1].char_span.end + 1),
-    )
-    assert prepared.question.token_span == CharSpan(
-        prepared.question.char_span.start + 1,
-        prepared.question.char_span.end + 1,
+    assert prepared.positions["question_end"] == (
+        prompt.text.rindex(prompt.question) + len(prompt.question),
     )
 
 
@@ -255,13 +225,12 @@ def test_monorel_question_chooses_last_of_two_author_template_occurrences() -> N
 
     prepared = prepare_prompt(prompt, RecordingCharTokenizer())
 
-    assert prepared.question.char_span.start == prompt.text.rindex(prompt.question)
-    assert prepared.question.char_span.end == (
-        prepared.question.char_span.start + len(prompt.question)
+    assert prepared.positions["question_end"] == (
+        prompt.text.rindex(prompt.question) + len(prompt.question),
     )
 
 
-def test_prepare_prompt_records_rule_and_each_logical_target_separately() -> None:
+def test_prepare_prompt_uses_the_full_ruletaker_fact_paragraph() -> None:
     prompt = _prompt(
         task="Simplified RuleTaker",
         mixin="The cow is young and kind.\nThe dog is quiet.",
@@ -272,19 +241,13 @@ def test_prepare_prompt_records_rule_and_each_logical_target_separately() -> Non
 
     prepared = prepare_prompt(prompt, RecordingCharTokenizer())
 
-    assert prepared.context.surface == prompt.mixin
-    assert len(prepared.facts) == 2
-    assert prepared.question.surface == prompt.question
-    assert prepared.rule is not None
-    assert prepared.rule.surface == prompt.rule
-    first_fact = prepared.facts[0]
-    assert (
-        prompt.text[first_fact.char_span.start : first_fact.char_span.end]
-        == "The cow is young and kind."
+    first_fact = "The cow is young and kind."
+    assert prepared.positions["fact_a_end"] == (
+        prompt.text.index(first_fact) + len(first_fact),
     )
 
 
-def test_prepare_prompt_uses_the_designated_rule_when_rule_text_is_repeated() -> None:
+def test_prepare_prompt_does_not_create_unused_rule_positions() -> None:
     rule = "The cow is young."
     prompt = _prompt(
         task="Simplified RuleTaker",
@@ -296,8 +259,7 @@ def test_prepare_prompt_uses_the_designated_rule_when_rule_text_is_repeated() ->
 
     prepared = prepare_prompt(prompt, RecordingCharTokenizer())
 
-    assert prepared.rule is not None
-    assert prepared.rule.char_span.start == prompt.text.index("Rule: ") + len("Rule: ")
+    assert "rule" not in prepared.positions
 
 
 def test_prepare_prompt_rejects_ambiguous_context() -> None:
@@ -417,15 +379,20 @@ def test_padding_candidates_exclude_special_and_whitespace_only_tokens(
 
 
 def test_unique_positions_keeps_labels_but_deduplicates_execution_positions() -> None:
-    positions = (
-        LabeledPosition("question_end", 9),
-        LabeledPosition("final_prompt", 9),
+    prepared = PreparedPrompt(
+        prompt=_prompt(),
+        input_ids=(1,),
+        offsets=((0, 1),),
+        positions={
+            "question_end": (9,),
+            "final_prompt": (9,),
+        },
     )
 
-    assert unique_positions(positions) == (9,)
+    assert prepared.unique_positions == (9,)
 
 
-def test_padding_sample_depends_only_on_prompt_id_and_fixed_seed() -> None:
+def test_padding_sample_is_deterministic_for_prompt_id_and_seed() -> None:
     candidates = tuple(range(20))
 
     first = sample_padding_positions(
@@ -435,7 +402,7 @@ def test_padding_sample_depends_only_on_prompt_id_and_fixed_seed() -> None:
         count=4,
     )
     second = sample_padding_positions(
-        tuple(reversed(candidates)),
+        candidates,
         prompt_id="a" * 64,
         sample_seed=1729,
         count=4,
@@ -466,21 +433,21 @@ def test_prepare_prompt_labels_all_repeated_ruletaker_facts() -> None:
 
     prepared = prepare_prompt(prompt, RecordingCharTokenizer())
 
-    fact_a_positions = {
-        item.position for item in prepared.positions if item.label == "fact_a_end"
-    }
-    assert fact_a_positions == {
+    assert set(prepared.positions["fact_a_end"]) == {
         prompt.text.index(first) + len(first),
         prompt.text.rindex(first) + len(first),
     }
-    fact_spans = {
-        (item.char_span.start, item.char_span.end) for item in prepared.facts
-    }
+    fact_ranges = (
+        (prompt.text.index(first), prompt.text.index(first) + len(first)),
+        (prompt.text.index(second), prompt.text.index(second) + len(second)),
+        (prompt.text.rindex(first), prompt.text.rindex(first) + len(first)),
+    )
     assert all(
         not any(
-            start < span_end and end > span_start for span_start, span_end in fact_spans
+            start < fact_end and end > fact_start
+            for fact_start, fact_end in fact_ranges
         )
-        for position in padding_content_positions(prepared)
+        for position in prepared.positions["sampled_padding"]
         for start, end in (prepared.offsets[position],)
     )
 
@@ -497,12 +464,8 @@ def test_identical_logical_facts_share_positions_without_duplicate_execution() -
 
     prepared = prepare_prompt(prompt, RecordingCharTokenizer())
 
-    fact_a = {
-        item.position for item in prepared.positions if item.label == "fact_a_end"
-    }
-    fact_b = {
-        item.position for item in prepared.positions if item.label == "fact_b_end"
-    }
+    fact_a = set(prepared.positions["fact_a_end"])
+    fact_b = set(prepared.positions["fact_b_end"])
     assert fact_a == fact_b
     assert len(fact_a) == 2
     assert set(fact_a) <= set(prepared.unique_positions)
@@ -537,18 +500,16 @@ def test_prepare_prompt_selects_only_semantic_and_padding_content_positions() ->
 
     prepared = prepare_prompt(prompt, RecordingCharTokenizer())
 
-    labels = {item.label for item in prepared.positions}
     assert {
         "fact_a_end",
         "fact_b_end",
         "question_end",
         "final_prompt",
         "sampled_padding",
-    } <= labels
+    } <= prepared.positions.keys()
     padding_start = prompt.text.index(padding)
     padding_end = padding_start + len(padding)
     assert all(
-        padding_start <= prepared.offsets[item.position][0] < padding_end
-        for item in prepared.positions
-        if item.label == "sampled_padding"
+        padding_start <= prepared.offsets[position][0] < padding_end
+        for position in prepared.positions["sampled_padding"]
     )

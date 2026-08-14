@@ -14,11 +14,7 @@ from jlens_reasoning.benchmarks.flenqa.dataset import (
     FlenqaRow,
     SourceProvenance,
 )
-from jlens_reasoning.benchmarks.flenqa.positions import (
-    LabeledPosition,
-    PreparedPrompt,
-    ResolvedSpan,
-)
+from jlens_reasoning.benchmarks.flenqa.positions import PreparedPrompt
 from jlens_reasoning.benchmarks.flenqa.runner import (
     LensPassResult,
     LensRunners,
@@ -34,7 +30,6 @@ from jlens_reasoning.benchmarks.flenqa.storage import (
     TABLE_SCHEMAS,
     is_shard_complete,
 )
-from jlens_reasoning.experiments_utils.spans import CharSpan
 
 
 class RecordingRunner:
@@ -55,11 +50,7 @@ class RecordingRunner:
 
 def _prepared(
     *,
-    positions: tuple[LabeledPosition, ...] = (
-        LabeledPosition("sampled_padding", 0),
-        LabeledPosition("question_end", 2),
-        LabeledPosition("final_prompt", 2),
-    ),
+    positions: dict[str, tuple[int, ...]] | None = None,
 ) -> PreparedPrompt:
     prompt = FlenqaPrompt(
         canonical_index=0,
@@ -78,22 +69,15 @@ def _prepared(
         prompt=prompt,
         input_ids=(10, 11, 12),
         offsets=((0, 1), (1, 2), (2, 3)),
-        token_signature="signature",
-        context=ResolvedSpan("context", "ab", CharSpan(0, 2), CharSpan(0, 2)),
-        paragraph_payload_spans=(),
-        facts=(
-            ResolvedSpan("fact_a_end", "a", CharSpan(0, 1), CharSpan(0, 1)),
-            ResolvedSpan("fact_b_end", "b", CharSpan(1, 2), CharSpan(1, 2)),
+        positions=(
+            {
+                "sampled_padding": (0,),
+                "question_end": (2,),
+                "final_prompt": (2,),
+            }
+            if positions is None
+            else positions
         ),
-        question=ResolvedSpan(
-            "question_end",
-            "c",
-            CharSpan(2, 3),
-            CharSpan(2, 3),
-        ),
-        rule=None,
-        positions=positions,
-        special_token_ids=frozenset(),
     )
 
 
