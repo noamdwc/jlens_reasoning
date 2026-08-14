@@ -3,18 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from pathlib import Path
 from typing import Any
 
 import pyarrow as pa
-
-from jlens_reasoning.experiments_utils.storage import (
-    ShardManifest,
-    ShardWriter,
-    is_shard_complete,
-    read_shard_manifest,
-    validate_shard_manifest,
-)
 
 PROVENANCE_TYPE = pa.list_(
     pa.struct(
@@ -100,32 +91,10 @@ def empty_batch(table: str) -> pa.RecordBatch:
     )
 
 
-def reset_incomplete_shard(root: Path, *, shard_id: int) -> None:
-    """Remove only the known files for an incomplete FLenQA shard."""
-    root = Path(root)
-    stem = f"shard-{shard_id:05d}"
-    manifest = root / "manifests" / f"{stem}.json"
-    for path in (manifest, manifest.with_suffix(".json.tmp")):
-        if path.exists():
-            path.unlink()
-    for table in REQUIRED_TABLES:
-        final = root / table / f"{stem}.parquet"
-        temporary = final.with_suffix(".parquet.tmp")
-        for path in (final, temporary):
-            if path.exists():
-                path.unlink()
-
-
 __all__ = [
     "PROVENANCE_TYPE",
     "REQUIRED_TABLES",
     "TABLE_SCHEMAS",
-    "ShardManifest",
-    "ShardWriter",
     "empty_batch",
-    "is_shard_complete",
-    "read_shard_manifest",
     "record_batch",
-    "reset_incomplete_shard",
-    "validate_shard_manifest",
 ]

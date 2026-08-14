@@ -131,8 +131,13 @@ def test_flenqa_notebooks_are_benchmark_drivers() -> None:
 
     for path in FLENQA_BENCHMARK_NOTEBOOKS:
         source = "\n".join(cell.source for cell in load_notebook(path).cells)
+        assert "from jlens_reasoning.benchmarks.flenqa.lens import" in source
         assert "from jlens_reasoning.benchmarks.flenqa.runner import" in source
         assert "run_benchmark(" in source
+        assert "model_name=" not in source
+        assert "lens_revision=" not in source
+        assert "tokenizer_name=" not in source
+        assert "code_revision=" not in source
         assert not any(fragment in source for fragment in forbidden)
 
 
