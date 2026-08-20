@@ -10,6 +10,7 @@ import pyarrow.parquet as pq
 from tqdm.auto import tqdm
 
 from jlens_reasoning.benchmarks.flenqa.dataset import (
+    FlenqaPrompt,
     FlenqaRow,
     prepare_prompts,
 )
@@ -18,7 +19,7 @@ from jlens_reasoning.benchmarks.flenqa.lens import (
     PromptResult,
     run_prompt,
 )
-from jlens_reasoning.benchmarks.flenqa.positions import PreparedPrompt, prepare_prompt
+from jlens_reasoning.benchmarks.flenqa.positions import prepare_prompt
 from jlens_reasoning.benchmarks.flenqa.storage import REQUIRED_TABLES, TABLE_SCHEMAS
 
 
@@ -67,9 +68,9 @@ def _prepare_output(root: Path) -> None:
 
 
 def _chunks(
-    prompts: Sequence[PreparedPrompt],
+    prompts: Sequence[FlenqaPrompt],
     size: int,
-) -> Iterator[Sequence[PreparedPrompt]]:
+) -> Iterator[Sequence[FlenqaPrompt]]:
     for start in range(0, len(prompts), size):
         yield prompts[start : start + size]
 
@@ -123,32 +124,28 @@ def run_benchmark(
     if not prompts:
         raise ValueError("FLenQA benchmark requires at least one prompt")
 
-    # Find the relevant positions for each prompt before running the lens
-    prepared = []
-    for prompt in tqdm(prompts, desc="Preparing prompts", disable=not show_progress):
-        prepared_prompt = prepare_prompt(
-            prompt,
-            tokenizer,
-            max_seq_len=config.max_seq_len,
-            sample_seed=config.padding_sample_seed,
-        )
-        prepared.append(prepared_prompt)
     root = Path(output_dir)
     _prepare_output(root)
 
     returned_layers: tuple[int, ...] | None = None
     max_abs_logit_diff = 0.0
     with tqdm(
-        total=len(prepared),
+        total=len(prompts),
         desc="FLenQA prompts",
         unit="prompt",
         disable=not show_progress,
     ) as progress:
-        for shard_id, shard in enumerate(_chunks(prepared, config.shard_size)):
+        for shard_id, shard in enumerate(_chunks(prompts, config.shard_size)):
             shard_layers: tuple[int, ...] | None = None
             shard_max_diff = 0.0
             with _ShardWriter(root=root, shard_id=shard_id) as writer:
-                for prepared_prompt in shard:
+                for prompt in shard:
+                    prepared_prompt = prepare_prompt(
+                        prompt,
+                        tokenizer,
+                        max_seq_len=config.max_seq_len,
+                        sample_seed=config.padding_sample_seed,
+                    )
                     result = run_prompt(
                         prepared_prompt,
                         runners=runners,
@@ -178,7 +175,7 @@ def run_benchmark(
     if returned_layers is None:
         raise RuntimeError("FLenQA benchmark requires at least one prepared prompt")
     return RunSummary(
-        prompt_count=len(prepared),
+        prompt_count=len(prompts),
         returned_layers=returned_layers,
         max_abs_logit_diff=max_abs_logit_diff,
     )

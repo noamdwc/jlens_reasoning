@@ -180,6 +180,43 @@ def test_run_benchmark_streams_compatible_parquet_shards(
     assert progress_bars[0].closed
 
 
+def test_run_benchmark_prepares_each_prompt_just_before_inference(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[str, int]] = []
+    original_prepare = runner_module.prepare_prompt
+    original_run = runner_module.run_prompt
+
+    def tracking_prepare(*args: object, **kwargs: object):
+        prepared = original_prepare(*args, **kwargs)
+        events.append(("prepare", prepared.prompt.canonical_index))
+        return prepared
+
+    def tracking_run(prepared: object, **kwargs: object):
+        events.append(("run", prepared.prompt.canonical_index))
+        return original_run(prepared, **kwargs)
+
+    monkeypatch.setattr(runner_module, "prepare_prompt", tracking_prepare)
+    monkeypatch.setattr(runner_module, "run_prompt", tracking_run)
+
+    run_benchmark(
+        (_row(), _row(source_row_id=1, problem_id=1)),
+        output_dir=tmp_path,
+        tokenizer=CharTokenizer(),
+        runners=LensRunners(DynamicRunner(), DynamicRunner()),
+        config=_config(expected_source_rows=2, shard_size=2),
+        show_progress=False,
+    )
+
+    assert events == [
+        ("prepare", 0),
+        ("run", 0),
+        ("prepare", 1),
+        ("run", 1),
+    ]
+
+
 def test_run_benchmark_rejects_populated_output_before_running_lenses(
     tmp_path: Path,
 ) -> None:
