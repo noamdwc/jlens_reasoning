@@ -327,9 +327,22 @@ def normalize_rows(
     return tuple(normalized)
 
 
-def deduplicate(rows: Iterable[FlenqaRow]) -> tuple[tuple[FlenqaRow, ...], ...]:
-    """Group exact final-text duplicates in first-occurrence order."""
-    grouped: dict[str, list[FlenqaRow]] = {}
+def _validate_duplicate_rows(rows: Sequence[FlenqaRow]) -> None:
+    first = rows[0]
+    for row in rows[1:]:
+        for field in ("problem_id", "label", "ctx_size_declared", "task"):
+            expected = getattr(first, field)
+            actual = getattr(row, field)
+            if actual != expected:
+                raise ValueError(
+                    "Identical FLenQA prompt text mixes invariant "
+                    f"{field}: {expected!r} != {actual!r}"
+                )
+
+
+def prepare_prompts(rows: Iterable[FlenqaRow]) -> tuple[FlenqaPrompt, ...]:
+    """Create unique prompts in first-occurrence order."""
+    rows_by_text: dict[str, list[FlenqaRow]] = {}
     for row in rows:
         text = build_prompt_text(
             task=row.task,
@@ -337,33 +350,20 @@ def deduplicate(rows: Iterable[FlenqaRow]) -> tuple[tuple[FlenqaRow, ...], ...]:
             mixin=row.mixin,
             rule=row.rule,
         )
-        grouped.setdefault(text, []).append(row)
+        rows_by_text.setdefault(text, []).append(row)
 
-    for source_rows in grouped.values():
+    prompts = []
+    for canonical_index, (text, source_rows) in enumerate(rows_by_text.items()):
+        _validate_duplicate_rows(source_rows)
         first = source_rows[0]
-        for row in source_rows[1:]:
-            for field in ("problem_id", "label", "ctx_size_declared", "task"):
-                if getattr(row, field) != getattr(first, field):
-                    raise ValueError(
-                        "Identical FLenQA prompt text mixes invariant "
-                        f"{field}: {getattr(first, field)!r} != "
-                        f"{getattr(row, field)!r}"
-                    )
-    return tuple(tuple(source_rows) for source_rows in grouped.values())
-
-
-def create_prompts(
-    groups: Iterable[Sequence[FlenqaRow]],
-) -> tuple[FlenqaPrompt, ...]:
-    """Convert deduplicated source-row groups into canonical prompts."""
-    prompts: list[FlenqaPrompt] = []
-    for canonical_index, source_rows in enumerate(groups):
-        first = source_rows[0]
-        text = build_prompt_text(
-            task=first.task,
-            question=first.question,
-            mixin=first.mixin,
-            rule=first.rule,
+        provenance = tuple(
+            SourceProvenance(
+                source_row_id=row.source_row_id,
+                ctx_size=row.ctx_size_declared,
+                padding_type=row.padding_type_declared,
+                dispersion=row.dispersion_declared,
+            )
+            for row in sorted(source_rows, key=lambda row: row.source_row_id)
         )
         prompts.append(
             FlenqaPrompt(
@@ -377,20 +377,7 @@ def create_prompts(
                 rule=first.rule,
                 label=first.label,
                 mixin=first.mixin,
-                provenance=tuple(
-                    sorted(
-                        (
-                            SourceProvenance(
-                                source_row_id=row.source_row_id,
-                                ctx_size=row.ctx_size_declared,
-                                padding_type=row.padding_type_declared,
-                                dispersion=row.dispersion_declared,
-                            )
-                            for row in source_rows
-                        ),
-                        key=lambda item: item.source_row_id,
-                    )
-                ),
+                provenance=provenance,
             )
         )
     return tuple(prompts)

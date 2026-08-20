@@ -13,9 +13,8 @@ from jlens_reasoning.benchmarks.flenqa.dataset import (
     SourceProvenance,
     build_prompt_text,
     compute_prompt_id,
-    create_prompts,
-    deduplicate,
     normalize_rows,
+    prepare_prompts,
     verify_schema,
 )
 
@@ -379,7 +378,7 @@ def test_normalize_rows_detaches_ruletaker_rule_from_mutable_source() -> None:
     )
 
     raw_rule.append("If someone is kind then they are green.")
-    prompt = create_prompts(deduplicate([normalized]))[0]
+    prompt = prepare_prompts([normalized])[0]
 
     assert normalized.rule == expected_rule
     assert prompt.rule == expected_rule
@@ -393,7 +392,7 @@ def test_rule_fields_are_annotated_as_immutable_text() -> None:
 
 def test_row_and_prompt_models_are_frozen_and_slotted() -> None:
     row = _row()
-    prompt = create_prompts(deduplicate([row]))[0]
+    prompt = prepare_prompts([row])[0]
 
     with pytest.raises(FrozenInstanceError):
         row.label = False  # type: ignore[misc]
@@ -403,7 +402,7 @@ def test_row_and_prompt_models_are_frozen_and_slotted() -> None:
     assert not hasattr(prompt, "__dict__")
 
 
-def test_deduplicate_returns_source_row_groups_without_creating_prompts() -> None:
+def test_prepare_prompts_deduplicates_and_aggregates_provenance() -> None:
     rows = [
         _row(source_row_id=10, padding_type_declared="books"),
         _row(
@@ -418,30 +417,7 @@ def test_deduplicate_returns_source_row_groups_without_creating_prompts() -> Non
         ),
     ]
 
-    groups = deduplicate(rows)
-
-    assert groups == (tuple(rows),)
-    assert all(isinstance(row, FlenqaRow) for group in groups for row in group)
-
-
-def test_create_prompts_converts_deduplicated_groups_and_aggregates_provenance() -> (
-    None
-):
-    rows = [
-        _row(source_row_id=10, padding_type_declared="books"),
-        _row(
-            source_row_id=11,
-            padding_type_declared="same",
-            dispersion_declared="middle",
-        ),
-        _row(
-            source_row_id=12,
-            padding_type_declared="books",
-            dispersion_declared="middle",
-        ),
-    ]
-
-    prompts = create_prompts(deduplicate(rows))
+    prompts = prepare_prompts(rows)
 
     assert len(prompts) == 1
     assert isinstance(prompts[0], FlenqaPrompt)
@@ -454,7 +430,7 @@ def test_create_prompts_converts_deduplicated_groups_and_aggregates_provenance()
     assert prompts[0].prompt_id == compute_prompt_id(prompts[0].text)
 
 
-def test_deduplicate_splits_distinct_final_prompt_text() -> None:
+def test_prepare_prompts_keeps_distinct_final_prompt_text() -> None:
     first = _row(source_row_id=4)
     second = _row(
         source_row_id=5,
@@ -462,7 +438,9 @@ def test_deduplicate_splits_distinct_final_prompt_text() -> None:
         key_texts=("The key is in the kitchen.",),
     )
 
-    assert deduplicate([first, second]) == ((first,), (second,))
+    prompts = prepare_prompts([first, second])
+
+    assert len(prompts) == 2
 
 
 @pytest.mark.parametrize(
@@ -473,17 +451,17 @@ def test_deduplicate_splits_distinct_final_prompt_text() -> None:
         ("ctx_size_declared", 500),
     ],
 )
-def test_deduplicate_rejects_identical_text_with_mixed_invariants(
+def test_prepare_prompts_rejects_identical_text_with_mixed_invariants(
     field: str, different: object
 ) -> None:
     original = _row(source_row_id=7)
     changed = _row(source_row_id=8, **{field: different})
 
     with pytest.raises(ValueError, match=field):
-        deduplicate([original, changed])
+        prepare_prompts([original, changed])
 
 
-def test_deduplicate_rejects_identical_text_with_mixed_tasks() -> None:
+def test_prepare_prompts_rejects_identical_text_with_mixed_tasks() -> None:
     monorel_question = "True/False Question: Q"
     monorel_mixin = "M"
     pir_mixin = (
@@ -506,10 +484,10 @@ def test_deduplicate_rejects_identical_text_with_mixed_tasks() -> None:
     )
 
     with pytest.raises(ValueError, match="task"):
-        deduplicate([pir, monorel])
+        prepare_prompts([pir, monorel])
 
 
-def test_deduplicate_preserves_first_occurrence_order() -> None:
+def test_prepare_prompts_preserves_first_occurrence_order() -> None:
     first = _row(
         source_row_id=20,
         problem_id=2,
@@ -530,10 +508,8 @@ def test_deduplicate_preserves_first_occurrence_order() -> None:
         padding_type_declared="same",
     )
 
-    groups = deduplicate([first, second, duplicate_first])
-    prompts = create_prompts(groups)
+    prompts = prepare_prompts([first, second, duplicate_first])
 
-    assert groups == ((first, duplicate_first), (second,))
     assert [prompt.canonical_index for prompt in prompts] == [0, 1]
     assert [prompt.problem_id for prompt in prompts] == [2, 1]
     assert prompts[0].provenance == (
@@ -542,24 +518,22 @@ def test_deduplicate_preserves_first_occurrence_order() -> None:
     )
 
 
-def test_create_prompts_sorts_complete_source_provenance_records() -> None:
-    prompts = create_prompts(
-        deduplicate(
-            [
-                _row(
-                    source_row_id=7,
-                    ctx_size_declared=500,
-                    padding_type_declared="books",
-                    dispersion_declared="first",
-                ),
-                _row(
-                    source_row_id=3,
-                    ctx_size_declared=500,
-                    padding_type_declared="same",
-                    dispersion_declared="last",
-                ),
-            ]
-        )
+def test_prepare_prompts_sorts_complete_source_provenance_records() -> None:
+    prompts = prepare_prompts(
+        [
+            _row(
+                source_row_id=7,
+                ctx_size_declared=500,
+                padding_type_declared="books",
+                dispersion_declared="first",
+            ),
+            _row(
+                source_row_id=3,
+                ctx_size_declared=500,
+                padding_type_declared="same",
+                dispersion_declared="last",
+            ),
+        ]
     )
 
     assert prompts[0].provenance == (

@@ -6,9 +6,8 @@ from jlens_reasoning.benchmarks.flenqa.dataset import (
     SourceProvenance,
     build_prompt_text,
     compute_prompt_id,
-    create_prompts,
-    deduplicate,
     normalize_rows,
+    prepare_prompts,
     verify_count_invariants,
     verify_schema,
 )
@@ -19,9 +18,8 @@ __all__ = [
     "SourceProvenance",
     "build_prompt_text",
     "compute_prompt_id",
-    "create_prompts",
-    "deduplicate",
     "normalize_rows",
+    "prepare_prompts",
     "verify_count_invariants",
     "verify_schema",
 ]

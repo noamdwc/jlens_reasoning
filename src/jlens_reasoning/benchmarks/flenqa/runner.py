@@ -11,8 +11,7 @@ from tqdm.auto import tqdm
 
 from jlens_reasoning.benchmarks.flenqa.dataset import (
     FlenqaRow,
-    create_prompts,
-    deduplicate,
+    prepare_prompts,
 )
 from jlens_reasoning.benchmarks.flenqa.lens import (
     LensRunners,
@@ -120,7 +119,7 @@ def run_benchmark(
         raise ValueError(
             f"Expected {config.expected_source_rows} source rows; found {len(rows)}"
         )
-    prompts = create_prompts(deduplicate(rows))
+    prompts = prepare_prompts(rows)
     if not prompts:
         raise ValueError("FLenQA benchmark requires at least one prompt")
 
