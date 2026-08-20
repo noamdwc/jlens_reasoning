@@ -267,10 +267,10 @@ answer and must remain distinguishable from an incorrect answer.
 Behavioral comparisons with the published FLenQA results use a separate,
 explicitly paper-compatible rule. Search the raw generated response for
 standalone `True` and `False` words without receiving the gold label, ignore
-case, and use the final occurrence as the verdict. A response with no verdict
-is incorrect. A response truncated at the declared generation limit is scored
-from the text that was actually generated; it is incorrect when that text has
-no verdict.
+case, replace the standalone phrase `not true` with `false`, and use the final
+occurrence as the verdict. A response with no verdict is incorrect. A response
+truncated at the declared generation limit is scored from the text that was
+actually generated; it is incorrect when that text has no verdict.
 
 This rule exists only to reproduce the paper's generated-answer methodology.
 It does not replace constrained-logit scoring, and it must not be substituted

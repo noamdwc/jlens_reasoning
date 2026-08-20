@@ -36,6 +36,7 @@ from jlens_reasoning.evaluation_utils import (
         ("True", True),
         ("FALSE", False),
         ("First true, but finally false.", False),
+        ("The statement is not true.", False),
         ("untrue and falsehood", None),
         ("", None),
     ],
