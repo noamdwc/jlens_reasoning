@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 import pyarrow.parquet as pq
 from tqdm.auto import tqdm
 
-from jlens_reasoning.benchmarks.flenqa.dataset import FlenqaRow, deduplicate
-from jlens_reasoning.benchmarks.flenqa.lens import LensRunners, run_prompt
+from jlens_reasoning.benchmarks.flenqa.dataset import (
+    FlenqaRow,
+    create_prompts,
+    deduplicate,
+)
+from jlens_reasoning.benchmarks.flenqa.lens import (
+    LensRunners,
+    PromptResult,
+    run_prompt,
+)
 from jlens_reasoning.benchmarks.flenqa.positions import PreparedPrompt, prepare_prompt
 from jlens_reasoning.benchmarks.flenqa.storage import REQUIRED_TABLES, TABLE_SCHEMAS
 
@@ -67,49 +75,34 @@ def _chunks(
         yield prompts[start : start + size]
 
 
-def _write_shard(
-    prompts: Sequence[PreparedPrompt],
-    *,
-    shard_id: int,
-    root: Path,
-    runners: LensRunners,
-    config: RunConfig,
-    on_prompt_completed: Callable[[], None],
-) -> tuple[tuple[int, ...], float]:
-    stem = f"shard-{shard_id:05d}.parquet"
-    writers = {
-        table: pq.ParquetWriter(root / table / stem, TABLE_SCHEMAS[table])
-        for table in REQUIRED_TABLES
-    }
-    returned_layers: tuple[int, ...] | None = None
-    max_abs_logit_diff = 0.0
-    try:
-        for prepared in prompts:
-            result = run_prompt(
-                prepared,
-                runners=runners,
-                top_k=config.top_k,
-                max_seq_len=config.max_seq_len,
-                logits_rtol=config.logits_rtol,
-                logits_atol=config.logits_atol,
-            )
-            if returned_layers is None:
-                returned_layers = result.returned_layers
-            elif returned_layers != result.returned_layers:
-                raise RuntimeError("Returned layer keys differ between prompts")
-            max_abs_logit_diff = max(
-                max_abs_logit_diff,
-                result.max_abs_logit_diff,
-            )
-            for table in REQUIRED_TABLES:
-                writers[table].write_batch(result.batches[table])
-            on_prompt_completed()
-    finally:
-        for writer in writers.values():
+class _ShardWriter:
+    """Write precomputed prompt results to one set of Parquet shard files."""
+
+    def __init__(self, *, root: Path, shard_id: int) -> None:
+        stem = f"shard-{shard_id:05d}.parquet"
+        self._paths = {table: root / table / stem for table in REQUIRED_TABLES}
+        self._writers: dict[str, pq.ParquetWriter] = {}
+
+    def __enter__(self) -> _ShardWriter:
+        try:
+            for table, path in self._paths.items():
+                self._writers[table] = pq.ParquetWriter(path, TABLE_SCHEMAS[table])
+        except BaseException:
+            self._close()
+            raise
+        return self
+
+    def write(self, result: PromptResult) -> None:
+        for table in REQUIRED_TABLES:
+            self._writers[table].write_batch(result.batches[table])
+
+    def __exit__(self, *_: object) -> None:
+        self._close()
+
+    def _close(self) -> None:
+        for writer in self._writers.values():
             writer.close()
-    if returned_layers is None:
-        raise RuntimeError("FLenQA shards must contain at least one prompt")
-    return returned_layers, max_abs_logit_diff
+        self._writers.clear()
 
 
 def run_benchmark(
@@ -127,18 +120,20 @@ def run_benchmark(
         raise ValueError(
             f"Expected {config.expected_source_rows} source rows; found {len(rows)}"
         )
-    prompts = deduplicate(rows)
+    prompts = create_prompts(deduplicate(rows))
     if not prompts:
         raise ValueError("FLenQA benchmark requires at least one prompt")
-    prepared = tuple(
-        prepare_prompt(
+
+    # Find the relevant positions for each prompt before running the lens
+    prepared = []
+    for prompt in tqdm(prompts, desc="Preparing prompts", disable=not show_progress):
+        prepared_prompt = prepare_prompt(
             prompt,
             tokenizer,
             max_seq_len=config.max_seq_len,
             sample_seed=config.padding_sample_seed,
         )
-        for prompt in prompts
-    )
+        prepared.append(prepared_prompt)
     root = Path(output_dir)
     _prepare_output(root)
 
@@ -151,14 +146,30 @@ def run_benchmark(
         disable=not show_progress,
     ) as progress:
         for shard_id, shard in enumerate(_chunks(prepared, config.shard_size)):
-            shard_layers, shard_max_diff = _write_shard(
-                shard,
-                shard_id=shard_id,
-                root=root,
-                runners=runners,
-                config=config,
-                on_prompt_completed=progress.update,
-            )
+            shard_layers: tuple[int, ...] | None = None
+            shard_max_diff = 0.0
+            with _ShardWriter(root=root, shard_id=shard_id) as writer:
+                for prepared_prompt in shard:
+                    result = run_prompt(
+                        prepared_prompt,
+                        runners=runners,
+                        top_k=config.top_k,
+                        max_seq_len=config.max_seq_len,
+                        logits_rtol=config.logits_rtol,
+                        logits_atol=config.logits_atol,
+                    )
+                    if shard_layers is None:
+                        shard_layers = result.returned_layers
+                    elif shard_layers != result.returned_layers:
+                        raise RuntimeError("Returned layer keys differ between prompts")
+                    shard_max_diff = max(
+                        shard_max_diff,
+                        result.max_abs_logit_diff,
+                    )
+                    writer.write(result)
+                    progress.update()
+            if shard_layers is None:
+                raise RuntimeError("FLenQA shards must contain at least one prompt")
             if returned_layers is None:
                 returned_layers = shard_layers
             elif returned_layers != shard_layers:

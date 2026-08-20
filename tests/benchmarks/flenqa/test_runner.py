@@ -10,13 +10,21 @@ import torch
 
 import jlens_reasoning.benchmarks.flenqa.runner as runner_module
 from jlens_reasoning.benchmarks.flenqa.dataset import FlenqaRow
-from jlens_reasoning.benchmarks.flenqa.lens import LensPassResult, LensRunners
+from jlens_reasoning.benchmarks.flenqa.lens import (
+    LensPassResult,
+    LensRunners,
+    PromptResult,
+)
 from jlens_reasoning.benchmarks.flenqa.runner import (
     RunConfig,
     RunSummary,
     run_benchmark,
 )
-from jlens_reasoning.benchmarks.flenqa.storage import REQUIRED_TABLES
+from jlens_reasoning.benchmarks.flenqa.storage import (
+    REQUIRED_TABLES,
+    TABLE_SCHEMAS,
+    empty_batch,
+)
 
 
 class CharTokenizer:
@@ -99,13 +107,35 @@ def _config(**overrides: object) -> RunConfig:
     return replace(RunConfig(expected_source_rows=1), **overrides)
 
 
+def test_shard_writer_writes_precomputed_results(tmp_path: Path) -> None:
+    runner_module._prepare_output(tmp_path)
+    result = PromptResult(
+        batches={table: empty_batch(table) for table in REQUIRED_TABLES},
+        returned_layers=(4,),
+        max_abs_logit_diff=0.0,
+    )
+
+    with runner_module._ShardWriter(root=tmp_path, shard_id=3) as writer:
+        writer.write(result)
+
+    for table in REQUIRED_TABLES:
+        path = tmp_path / table / "shard-00003.parquet"
+        assert path.is_file()
+        assert pq.read_table(path).schema == TABLE_SCHEMAS[table]
+
+
 def test_run_benchmark_streams_compatible_parquet_shards(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     progress_bars: list[RecordingProgress] = []
 
-    def recording_progress(**kwargs: object) -> RecordingProgress:
+    def recording_progress(
+        iterable: Sequence[object] | None = None,
+        **kwargs: object,
+    ) -> RecordingProgress | Sequence[object]:
+        if iterable is not None:
+            return iterable
         progress = RecordingProgress(**kwargs)
         progress_bars.append(progress)
         return progress
