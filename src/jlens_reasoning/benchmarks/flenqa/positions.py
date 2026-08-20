@@ -193,7 +193,7 @@ def prepare_prompt(
         prompt.text,
         prompt.question,
         name="question",
-        choose_last=True,
+        occurrence="first" if prompt.task == RULETAKER_TASK else "last",
     )
     question = resolve_span(
         QUESTION_LABEL,

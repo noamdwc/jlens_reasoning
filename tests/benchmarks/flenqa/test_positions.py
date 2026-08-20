@@ -241,6 +241,22 @@ def test_monorel_question_chooses_last_of_two_author_template_occurrences() -> N
     )
 
 
+def test_ruletaker_question_chooses_first_occurrence_when_repeated_in_facts() -> None:
+    question = "The cow is blue."
+    prompt = _prompt(
+        mixin=f"Alpha fact.\n{question}",
+        key_texts=("Alpha fact.",),
+        question=question,
+        rule="If someone is young then they are blue.",
+    )
+
+    prepared = prepare_prompt(prompt, RecordingCharTokenizer())
+
+    assert prepared.positions["question_end"] == (
+        prompt.text.index(question) + len(question),
+    )
+
+
 def test_prepare_prompt_uses_the_full_ruletaker_fact_paragraph() -> None:
     prompt = _prompt(
         task="Simplified RuleTaker",

@@ -3,6 +3,7 @@
 import random
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 from jlens_reasoning.experiments_utils.spans import (
     CharSpan,
@@ -25,15 +26,15 @@ def find_required_span(
     needle: str,
     *,
     name: str,
-    choose_last: bool = False,
+    occurrence: Literal["unique", "first", "last"] = "unique",
 ) -> CharSpan:
-    """Find required text, optionally choosing its final occurrence."""
+    """Find required text using the requested occurrence policy."""
     matches = find_all_spans(text, needle) if needle else ()
     if not matches:
         raise ValueError(f"Required FLenQA {name} span is unresolved")
-    if len(matches) > 1 and not choose_last:
+    if len(matches) > 1 and occurrence == "unique":
         raise ValueError(f"Required FLenQA {name} span is ambiguous")
-    return matches[-1] if choose_last else matches[0]
+    return matches[-1] if occurrence == "last" else matches[0]
 
 
 def resolve_span(
