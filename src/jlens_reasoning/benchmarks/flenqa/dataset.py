@@ -72,7 +72,6 @@ class FlenqaRow:
 
     source_row_id: int
     problem_id: int
-    sample_id: int
     task: str
     label: bool
     key_texts: tuple[str, ...]
@@ -304,7 +303,6 @@ def normalize_rows(
             FlenqaRow(
                 source_row_id=source_row_id,
                 problem_id=raw["global_sample_id"],
-                sample_id=raw["sample_id"],
                 task=task,
                 label=label if type(label) is bool else label == "True",
                 key_texts=key_texts,

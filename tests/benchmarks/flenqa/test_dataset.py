@@ -42,7 +42,6 @@ def _row(**overrides: object) -> FlenqaRow:
     values: dict[str, object] = {
         "source_row_id": 0,
         "problem_id": 0,
-        "sample_id": 0,
         "task": "PIR",
         "label": True,
         "key_texts": ("The key is in the study.",),
@@ -341,7 +340,6 @@ def test_normalize_rows_assigns_source_ids_and_task_specific_key_texts() -> None
 
     assert [row.source_row_id for row in rows] == [0, 1, 2]
     assert rows[0].problem_id == 0
-    assert rows[0].sample_id == 0
     assert rows[0].label is True
     assert rows[0].key_texts == ("The key is in the study.",)
     assert rows[1].key_texts == (
@@ -400,6 +398,24 @@ def test_row_and_prompt_models_are_frozen_and_slotted() -> None:
         prompt.canonical_index = 99  # type: ignore[misc]
     assert not hasattr(row, "__dict__")
     assert not hasattr(prompt, "__dict__")
+
+
+def test_flenqa_row_does_not_require_source_sample_id() -> None:
+    row = FlenqaRow(
+        source_row_id=0,
+        problem_id=0,
+        task="PIR",
+        label=True,
+        key_texts=("The key is in the study.",),
+        rule=None,
+        question="Is the key in the study?",
+        mixin="The key is in the study.",
+        ctx_size_declared=250,
+        padding_type_declared="books",
+        dispersion_declared="first",
+    )
+
+    assert row.problem_id == 0
 
 
 def test_prepare_prompts_deduplicates_and_aggregates_provenance() -> None:

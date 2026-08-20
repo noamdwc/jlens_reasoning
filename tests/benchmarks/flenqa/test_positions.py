@@ -20,6 +20,7 @@ from jlens_reasoning.benchmarks.flenqa.positions import (
 from jlens_reasoning.benchmarks.flenqa.positions_utils import (
     _eligible_padding_position,
 )
+from jlens_reasoning.benchmarks.flenqa.tokenization import TokenizedText
 from jlens_reasoning.experiments_utils.spans import CharSpan
 
 
@@ -67,6 +68,16 @@ class RecordingCharTokenizer:
                 "offset_mapping": torch.tensor([offsets]),
             }
         return {"input_ids": [input_ids], "offset_mapping": [offsets]}
+
+
+def test_tokenized_text_does_not_require_unused_signature() -> None:
+    tokenized = TokenizedText(
+        input_ids=(1,),
+        offsets=((0, 1),),
+        special_token_ids=frozenset(),
+    )
+
+    assert tokenized.input_ids == (1,)
 
 
 def test_resolve_facts_preserves_every_matching_paragraph() -> None:

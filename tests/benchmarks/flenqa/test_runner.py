@@ -70,6 +70,11 @@ class FailingRunner:
         raise AssertionError("lens must not run")
 
 
+class FailingTokenizer:
+    def __call__(self, text: str, **kwargs: object) -> object:
+        raise AssertionError("tokenizer must not run")
+
+
 class RecordingProgress:
     def __init__(self, **kwargs: object) -> None:
         self.options = kwargs
@@ -90,7 +95,6 @@ def _row(*, source_row_id: int = 0, problem_id: int = 0) -> FlenqaRow:
     return FlenqaRow(
         source_row_id=source_row_id,
         problem_id=problem_id,
-        sample_id=0,
         task="Simplified RuleTaker",
         label=True,
         key_texts=("The cow is young.", "The cow is kind."),
@@ -217,7 +221,7 @@ def test_run_benchmark_prepares_each_prompt_just_before_inference(
     ]
 
 
-def test_run_benchmark_rejects_populated_output_before_running_lenses(
+def test_run_benchmark_rejects_populated_output_before_tokenization_or_lenses(
     tmp_path: Path,
 ) -> None:
     existing = tmp_path / "topk" / "old.parquet"
@@ -228,7 +232,7 @@ def test_run_benchmark_rejects_populated_output_before_running_lenses(
         run_benchmark(
             (_row(),),
             output_dir=tmp_path,
-            tokenizer=CharTokenizer(),
+            tokenizer=FailingTokenizer(),
             runners=LensRunners(FailingRunner(), FailingRunner()),
             config=_config(),
         )

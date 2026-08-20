@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
 import operator
-import struct
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -14,7 +12,6 @@ from typing import Any
 class TokenizedText:
     input_ids: tuple[int, ...]
     offsets: tuple[tuple[int, int], ...]
-    signature: str
     special_token_ids: frozenset[int]
 
 
@@ -28,8 +25,10 @@ def _sequence(value: Any, *, name: str) -> Sequence[Any]:
 
 def _single_batch(value: Any, *, name: str) -> Sequence[Any]:
     values = _sequence(value, name=name)
-    if values and isinstance(values[0], Sequence) and not isinstance(
-        values[0], (str, bytes)
+    if (
+        values
+        and isinstance(values[0], Sequence)
+        and not isinstance(values[0], (str, bytes))
     ):
         if len(values) != 1:
             raise ValueError(f"tokenizer {name} must contain exactly one batch")
@@ -59,9 +58,7 @@ def _offsets(value: Any) -> tuple[tuple[int, int], ...]:
     )
     if raw and not is_offset(raw[0]):
         if len(raw) != 1:
-            raise ValueError(
-                "tokenizer offset_mapping must contain exactly one batch"
-            )
+            raise ValueError("tokenizer offset_mapping must contain exactly one batch")
         raw = _sequence(raw[0], name="offset_mapping batch")
 
     offsets: list[tuple[int, int]] = []
@@ -77,16 +74,6 @@ def _offsets(value: Any) -> tuple[tuple[int, int], ...]:
             raise ValueError("tokenizer offsets must be non-negative and ordered")
         offsets.append((start, end))
     return tuple(offsets)
-
-
-def _signature(input_ids: Sequence[int]) -> str:
-    digest = hashlib.sha256()
-    try:
-        for token_id in input_ids:
-            digest.update(struct.pack(">q", token_id))
-    except struct.error as exc:
-        raise ValueError("tokenizer token ID is outside signed 64-bit range") from exc
-    return digest.hexdigest()
 
 
 def tokenize_with_offsets(text: str, tokenizer: Any) -> TokenizedText:
@@ -126,6 +113,5 @@ def tokenize_with_offsets(text: str, tokenizer: Any) -> TokenizedText:
     return TokenizedText(
         input_ids=input_ids,
         offsets=offsets,
-        signature=_signature(input_ids),
         special_token_ids=frozenset(int(token_id) for token_id in special_ids),
     )
