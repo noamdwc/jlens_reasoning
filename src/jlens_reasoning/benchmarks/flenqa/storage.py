@@ -89,12 +89,3 @@ def empty_batch(table: str) -> pa.RecordBatch:
         [pa.array([], type=field.type) for field in schema],
         schema=schema,
     )
-
-
-__all__ = [
-    "PROVENANCE_TYPE",
-    "REQUIRED_TABLES",
-    "TABLE_SCHEMAS",
-    "empty_batch",
-    "record_batch",
-]
