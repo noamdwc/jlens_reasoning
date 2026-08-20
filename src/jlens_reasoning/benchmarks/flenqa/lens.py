@@ -96,7 +96,9 @@ def deterministic_topk(
     threshold = torch.topk(logits, k=count, sorted=False).values.min()
     strict_ids = torch.nonzero(logits > threshold, as_tuple=False).flatten()
     remaining = count - strict_ids.numel()
-    boundary_ids = torch.nonzero(logits == threshold, as_tuple=False).flatten()[:remaining]
+    boundary_ids = torch.nonzero(logits == threshold, as_tuple=False).flatten()[
+        :remaining
+    ]
     selected_ids = torch.cat((strict_ids, boundary_ids)).sort().values
     selected_logits = logits[selected_ids]
     order = torch.argsort(selected_logits, descending=True, stable=True)

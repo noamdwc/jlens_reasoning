@@ -143,9 +143,9 @@ def test_run_prompt_records_maximum_model_logit_difference() -> None:
 
     expected = (jacobian_logits - logit_logits).abs().max().item()
     assert result.max_abs_logit_diff == pytest.approx(expected)
-    assert result.batches["prompts"].to_pydict()[
-        "max_abs_logit_diff"
-    ] == pytest.approx([expected])
+    assert result.batches["prompts"].to_pydict()["max_abs_logit_diff"] == pytest.approx(
+        [expected]
+    )
 
 
 def test_run_prompt_rejects_logits_outside_tolerance() -> None:

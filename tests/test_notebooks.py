@@ -141,6 +141,14 @@ def test_flenqa_notebooks_are_benchmark_drivers() -> None:
         assert not any(fragment in source for fragment in forbidden)
 
 
+def test_flenqa_notebooks_select_the_published_eval_split() -> None:
+    for path in FLENQA_NOTEBOOKS:
+        source = "\n".join(cell.source for cell in load_notebook(path).cells)
+
+        assert 'dataset["eval"]' in source
+        assert 'dataset["train"]' not in source
+
+
 def test_flenqa_accuracy_notebook_has_visible_full_run_workflow() -> None:
     notebook = load_notebook(FLENQA_ACCURACY_NOTEBOOK)
     cells = notebook_cells_by_id(FLENQA_ACCURACY_NOTEBOOK)
