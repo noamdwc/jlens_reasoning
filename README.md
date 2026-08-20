@@ -147,9 +147,10 @@ select meaningful fact, question, final-prompt, and
 padding-content positions, then save Jacobian Lens and Logit Lens top-k values
 at those positions.
 
-Each immutable shard contains typed `prompts`, `positions`, and `topk` Parquet
-tables. Temporary or partial shard files are rebuilt on resume; a shard or run
-is complete only when its validated completion manifest exists.
+Each shard contains typed `prompts`, `positions`, and `topk` Parquet tables.
+The runner writes directly to the final shard files and is intentionally
+non-resumable. Its three output table directories must be empty before a run;
+after an interruption, restart with an empty output directory.
 
 ## FLenQA accuracy by prompt length
 

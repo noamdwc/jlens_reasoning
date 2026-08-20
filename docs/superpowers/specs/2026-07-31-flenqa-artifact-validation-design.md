@@ -1,5 +1,9 @@
 # FLenQA Artifact Validation Design
 
+> **Status: superseded and not implemented.** This proposal depends on run and
+> shard manifests that the current non-resumable runner does not produce. It is
+> retained as historical design context.
+
 ## Goal
 
 Add a fail-fast acceptance gate for the artifact produced by

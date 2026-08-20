@@ -1,4 +1,4 @@
-"""Stream a prepared FLenQA dataset through paired lens passes."""
+"""Stream FLenQA prompts through paired lens passes into Parquet shards."""
 
 from __future__ import annotations
 
@@ -76,7 +76,7 @@ def _chunks(
 
 
 class _ShardWriter:
-    """Write precomputed prompt results to one set of Parquet shard files."""
+    """Write prompt results directly to final Parquet shard files."""
 
     def __init__(self, *, root: Path, shard_id: int) -> None:
         stem = f"shard-{shard_id:05d}.parquet"
@@ -114,7 +114,7 @@ def run_benchmark(
     config: RunConfig,
     show_progress: bool = True,
 ) -> RunSummary:
-    """Prepare and stream one non-resumable FLenQA benchmark run."""
+    """Run one non-resumable FLenQA benchmark into empty table directories."""
     _validate_config(config)
     if len(rows) != config.expected_source_rows:
         raise ValueError(
@@ -136,8 +136,6 @@ def run_benchmark(
         disable=not show_progress,
     ) as progress:
         for shard_id, shard in enumerate(_chunks(prompts, config.shard_size)):
-            shard_layers: tuple[int, ...] | None = None
-            shard_max_diff = 0.0
             with _ShardWriter(root=root, shard_id=shard_id) as writer:
                 for prompt in shard:
                     prepared_prompt = prepare_prompt(
@@ -154,23 +152,16 @@ def run_benchmark(
                         logits_rtol=config.logits_rtol,
                         logits_atol=config.logits_atol,
                     )
-                    if shard_layers is None:
-                        shard_layers = result.returned_layers
-                    elif shard_layers != result.returned_layers:
+                    if returned_layers is None:
+                        returned_layers = result.returned_layers
+                    elif returned_layers != result.returned_layers:
                         raise RuntimeError("Returned layer keys differ between prompts")
-                    shard_max_diff = max(
-                        shard_max_diff,
+                    max_abs_logit_diff = max(
+                        max_abs_logit_diff,
                         result.max_abs_logit_diff,
                     )
                     writer.write(result)
                     progress.update()
-            if shard_layers is None:
-                raise RuntimeError("FLenQA shards must contain at least one prompt")
-            if returned_layers is None:
-                returned_layers = shard_layers
-            elif returned_layers != shard_layers:
-                raise RuntimeError("Returned layer keys differ between shards")
-            max_abs_logit_diff = max(max_abs_logit_diff, shard_max_diff)
 
     if returned_layers is None:
         raise RuntimeError("FLenQA benchmark requires at least one prepared prompt")

@@ -1,4 +1,4 @@
-"""Typed FLenQA tables backed by atomic manifest-committed shards."""
+"""Arrow schemas and record-batch builders for FLenQA shard tables."""
 
 from __future__ import annotations
 

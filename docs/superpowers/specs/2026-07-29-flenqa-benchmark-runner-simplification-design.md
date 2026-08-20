@@ -1,5 +1,9 @@
 # FLenQA Benchmark Runner Simplification Design
 
+> **Status: superseded.** The current runner writes directly to final Parquet
+> shards, requires empty output table directories, and does not support
+> manifests or resume. This document is retained as historical design context.
+
 ## Goal
 
 Replace `experiments.flenqa_length_drift` with a small benchmark runner that
