@@ -176,6 +176,7 @@ def test_flenqa_accuracy_notebook_reuses_full_run_prompts() -> None:
     assert "InferenceConfig.direct(" in source
     assert "max_input_tokens=4096" in source
     assert "generate_chat(" in cells["run-accuracy"]
+    assert '"canonical_index": prompt["canonical_index"]' in cells["run-accuracy"]
     assert "causal_lm.generate(" not in source
     assert "generated_text" in cells["run-accuracy"]
     assert "reasoning_text" in cells["run-accuracy"]
@@ -185,6 +186,10 @@ def test_flenqa_accuracy_notebook_reuses_full_run_prompts() -> None:
     assert "max_new_tokens" in cells["run-accuracy"]
     assert "paper_weight" in cells["run-accuracy"]
     assert "pa.Table.from_pylist" in cells["save-results"]
+    assert (
+        'pa.field("canonical_index", pa.int32(), nullable=False)'
+        in cells["save-results"]
+    )
     assert "pq.write_table" in cells["save-results"]
     assert '"results.parquet"' in cells["save-results"]
     assert "weighted_correct" in cells["paper-curve"]
