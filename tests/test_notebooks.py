@@ -149,22 +149,27 @@ def test_flenqa_notebooks_are_benchmark_drivers() -> None:
         assert not any(fragment in source for fragment in forbidden)
 
 
-def test_flenqa_notebooks_select_the_published_eval_split() -> None:
-    for path in FLENQA_NOTEBOOKS:
+def test_flenqa_benchmark_notebooks_select_the_published_eval_split() -> None:
+    for path in FLENQA_BENCHMARK_NOTEBOOKS:
         source = "\n".join(cell.source for cell in load_notebook(path).cells)
 
         assert 'dataset["eval"]' in source
         assert 'dataset["train"]' not in source
 
 
-def test_flenqa_accuracy_notebook_has_visible_full_run_workflow() -> None:
+def test_flenqa_accuracy_notebook_reuses_full_run_prompts() -> None:
     notebook = load_notebook(FLENQA_ACCURACY_NOTEBOOK)
     cells = notebook_cells_by_id(FLENQA_ACCURACY_NOTEBOOK)
     source = "\n".join(cell.source for cell in notebook.cells)
 
     assert "initialize_colab(enable_wandb=False, require_cuda=True)" in source
-    assert "normalize_rows(raw_rows, full=True)" in source
-    assert "len(prompts) == 9_862" in source
+    assert 'context.runs_dir / "flenqa-full-run" / "prompts"' in cells["load-prompts"]
+    assert "ds.dataset(" in cells["load-prompts"]
+    assert 'sort_by("canonical_index")' in cells["load-prompts"]
+    assert "len(prompts) == 9_862" in cells["load-prompts"]
+    assert "load_from_disk" not in source
+    assert "normalize_rows" not in source
+    assert "prepare_prompts" not in source
     assert "for prompt in tqdm(prompts" in cells["run-accuracy"]
     assert "evaluate_paper_binary" in cells["run-accuracy"]
     assert "from jlens_reasoning.inference import" in source
