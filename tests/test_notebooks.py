@@ -3,6 +3,8 @@ from dataclasses import asdict
 from pathlib import Path
 
 import nbformat
+import pandas as pd
+import pytest
 
 SHARED_NOTEBOOKS = [
     Path("notebooks/_template.ipynb"),
@@ -13,6 +15,9 @@ FLENQA_BENCHMARK_NOTEBOOKS = [
     Path("notebooks/flenqa_full_run.ipynb"),
 ]
 FLENQA_ACCURACY_NOTEBOOK = Path("notebooks/flenqa_accuracy.ipynb")
+FLENQA_LENS_DRIFT_NOTEBOOK = Path(
+    "experiments/flenqa_lens_drift/flenqa_lens_drift.ipynb"
+)
 FLENQA_NOTEBOOKS = [*FLENQA_BENCHMARK_NOTEBOOKS, FLENQA_ACCURACY_NOTEBOOK]
 EXPERIMENT_NOTEBOOKS = sorted(Path("experiments").glob("*/*.ipynb"))
 NOTEBOOKS = [*SHARED_NOTEBOOKS, *FLENQA_NOTEBOOKS, *EXPERIMENT_NOTEBOOKS]
@@ -114,6 +119,7 @@ def test_notebooks_use_the_colab_environment_module() -> None:
 
 def test_experiment_notebooks_exclude_flenqa_benchmark_drivers() -> None:
     assert EXPERIMENT_NOTEBOOKS == [
+        FLENQA_LENS_DRIFT_NOTEBOOK,
         Path("experiments/jlens_readout_sanity/jlens_readout_sanity.ipynb"),
     ]
     assert not Path("notebooks/01_jlens_readout_sanity.ipynb").exists()
@@ -183,6 +189,145 @@ def test_flenqa_accuracy_notebook_has_visible_full_run_workflow() -> None:
     assert "shard" not in source.casefold()
     assert "run_benchmark(" not in source
     assert "JacobianLens" not in source
+
+
+def test_flenqa_lens_drift_summarizes_final_position_token_prominence() -> None:
+    source = notebook_cells_by_id(FLENQA_LENS_DRIFT_NOTEBOOK)["summarize-tokens"]
+    namespace = {"pd": pd}
+    exec(
+        compile(source, f"{FLENQA_LENS_DRIFT_NOTEBOOK}:summarize-tokens", "exec"),
+        namespace,
+    )
+
+    prompt_info = pd.DataFrame(
+        {
+            "prompt_id": ["short", "long"],
+            "ctx_size": [250, 1000],
+            "final_position": [9, 19],
+        }
+    )
+    topk = pd.DataFrame(
+        {
+            "prompt_id": ["short", "short", "short", "long", "long"],
+            "lens_kind": ["jacobian"] * 5,
+            "layer": [0] * 5,
+            "position": [9, 9, 3, 19, 19],
+            "rank": [1, 2, 1, 1, 2],
+            "token_id": [10, 20, 99, 30, 10],
+            "logit": [5.0, 4.0, 100.0, 6.0, 3.0],
+        }
+    )
+
+    summary, seen_prompt_ids = namespace["summarize_tokens"](topk, prompt_info)
+    actual = {
+        (row.ctx_size, row.token_id): (
+            row.appearances,
+            row.rank_score,
+            row.logit_sum,
+        )
+        for row in summary.itertuples()
+    }
+    assert actual == {
+        (250, 10): (1, 1.0, 5.0),
+        (250, 20): (1, 0.5, 4.0),
+        (1000, 10): (1, 0.5, 3.0),
+        (1000, 30): (1, 1.0, 6.0),
+    }
+    assert seen_prompt_ids == {"short", "long"}
+
+
+def test_flenqa_lens_drift_rejects_unknown_topk_prompt_ids() -> None:
+    source = notebook_cells_by_id(FLENQA_LENS_DRIFT_NOTEBOOK)["summarize-tokens"]
+    namespace = {"pd": pd}
+    exec(
+        compile(source, f"{FLENQA_LENS_DRIFT_NOTEBOOK}:summarize-tokens", "exec"),
+        namespace,
+    )
+
+    prompt_info = pd.DataFrame(
+        {"prompt_id": ["known"], "ctx_size": [250], "final_position": [9]}
+    )
+    topk = pd.DataFrame(
+        {
+            "prompt_id": ["unknown"],
+            "lens_kind": ["jacobian"],
+            "layer": [0],
+            "position": [9],
+            "rank": [1],
+            "token_id": [10],
+            "logit": [5.0],
+        }
+    )
+
+    with pytest.raises(ValueError, match="top-k rows reference unknown prompt IDs"):
+        namespace["summarize_tokens"](topk, prompt_info)
+
+
+def test_flenqa_lens_drift_measures_token_distribution_change() -> None:
+    source = notebook_cells_by_id(FLENQA_LENS_DRIFT_NOTEBOOK)[
+        "measure-distribution-drift"
+    ]
+    namespace = {"pd": pd}
+    exec(
+        compile(source, f"{FLENQA_LENS_DRIFT_NOTEBOOK}:measure-drift", "exec"),
+        namespace,
+    )
+
+    token_stats = pd.DataFrame(
+        {
+            "lens_kind": ["jacobian"] * 5,
+            "layer": [4] * 5,
+            "ctx_size": [250, 250, 1000, 1000, 1000],
+            "token_id": [10, 20, 10, 20, 30],
+            "rank_score": [3.0, 1.0, 1.0, 1.0, 2.0],
+        }
+    )
+
+    drift = namespace["measure_distribution_drift"](token_stats)
+    actual = {
+        row.ctx_size: row.total_variation for row in drift.itertuples(index=False)
+    }
+    assert actual == {250: 0.0, 1000: 0.5}
+
+
+def test_flenqa_lens_drift_rejects_mismatched_prompt_assets() -> None:
+    source = notebook_cells_by_id(FLENQA_LENS_DRIFT_NOTEBOOK)["check-prompt-ids"]
+    namespace: dict[str, object] = {}
+    exec(
+        compile(source, f"{FLENQA_LENS_DRIFT_NOTEBOOK}:check-prompt-ids", "exec"),
+        namespace,
+    )
+
+    with pytest.raises(
+        ValueError, match="accuracy has 1 missing and 1 extra prompt IDs"
+    ):
+        namespace["require_same_prompt_ids"](
+            ["a", "b"],
+            accuracy=["b", "c"],
+        )
+
+
+def test_flenqa_lens_drift_combines_streamed_token_summaries() -> None:
+    source = notebook_cells_by_id(FLENQA_LENS_DRIFT_NOTEBOOK)["combine-token-summaries"]
+    namespace = {"pd": pd}
+    exec(compile(source, f"{FLENQA_LENS_DRIFT_NOTEBOOK}:combine", "exec"), namespace)
+
+    first = pd.DataFrame(
+        {
+            "lens_kind": ["jacobian"],
+            "layer": [2],
+            "ctx_size": [250],
+            "token_id": [10],
+            "appearances": [2],
+            "rank_score": [1.5],
+            "logit_sum": [7.0],
+        }
+    )
+    second = first.assign(appearances=3, rank_score=2.0, logit_sum=11.0)
+
+    combined = namespace["combine_token_summaries"]([first, second])
+    row = combined.iloc[0]
+    assert (row.appearances, row.rank_score, row.logit_sum) == (5, 3.5, 18.0)
 
 
 def test_readout_sanity_notebook_has_pinned_gpu_workflow() -> None:
