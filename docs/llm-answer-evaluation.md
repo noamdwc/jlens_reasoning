@@ -231,3 +231,47 @@ verbose response that hides its answer later may be `incorrect` or
 `unparseable` even if a human can infer the answer. References containing
 sentence-terminal punctuation require a future extractor version because
 punctuation currently ends the answer segment.
+
+## FLenQA Binary Verdict Policy (Version 1.0)
+
+FLenQA has a fixed binary answer shape and is scored without an LLM judge.
+Constrained scoring compares the best predefined single-token variants of
+`True` and `False` at the final prompt position. Both stored target ranks use
+`best_token_rank`, including its lower-token-ID tie break; the lower rank is the
+verdict. The raw logits, ranks, verdict, gold label, and correctness are stored.
+
+An optional short generation is diagnostic only. Preserve its raw text, apply
+the same gold-blind front-loaded extraction, normalization, and reference
+matching defined above, and accept only an extracted `True` or `False`.
+Store the generated verdict, correctness, and agreement with constrained
+scoring separately. An absent or unparseable generated verdict never changes
+the constrained verdict.
+
+## Chat Inference Boundary
+
+Inference and grading are separate contracts. Instruction-tuned Hugging Face
+models are invoked through `jlens_reasoning.inference.generate_chat`, never by
+tokenizing a user prompt as raw completion text. `InferenceConfig.direct()`
+disables native thinking and uses deterministic direct-answer generation;
+`InferenceConfig.reasoning(max_new_tokens=budget)` enables the model's native thinking template
+and requires an explicit shared completion budget.
+
+`InferenceResult` preserves raw generated text and exposes reasoning and final
+answer text separately. Evaluators consume the appropriate visible answer or
+`ModelOutput`; they do not choose chat templates, sampling settings, or token
+budgets. A response truncated before its reasoning boundary has no clean final
+answer and must remain distinguishable from an incorrect answer.
+
+## FLenQA Paper-Compatible Generated Verdict
+
+Behavioral comparisons with the published FLenQA results use a separate,
+explicitly paper-compatible rule. Search the raw generated response for
+standalone `True` and `False` words without receiving the gold label, ignore
+case, replace the standalone phrase `not true` with `false`, and use the final
+occurrence as the verdict. A response with no verdict is incorrect. A response
+truncated at the declared generation limit is scored from the text that was
+actually generated; it is incorrect when that text has no verdict.
+
+This rule exists only to reproduce the paper's generated-answer methodology.
+It does not replace constrained-logit scoring, and it must not be substituted
+for the front-loaded factual evaluator in other experiments.

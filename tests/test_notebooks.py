@@ -8,8 +8,14 @@ SHARED_NOTEBOOKS = [
     Path("notebooks/_template.ipynb"),
     Path("notebooks/00_environment_check.ipynb"),
 ]
+FLENQA_BENCHMARK_NOTEBOOKS = [
+    Path("notebooks/flenqa_smoke.ipynb"),
+    Path("notebooks/flenqa_full_run.ipynb"),
+]
+FLENQA_ACCURACY_NOTEBOOK = Path("notebooks/flenqa_accuracy.ipynb")
+FLENQA_NOTEBOOKS = [*FLENQA_BENCHMARK_NOTEBOOKS, FLENQA_ACCURACY_NOTEBOOK]
 EXPERIMENT_NOTEBOOKS = sorted(Path("experiments").glob("*/*.ipynb"))
-NOTEBOOKS = [*SHARED_NOTEBOOKS, *EXPERIMENT_NOTEBOOKS]
+NOTEBOOKS = [*SHARED_NOTEBOOKS, *FLENQA_NOTEBOOKS, *EXPERIMENT_NOTEBOOKS]
 ASSET_NOTEBOOK = Path("notebooks/01_download_assets.ipynb")
 ALL_NOTEBOOKS = [*NOTEBOOKS, ASSET_NOTEBOOK]
 
@@ -42,6 +48,7 @@ def test_notebooks_have_no_saved_outputs_or_execution_counts() -> None:
 def test_notebooks_share_one_canonical_drive_loader_cell() -> None:
     recurring_paths = [
         Path("notebooks/_template.ipynb"),
+        *FLENQA_NOTEBOOKS,
         *EXPERIMENT_NOTEBOOKS,
     ]
     recurring_loaders = [
@@ -105,11 +112,77 @@ def test_notebooks_use_the_colab_environment_module() -> None:
         assert "rev-parse" not in source
 
 
-def test_experiment_notebooks_are_discovered_without_a_registry() -> None:
+def test_experiment_notebooks_exclude_flenqa_benchmark_drivers() -> None:
     assert EXPERIMENT_NOTEBOOKS == [
-        Path("experiments/jlens_readout_sanity/jlens_readout_sanity.ipynb")
+        Path("experiments/jlens_readout_sanity/jlens_readout_sanity.ipynb"),
     ]
     assert not Path("notebooks/01_jlens_readout_sanity.ipynb").exists()
+
+
+def test_flenqa_notebooks_are_benchmark_drivers() -> None:
+    forbidden = (
+        "run_preflight(",
+        "score_binary_answer(",
+        "select_summary_positions(",
+        "reduce_readout(",
+        "ParquetWriter",
+        "TABLE_SCHEMAS",
+    )
+
+    for path in FLENQA_BENCHMARK_NOTEBOOKS:
+        source = "\n".join(cell.source for cell in load_notebook(path).cells)
+        assert "from jlens_reasoning.benchmarks.flenqa.lens import" in source
+        assert "from jlens_reasoning.benchmarks.flenqa.runner import" in source
+        assert "run_benchmark(" in source
+        assert "model_name=" not in source
+        assert "lens_revision=" not in source
+        assert "tokenizer_name=" not in source
+        assert "code_revision=" not in source
+        assert not any(fragment in source for fragment in forbidden)
+
+
+def test_flenqa_notebooks_select_the_published_eval_split() -> None:
+    for path in FLENQA_NOTEBOOKS:
+        source = "\n".join(cell.source for cell in load_notebook(path).cells)
+
+        assert 'dataset["eval"]' in source
+        assert 'dataset["train"]' not in source
+
+
+def test_flenqa_accuracy_notebook_has_visible_full_run_workflow() -> None:
+    notebook = load_notebook(FLENQA_ACCURACY_NOTEBOOK)
+    cells = notebook_cells_by_id(FLENQA_ACCURACY_NOTEBOOK)
+    source = "\n".join(cell.source for cell in notebook.cells)
+
+    assert "initialize_colab(enable_wandb=False, require_cuda=True)" in source
+    assert "normalize_rows(raw_rows, full=True)" in source
+    assert "len(prompts) == 9_862" in source
+    assert "for prompt in tqdm(prompts" in cells["run-accuracy"]
+    assert "evaluate_paper_binary" in cells["run-accuracy"]
+    assert "from jlens_reasoning.inference import" in source
+    assert "InferenceConfig.direct(" in source
+    assert "max_input_tokens=4096" in source
+    assert "generate_chat(" in cells["run-accuracy"]
+    assert "causal_lm.generate(" not in source
+    assert "generated_text" in cells["run-accuracy"]
+    assert "reasoning_text" in cells["run-accuracy"]
+    assert "answer_text" in cells["run-accuracy"]
+    assert "reasoning_status" in cells["run-accuracy"]
+    assert "inference_mode" in cells["run-accuracy"]
+    assert "max_new_tokens" in cells["run-accuracy"]
+    assert "paper_weight" in cells["run-accuracy"]
+    assert "pa.Table.from_pylist" in cells["save-results"]
+    assert "pq.write_table" in cells["save-results"]
+    assert '"results.parquet"' in cells["save-results"]
+    assert "weighted_correct" in cells["paper-curve"]
+    assert ".groupby(" in cells["paper-curve"]
+    assert ".groupby(" in cells["unique-curve"]
+    assert "run_accuracy(" not in source
+    assert "load_accuracy_results(" not in source
+    assert "run-manifest" not in source
+    assert "shard" not in source.casefold()
+    assert "run_benchmark(" not in source
+    assert "JacobianLens" not in source
 
 
 def test_readout_sanity_notebook_has_pinned_gpu_workflow() -> None:

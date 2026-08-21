@@ -713,8 +713,10 @@ dependencies = [
     { name = "jlens" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "pyarrow" },
     { name = "torch", version = "2.13.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
     { name = "torch", version = "2.13.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'linux'" },
+    { name = "tqdm" },
     { name = "transformers" },
 ]
 
@@ -739,8 +741,10 @@ requires-dist = [
     { name = "ipykernel", marker = "extra == 'experiment'" },
     { name = "jlens", git = "https://github.com/anthropics/jacobian-lens?rev=581d398613e5602a5af361e1c34d3a92ea82ba8e" },
     { name = "numpy" },
+    { name = "pyarrow", specifier = ">=18.0.0" },
     { name = "torch", marker = "sys_platform != 'linux'" },
     { name = "torch", marker = "sys_platform == 'linux'", index = "https://download.pytorch.org/whl/cpu" },
+    { name = "tqdm" },
     { name = "transformers", specifier = ">=5.5" },
     { name = "wandb", marker = "extra == 'experiment'" },
 ]

@@ -7,6 +7,7 @@ import torch
 
 from jlens_reasoning.evaluation import (
     AnswerStatus,
+    BinaryVerdictResult,
     EvaluationResult,
     GenerationStatus,
     ModelOutput,
@@ -17,14 +18,70 @@ from jlens_reasoning.evaluation import (
     compare_token_ranks,
     evaluate,
     evaluate_next_token,
+    evaluate_paper_binary,
 )
 from jlens_reasoning.evaluation_utils import (
     answer_token_variants,
     best_token_rank,
+    extract_last_binary_verdict,
     log_rank_gain,
     parse_think_tags,
     top_token_values,
 )
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("True", True),
+        ("FALSE", False),
+        ("First true, but finally false.", False),
+        ("The statement is not true.", False),
+        ("untrue and falsehood", None),
+        ("", None),
+    ],
+)
+def test_extract_last_binary_verdict_is_gold_blind(
+    text: str,
+    expected: bool | None,
+) -> None:
+    assert extract_last_binary_verdict(text) is expected
+
+
+def test_paper_binary_evaluation_scores_the_last_verdict() -> None:
+    output = ModelOutput("Initially false. Final answer: TRUE.")
+
+    result = evaluate_paper_binary(output, expected=True)
+
+    assert result == BinaryVerdictResult(
+        raw_output=output,
+        expected=True,
+        verdict=True,
+        correct=True,
+    )
+
+
+def test_paper_binary_evaluation_scores_missing_and_truncated_answers() -> None:
+    missing = evaluate_paper_binary("I cannot determine it.", expected=False)
+    truncated = evaluate_paper_binary(
+        ModelOutput(
+            "Reasoning... False then True",
+            generation_status=GenerationStatus.TRUNCATED,
+            finish_reason="length",
+        ),
+        expected=False,
+    )
+
+    assert missing.verdict is None
+    assert missing.correct is False
+    assert truncated.verdict is True
+    assert truncated.correct is False
+
+
+@pytest.mark.parametrize("expected", [0, 1, "True", None])
+def test_paper_binary_evaluation_requires_a_boolean_label(expected: object) -> None:
+    with pytest.raises(TypeError, match="boolean"):
+        evaluate_paper_binary("True", expected=expected)  # type: ignore[arg-type]
 
 
 def test_model_output_preserves_raw_token_artifact() -> None:

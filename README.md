@@ -138,6 +138,54 @@ scoring separate, distinguishes paper-faithful metrics from semantic
 correctness, and records adoption status for evaluators that still need to be
 migrated.
 
+## FLenQA benchmark runner
+
+Run `notebooks/flenqa_smoke.ipynb` before
+`notebooks/flenqa_full_run.ipynb`. Both are thin Colab drivers over
+`jlens_reasoning.benchmarks.flenqa`: they validate the dataset and fact spans,
+select meaningful fact, question, final-prompt, and
+padding-content positions, then save Jacobian Lens and Logit Lens top-k values
+at those positions.
+
+Each shard contains typed `prompts`, `positions`, and `topk` Parquet tables.
+The runner writes directly to the final shard files and is intentionally
+non-resumable. Its three output table directories must be empty before a run;
+after an interruption, restart with an empty output directory.
+
+## FLenQA accuracy by prompt length
+
+Open `notebooks/flenqa_accuracy.ipynb` in a Colab GPU runtime after uploading
+the current wheel. The notebook evaluates all 9,862 unique final FLenQA prompts
+by default, then writes one result table after the full run completes:
+
+```text
+runs/flenqa-accuracy/results.parquet
+```
+
+The deliberately simple notebook does not checkpoint or resume partial runs;
+if generation is interrupted, rerun it from the beginning.
+
+Generation uses the shared Hugging Face chat-inference module. The
+paper-compatible curve runs Qwen in direct mode with its native chat template,
+thinking explicitly disabled, deterministic decoding, and the paper wrapper's
+400-token completion allowance. The saved table records the effective inference
+mode and decoding settings alongside raw output, structured reasoning/answer
+fields, exact wrapped input length, parsed verdict, and correctness.
+
+Results produced by the earlier raw-prompt, 64-token notebook are not comparable
+and should be regenerated rather than appended to the corrected result table.
+
+For paper compatibility, the behavioral score uses the final standalone,
+case-insensitive `True` or `False` in each response and reports the published
+nominal length buckets of 250, 500, 1000, 2000, and 3000 tokens. The notebook
+asserts the expected unique-prompt and paper-weighted counts before saving.
+
+The headline curve restores the paper's random-placement source-row weighting.
+A second curve weights each unique prompt once, avoiding duplicate input weight
+at the shortest length and for incidental prompt collisions. The notebook also
+shows task-level accuracy, verdict frequencies, and measured token-length
+diagnostics.
+
 ## CI policy
 
 CI installs the committed `uv.lock`, disables W&B, sets Hugging Face and
