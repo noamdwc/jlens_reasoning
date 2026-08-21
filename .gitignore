@@ -11,3 +11,4 @@ artifacts/
 wandb/
 .DS_Store
 .claude/
+docs/superpowers/
