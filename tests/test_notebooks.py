@@ -485,6 +485,18 @@ def test_flenqa_lens_drift_measures_each_prompt_against_problem_baseline() -> No
             prompts.assign(problem_id=8), baseline
         )
 
+    mixed_prompts = pd.concat(
+        [prompts.iloc[[0]], prompts.iloc[[1]].assign(problem_id=8)],
+        ignore_index=True,
+    )
+    covered_only = namespace["measure_prompt_distribution_drift"](
+        mixed_prompts,
+        baseline,
+        require_complete=False,
+    )
+    assert covered_only["prompt_id"].tolist() == ["same"]
+    assert covered_only["total_variation"].tolist() == [0.0]
+
 
 def test_flenqa_lens_drift_identifies_only_answer_interface_tokens() -> None:
     source = notebook_cells_by_id(FLENQA_LENS_DRIFT_NOTEBOOK)["surface-token-policy"]
