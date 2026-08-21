@@ -3,6 +3,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 import nbformat
+import pytest
 
 SHARED_NOTEBOOKS = [
     Path("notebooks/_template.ipynb"),
@@ -13,9 +14,15 @@ FLENQA_BENCHMARK_NOTEBOOKS = [
     Path("notebooks/flenqa_full_run.ipynb"),
 ]
 FLENQA_ACCURACY_NOTEBOOK = Path("notebooks/flenqa_accuracy.ipynb")
+FLENQA_SANITY_NOTEBOOK = Path("notebooks/flenqa_output_sanity.ipynb")
 FLENQA_NOTEBOOKS = [*FLENQA_BENCHMARK_NOTEBOOKS, FLENQA_ACCURACY_NOTEBOOK]
 EXPERIMENT_NOTEBOOKS = sorted(Path("experiments").glob("*/*.ipynb"))
-NOTEBOOKS = [*SHARED_NOTEBOOKS, *FLENQA_NOTEBOOKS, *EXPERIMENT_NOTEBOOKS]
+NOTEBOOKS = [
+    *SHARED_NOTEBOOKS,
+    *FLENQA_NOTEBOOKS,
+    FLENQA_SANITY_NOTEBOOK,
+    *EXPERIMENT_NOTEBOOKS,
+]
 ASSET_NOTEBOOK = Path("notebooks/01_download_assets.ipynb")
 ALL_NOTEBOOKS = [*NOTEBOOKS, ASSET_NOTEBOOK]
 
@@ -49,6 +56,7 @@ def test_notebooks_share_one_canonical_drive_loader_cell() -> None:
     recurring_paths = [
         Path("notebooks/_template.ipynb"),
         *FLENQA_NOTEBOOKS,
+        FLENQA_SANITY_NOTEBOOK,
         *EXPERIMENT_NOTEBOOKS,
     ]
     recurring_loaders = [
@@ -183,6 +191,106 @@ def test_flenqa_accuracy_notebook_has_visible_full_run_workflow() -> None:
     assert "shard" not in source.casefold()
     assert "run_benchmark(" not in source
     assert "JacobianLens" not in source
+
+
+def test_flenqa_output_sanity_notebook_has_a_lightweight_read_only_workflow() -> None:
+    cells = notebook_cells_by_id(FLENQA_SANITY_NOTEBOOK)
+    source = "\n".join(cells.values())
+
+    assert "initialize_colab(enable_wandb=False, require_cuda=False)" in source
+    assert 'context.runs_dir / "flenqa-full-run"' in source
+    assert "TABLE_SCHEMAS" in source
+    assert "metadata.num_rows" in source
+    assert "9_862" in source
+    assert 'row_counts["topk"] == len(execution_positions)' in source
+    assert "check_topk_sample(" in source
+    assert "AutoTokenizer.from_pretrained" in source
+    assert "AutoModel" not in source
+    assert "JacobianLens" not in source
+    assert "write_table" not in source
+    assert "ParquetWriter" not in source
+
+
+def test_flenqa_output_sanity_sample_check_rejects_broken_rank_groups() -> None:
+    source = notebook_cells_by_id(FLENQA_SANITY_NOTEBOOK)["define-sample-check"]
+    namespace: dict[str, object] = {}
+    exec(
+        compile(source, f"{FLENQA_SANITY_NOTEBOOK}:define-sample-check", "exec"),
+        namespace,
+    )
+    check_topk_sample = namespace["check_topk_sample"]
+    rows = [
+        {
+            "prompt_id": "p",
+            "lens_kind": lens_kind,
+            "layer": 2,
+            "position": 4,
+            "rank": rank,
+            "token_id": rank,
+            "logit": float(3 - rank),
+        }
+        for lens_kind in ("jacobian", "logit")
+        for rank in (1, 2)
+    ]
+
+    assert check_topk_sample(rows, {("p", 4)}, top_k=2) == 1
+    rows[-1]["rank"] = 3
+    with pytest.raises(AssertionError):
+        check_topk_sample(rows, {("p", 4)}, top_k=2)
+
+
+def test_flenqa_output_sanity_sample_check_rejects_extra_lens_kinds() -> None:
+    source = notebook_cells_by_id(FLENQA_SANITY_NOTEBOOK)["define-sample-check"]
+    namespace: dict[str, object] = {}
+    exec(
+        compile(source, f"{FLENQA_SANITY_NOTEBOOK}:define-sample-check", "exec"),
+        namespace,
+    )
+    check_topk_sample = namespace["check_topk_sample"]
+    rows = [
+        {
+            "prompt_id": "p",
+            "lens_kind": lens_kind,
+            "layer": 2,
+            "position": 4,
+            "rank": rank,
+            "token_id": rank,
+            "logit": float(3 - rank),
+        }
+        for lens_kind in ("jacobian", "logit", "unexpected")
+        for rank in (1, 2)
+    ]
+
+    with pytest.raises(AssertionError):
+        check_topk_sample(rows, {("p", 4)}, top_k=2)
+
+
+def test_flenqa_output_sanity_sample_check_rejects_position_layer_gaps() -> None:
+    source = notebook_cells_by_id(FLENQA_SANITY_NOTEBOOK)["define-sample-check"]
+    namespace: dict[str, object] = {}
+    exec(
+        compile(source, f"{FLENQA_SANITY_NOTEBOOK}:define-sample-check", "exec"),
+        namespace,
+    )
+    check_topk_sample = namespace["check_topk_sample"]
+    rows = [
+        {
+            "prompt_id": "p",
+            "lens_kind": lens_kind,
+            "layer": layer,
+            "position": position,
+            "rank": rank,
+            "token_id": rank,
+            "logit": float(3 - rank),
+        }
+        for lens_kind in ("jacobian", "logit")
+        for position, layers in ((4, (1, 2)), (5, (1,)))
+        for layer in layers
+        for rank in (1, 2)
+    ]
+
+    with pytest.raises(AssertionError):
+        check_topk_sample(rows, {("p", 4), ("p", 5)}, top_k=2)
 
 
 def test_readout_sanity_notebook_has_pinned_gpu_workflow() -> None:
