@@ -398,6 +398,51 @@ def test_flenqa_lens_drift_measures_problem_matched_position_drift() -> None:
         )
 
 
+def test_flenqa_lens_drift_reports_sparse_position_groups() -> None:
+    source = notebook_cells_by_id(FLENQA_LENS_DRIFT_NOTEBOOK)["measure-grouped-drift"]
+    namespace = {"pd": pd}
+    exec(
+        compile(source, f"{FLENQA_LENS_DRIFT_NOTEBOOK}:sparse-grouped-drift", "exec"),
+        namespace,
+    )
+
+    token_stats = pd.DataFrame(
+        {
+            "lens_kind": ["jacobian"] * 4,
+            "layer": [4] * 4,
+            "position_label": [
+                "question_end",
+                "question_end",
+                "sampled_padding",
+                "sampled_padding",
+            ],
+            "ctx_size": [250, 1000, 1000, 2000],
+            "token_id": [10, 20, 30, 40],
+            "rank_score": [1.0, 1.0, 1.0, 1.0],
+        }
+    )
+
+    drift = namespace["measure_grouped_distribution_drift"](
+        token_stats,
+        group_keys=["lens_kind", "layer", "position_label"],
+        expected_ctx_sizes=[250, 1000, 2000],
+        require_complete=False,
+    )
+    actual = {
+        (row.position_label, row.ctx_size): (
+            row.baseline_ctx_size,
+            row.total_variation,
+        )
+        for row in drift.itertuples(index=False)
+    }
+    assert actual == {
+        ("question_end", 250): (250, 0.0),
+        ("question_end", 1000): (250, 1.0),
+        ("sampled_padding", 1000): (1000, 0.0),
+        ("sampled_padding", 2000): (1000, 1.0),
+    }
+
+
 def test_flenqa_lens_drift_measures_each_prompt_against_problem_baseline() -> None:
     source = notebook_cells_by_id(FLENQA_LENS_DRIFT_NOTEBOOK)["measure-prompt-drift"]
     namespace = {"pd": pd}
