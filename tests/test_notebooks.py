@@ -17,13 +17,19 @@ FLENQA_BENCHMARK_NOTEBOOKS = [
     Path("notebooks/flenqa_full_run.ipynb"),
 ]
 FLENQA_ACCURACY_NOTEBOOK = Path("notebooks/flenqa_accuracy.ipynb")
+FLENQA_PROBE_JLENS_NOTEBOOK = Path(
+    "experiments/flenqa_probe_jlens/flenqa_probe_jlens.ipynb"
+)
 FLENQA_LENS_DRIFT_NOTEBOOK = Path(
     "experiments/flenqa_lens_drift/flenqa_lens_drift.ipynb"
 )
 FLENQA_LENS_INTERVENTION_NOTEBOOK = Path(
     "experiments/flenqa_lens_drift/flenqa_lens_intervention.ipynb"
 )
-FLENQA_NOTEBOOKS = [*FLENQA_BENCHMARK_NOTEBOOKS, FLENQA_ACCURACY_NOTEBOOK]
+FLENQA_NOTEBOOKS = [
+    *FLENQA_BENCHMARK_NOTEBOOKS,
+    FLENQA_ACCURACY_NOTEBOOK,
+]
 EXPERIMENT_NOTEBOOKS = sorted(Path("experiments").glob("*/*.ipynb"))
 NOTEBOOKS = [*SHARED_NOTEBOOKS, *FLENQA_NOTEBOOKS, *EXPERIMENT_NOTEBOOKS]
 ASSET_NOTEBOOK = Path("notebooks/01_download_assets.ipynb")
@@ -132,11 +138,36 @@ def test_notebooks_use_the_colab_environment_module() -> None:
 
 def test_experiment_notebooks_exclude_flenqa_benchmark_drivers() -> None:
     assert EXPERIMENT_NOTEBOOKS == [
+        FLENQA_PROBE_JLENS_NOTEBOOK,
         FLENQA_LENS_DRIFT_NOTEBOOK,
         FLENQA_LENS_INTERVENTION_NOTEBOOK,
         Path("experiments/jlens_readout_sanity/jlens_readout_sanity.ipynb"),
     ]
     assert not Path("notebooks/01_jlens_readout_sanity.ipynb").exists()
+
+
+def test_flenqa_probe_jlens_notebook_connects_probe_scores_to_jlens() -> None:
+    source = "\n".join(
+        cell.source for cell in load_notebook(FLENQA_PROBE_JLENS_NOTEBOOK).cells
+    )
+
+    for required in (
+        "flenqa-probe-assets",
+        "flenqa-full-run",
+        "JacobianLens.from_pretrained",
+        "gold_probe_score",
+        "propagation_norm",
+        "answer_effect",
+        "model_correct",
+        "2000",
+        "3000",
+        "axhline(0",
+        "groupby([\"layer\", \"model_correct\"]",
+    ):
+        assert required in source
+    assert "LensCoordinatePatcher" not in source
+    assert "coordinate_patch(" not in source
+    assert "causal_lm.generate(" not in source
 
 
 def test_flenqa_notebooks_are_benchmark_drivers() -> None:
