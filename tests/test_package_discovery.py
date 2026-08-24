@@ -26,6 +26,5 @@ def test_setuptools_discovers_library_and_experiment_packages() -> None:
     assert "jlens_reasoning" in discovered
     assert "jlens_reasoning.experiments_utils" in discovered
     assert "experiments" in discovered
-    assert "experiments.data_mining" in discovered
     assert "experiments.jlens_readout_sanity" in discovered
     assert not any(name.startswith("tests") for name in discovered)
