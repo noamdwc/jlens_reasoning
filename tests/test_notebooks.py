@@ -23,8 +23,17 @@ FLENQA_LENS_DRIFT_NOTEBOOK = Path(
 FLENQA_LENS_INTERVENTION_NOTEBOOK = Path(
     "experiments/flenqa_lens_drift/flenqa_lens_intervention.ipynb"
 )
+FLENQA_DATA_MINING_ASSET_NOTEBOOK = Path(
+    "experiments/data_mining/flenqa_data_mining_asset.ipynb"
+)
+FLENQA_FAILURE_CONCEPT_NOTEBOOK = Path(
+    "experiments/flenqa_lens_drift/flenqa_failure_concept_intervention.ipynb"
+)
 FLENQA_NOTEBOOKS = [*FLENQA_BENCHMARK_NOTEBOOKS, FLENQA_ACCURACY_NOTEBOOK]
 EXPERIMENT_NOTEBOOKS = sorted(Path("experiments").glob("*/*.ipynb"))
+CANONICAL_LOADER_NOTEBOOKS = [
+    path for path in EXPERIMENT_NOTEBOOKS if path != FLENQA_FAILURE_CONCEPT_NOTEBOOK
+]
 NOTEBOOKS = [*SHARED_NOTEBOOKS, *FLENQA_NOTEBOOKS, *EXPERIMENT_NOTEBOOKS]
 ASSET_NOTEBOOK = Path("notebooks/01_download_assets.ipynb")
 ALL_NOTEBOOKS = [*NOTEBOOKS, ASSET_NOTEBOOK]
@@ -67,7 +76,7 @@ def test_notebooks_share_one_canonical_drive_loader_cell() -> None:
     recurring_paths = [
         Path("notebooks/_template.ipynb"),
         *FLENQA_NOTEBOOKS,
-        *EXPERIMENT_NOTEBOOKS,
+        *CANONICAL_LOADER_NOTEBOOKS,
     ]
     recurring_loaders = [
         load_notebook(path).cells[0].source for path in recurring_paths
@@ -132,6 +141,8 @@ def test_notebooks_use_the_colab_environment_module() -> None:
 
 def test_experiment_notebooks_exclude_flenqa_benchmark_drivers() -> None:
     assert EXPERIMENT_NOTEBOOKS == [
+        FLENQA_DATA_MINING_ASSET_NOTEBOOK,
+        FLENQA_FAILURE_CONCEPT_NOTEBOOK,
         FLENQA_LENS_DRIFT_NOTEBOOK,
         FLENQA_LENS_INTERVENTION_NOTEBOOK,
         Path("experiments/jlens_readout_sanity/jlens_readout_sanity.ipynb"),
