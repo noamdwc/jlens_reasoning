@@ -51,6 +51,92 @@ def coordinate_swap(
     return (working + float(alpha) * delta).to(dtype=hidden.dtype)
 
 
+def _prepare_vectors(
+    hidden: torch.Tensor,
+    vectors: torch.Tensor | Sequence[torch.Tensor],
+) -> torch.Tensor:
+    """Normalize selected vectors into a [hidden_width, direction_count] matrix."""
+    if hidden.ndim == 0:
+        raise ValueError("Hidden activation must have at least one dimension")
+    if torch.is_tensor(vectors):
+        if vectors.ndim == 1:
+            vectors = vectors.unsqueeze(-1)
+        elif vectors.ndim != 2:
+            raise ValueError("J-Lens vectors must be a vector matrix")
+        working_vectors = vectors
+    else:
+        if not vectors:
+            raise ValueError("At least one J-Lens vector is required")
+        if any(vector.ndim != 1 for vector in vectors):
+            raise ValueError("J-Lens vectors must be one-dimensional")
+        if any(vector.numel() != hidden.shape[-1] for vector in vectors):
+            raise ValueError("J-Lens vector width does not match hidden width")
+        working_vectors = torch.stack(tuple(vectors), dim=-1)
+
+    if working_vectors.shape[0] != hidden.shape[-1]:
+        raise ValueError("J-Lens vector width does not match hidden width")
+    if working_vectors.shape[1] == 0:
+        raise ValueError("At least one J-Lens vector is required")
+    return working_vectors.to(device=hidden.device, dtype=torch.float32)
+
+
+def lens_coordinates(
+    hidden: torch.Tensor,
+    vectors: torch.Tensor | Sequence[torch.Tensor],
+) -> torch.Tensor:
+    """Return the pseudoinverse coordinates of hidden in selected J-Lens directions."""
+    working_vectors = _prepare_vectors(hidden, vectors)
+    return hidden.float() @ torch.linalg.pinv(working_vectors).T
+
+
+def coordinate_patch(
+    hidden: torch.Tensor,
+    vectors: torch.Tensor | Sequence[torch.Tensor],
+    target_coordinates: torch.Tensor,
+    *,
+    alpha: float,
+) -> torch.Tensor:
+    """Patch selected J-Lens coordinates toward explicitly provided coefficients."""
+    working_vectors = _prepare_vectors(hidden, vectors)
+    expected_shape = (*hidden.shape[:-1], working_vectors.shape[1])
+    if target_coordinates.shape != expected_shape:
+        raise ValueError(
+            "Target coordinates shape must match hidden prefix and vector count"
+        )
+
+    if alpha == 0.0:
+        return hidden
+
+    working = hidden.float()
+    pinv = torch.linalg.pinv(working_vectors)
+    source_coordinates = working @ pinv.T
+    target_coordinates = target_coordinates.to(
+        device=hidden.device,
+        dtype=torch.float32,
+    )
+    delta = (target_coordinates - source_coordinates) @ working_vectors.T
+    return (working + float(alpha) * delta).to(dtype=hidden.dtype)
+
+
+def coordinate_patch_from_activation(
+    hidden: torch.Tensor,
+    target: torch.Tensor,
+    vectors: torch.Tensor | Sequence[torch.Tensor],
+    *,
+    alpha: float,
+) -> torch.Tensor:
+    """Patch selected J-Lens coordinates from a same-shaped target activation."""
+    if hidden.shape != target.shape:
+        raise ValueError("Source and target activations must have the same shape")
+    target_coordinates = lens_coordinates(target, vectors)
+    return coordinate_patch(
+        hidden,
+        vectors,
+        target_coordinates,
+        alpha=alpha,
+    )
+
+
 class LensCoordinateSwapper:
     def __init__(
         self,
@@ -84,6 +170,61 @@ class LensCoordinateSwapper:
         return patch
 
     def __enter__(self) -> LensCoordinateSwapper:
+        try:
+            for layer in sorted(self._vectors_by_layer):
+                self._handles.append(
+                    self._blocks[layer].register_forward_hook(self._hook(layer))
+                )
+        except Exception:
+            self._remove()
+            raise
+        return self
+
+    def _remove(self) -> None:
+        for handle in self._handles:
+            handle.remove()
+        self._handles = []
+
+    def __exit__(self, *exc: Any) -> None:
+        self._remove()
+
+
+class LensCoordinatePatcher:
+    def __init__(
+        self,
+        blocks: Sequence[nn.Module],
+        vectors_by_layer: Mapping[int, torch.Tensor | Sequence[torch.Tensor]],
+        target_coordinates_by_layer: Mapping[int, torch.Tensor],
+        *,
+        alpha: float,
+    ) -> None:
+        self._blocks = blocks
+        self._vectors_by_layer = dict(vectors_by_layer)
+        self._target_coordinates_by_layer = dict(target_coordinates_by_layer)
+        self._alpha = alpha
+        self._handles: list[torch.utils.hooks.RemovableHandle] = []
+
+    def _hook(self, layer: int):
+        vectors = self._vectors_by_layer[layer]
+        target_coordinates = self._target_coordinates_by_layer[layer]
+
+        def patch(module: nn.Module, inputs: tuple[Any, ...], output: Any) -> Any:
+            """Patch one hooked layer output toward configured target coordinates."""
+            del module, inputs
+            hidden = output if torch.is_tensor(output) else output[0]
+            patched = coordinate_patch(
+                hidden,
+                vectors,
+                target_coordinates,
+                alpha=self._alpha,
+            )
+            if torch.is_tensor(output):
+                return patched
+            return (patched, *output[1:])
+
+        return patch
+
+    def __enter__(self) -> LensCoordinatePatcher:
         try:
             for layer in sorted(self._vectors_by_layer):
                 self._handles.append(

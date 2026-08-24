@@ -145,7 +145,16 @@ Run `notebooks/flenqa_smoke.ipynb` before
 `jlens_reasoning.benchmarks.flenqa`: they validate the dataset and fact spans,
 select meaningful fact, question, final-prompt, and
 padding-content positions, then save Jacobian Lens and Logit Lens top-k values
-at those positions.
+at those positions. The full run also generates and saves the model response for
+each unique prompt:
+
+```text
+runs/flenqa-full-run/model_outputs.parquet
+```
+
+This table records the effective inference mode and decoding settings alongside
+raw output, structured reasoning/answer fields, exact wrapped input length, and
+prompt provenance.
 
 Each shard contains typed `prompts`, `positions`, and `topk` Parquet tables.
 The runner writes directly to the final shard files and is intentionally
@@ -154,23 +163,20 @@ after an interruption, restart with an empty output directory.
 
 ## FLenQA accuracy by prompt length
 
-Open `notebooks/flenqa_accuracy.ipynb` in a Colab GPU runtime after uploading
-the current wheel. The notebook evaluates all 9,862 unique final FLenQA prompts
-by default, then writes one result table after the full run completes:
+Run `notebooks/flenqa_accuracy.ipynb` after the full run. It reads the 9,862
+saved model outputs, applies the paper's binary scorer, and writes one result
+table:
 
 ```text
 runs/flenqa-accuracy/results.parquet
 ```
 
-The deliberately simple notebook does not checkpoint or resume partial runs;
-if generation is interrupted, rerun it from the beginning.
-
-Generation uses the shared Hugging Face chat-inference module. The
-paper-compatible curve runs Qwen in direct mode with its native chat template,
+The full run is deliberately non-resumable; if lens computation or generation
+is interrupted, rerun it from the beginning. Generation uses the shared Hugging
+Face chat-inference module in direct mode with its native chat template,
 thinking explicitly disabled, deterministic decoding, and the paper wrapper's
-400-token completion allowance. The saved table records the effective inference
-mode and decoding settings alongside raw output, structured reasoning/answer
-fields, exact wrapped input length, parsed verdict, and correctness.
+400-token completion allowance. The accuracy table adds the parsed verdict and
+correctness to the saved model-output fields.
 
 Results produced by the earlier raw-prompt, 64-token notebook are not comparable
 and should be regenerated rather than appended to the corrected result table.
