@@ -159,6 +159,8 @@ def test_flenqa_probe_jlens_notebook_connects_probe_scores_to_jlens() -> None:
         "propagation_norm",
         "answer_effect",
         "model_correct",
+        "available_layers = sorted(set(lens.source_layers) & set(checkpoint[\"layers\"]))",
+        "for layer in available_layers:",
         "2000",
         "3000",
         "axhline(0",
