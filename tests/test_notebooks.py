@@ -132,7 +132,6 @@ def test_notebooks_use_the_colab_environment_module() -> None:
 
 def test_experiment_notebooks_exclude_flenqa_benchmark_drivers() -> None:
     assert EXPERIMENT_NOTEBOOKS == [
-        Path("experiments/flenqa_lens_drift/flenqa_failure_concept_intervention.ipynb"),
         FLENQA_LENS_DRIFT_NOTEBOOK,
         FLENQA_LENS_INTERVENTION_NOTEBOOK,
         Path("experiments/jlens_readout_sanity/jlens_readout_sanity.ipynb"),

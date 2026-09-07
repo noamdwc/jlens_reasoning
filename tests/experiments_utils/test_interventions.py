@@ -117,9 +117,7 @@ def test_coordinate_patch_preserves_shape_dtype_and_unselected_component(
     if alpha == 0.0:
         assert torch.equal(actual, source)
     else:
-        assert torch.equal(
-            actual[0, 0, :2], torch.tensor([10.0, 20.0], dtype=torch.bfloat16)
-        )
+        assert torch.equal(actual[0, 0, :2], torch.tensor([10.0, 20.0], dtype=torch.bfloat16))
 
 
 @pytest.mark.parametrize(
