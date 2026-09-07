@@ -29,6 +29,9 @@ FLENQA_LENS_INTERVENTION_NOTEBOOK = Path(
 FLENQA_NOTEBOOKS = [
     *FLENQA_BENCHMARK_NOTEBOOKS,
     FLENQA_ACCURACY_NOTEBOOK,
+    Path("notebooks/flenqa_probe_assets.ipynb"),
+    Path("notebooks/flenqa_probe_eval.ipynb"),
+    Path("notebooks/flenqa_probe_jlens_concepts.ipynb"),
 ]
 EXPERIMENT_NOTEBOOKS = sorted(Path("experiments").glob("*/*.ipynb"))
 NOTEBOOKS = [*SHARED_NOTEBOOKS, *FLENQA_NOTEBOOKS, *EXPERIMENT_NOTEBOOKS]
@@ -138,9 +141,10 @@ def test_notebooks_use_the_colab_environment_module() -> None:
 
 def test_experiment_notebooks_exclude_flenqa_benchmark_drivers() -> None:
     assert EXPERIMENT_NOTEBOOKS == [
-        FLENQA_PROBE_JLENS_NOTEBOOK,
+        Path("experiments/flenqa_lens_drift/flenqa_failure_concept_intervention.ipynb"),
         FLENQA_LENS_DRIFT_NOTEBOOK,
         FLENQA_LENS_INTERVENTION_NOTEBOOK,
+        FLENQA_PROBE_JLENS_NOTEBOOK,
         Path("experiments/jlens_readout_sanity/jlens_readout_sanity.ipynb"),
     ]
     assert not Path("notebooks/01_jlens_readout_sanity.ipynb").exists()
@@ -155,16 +159,15 @@ def test_flenqa_probe_jlens_notebook_connects_probe_scores_to_jlens() -> None:
         "flenqa-probe-assets",
         "flenqa-full-run",
         "JacobianLens.from_pretrained",
-        "gold_probe_score",
+        "gold_probe_margin",
         "propagation_norm",
-        "answer_effect",
+        "linear_true_false_effect",
         "model_correct",
-        "available_layers = sorted(set(lens.source_layers) & set(checkpoint[\"layers\"]))",
         "for layer in available_layers:",
         "2000",
         "3000",
         "axhline(0",
-        "groupby([\"layer\", \"model_correct\"]",
+        "prompt-specific output sensitivity",
     ):
         assert required in source
     assert "LensCoordinatePatcher" not in source
