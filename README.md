@@ -306,6 +306,3 @@ addition to this repository.
   respective owners' responsibility.
 - The Python package, experiment policies, notebooks, tests, and analysis
   wiring in this repository are the work presented here.
-
-For the exact claim ledger behind this README, see
-[`docs/PRESENTATION_CLAIMS.md`](docs/PRESENTATION_CLAIMS.md).

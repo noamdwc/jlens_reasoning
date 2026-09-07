@@ -12,3 +12,4 @@ wandb/
 .DS_Store
 .claude/
 docs/superpowers/
+docs/internal/
