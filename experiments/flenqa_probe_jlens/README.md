@@ -69,3 +69,66 @@ The next causal experiment must align probe and model-answer input formats
 first, then prespecify a layer and norm-controlled direction using development
 data. Test on fresh held-out problems with identity and random-direction
 controls. This branch does not select an intervention strength or run it.
+
+## Reading the code
+
+- `notebooks/flenqa_probe_assets.ipynb`: fixed problem split → select 250/500
+  variants → extract final-token states → fit and save probes. Training still
+  uses all selected source rows, including identical prompt variants.
+- `notebooks/flenqa_probe_eval.ipynb`: load frozen probes → prepare unique test
+  prompts → grade saved chat answers → extract raw-prompt states → build one
+  `probe_results` table. Performance, failure summaries, AUROC, and export all
+  use that table.
+- `flenqa_probe_jlens.ipynb`: load scores → define strong failures → inspect
+  performance → project directions → select matched pairs → differentiate
+  selected prompts → compare and export. Loading, tables, and plots have
+  separate cells so intermediate results remain inspectable.
+- `analysis.py` contains only three helpers: validate the saved problem split,
+  match provenance conditions, and compute `J_bar @ unit_probe` followed by
+  `W_U @ projected_probe`. The projection takes tensors directly.
+- `notebooks/flenqa_probe_jlens_concepts.ipynb` remains a small optional viewer
+  of the exported vocabulary table.
+
+## Simplification notes
+
+The cleanup removes repeated split checks, upstream-guaranteed tensor/context
+checks, repeated answer grading in the analysis notebook, duplicate score-table
+assembly, and unused per-example metadata. New checkpoints omit the unused
+`unit_weight`; readers also accept existing checkpoints containing that field.
+Weights, training means, biases, split assignments, fit policy, output columns,
+and scientific definitions are unchanged.
+
+The split and pairing helpers remain because leakage and mismatched conditions
+can invalidate an experiment without causing a tensor error. Hashes still bind
+the evaluation manifest to its checkpoint and generated-answer file. Model
+identity, raw/chat input formats, the final-normalization boundary, finite probe
+directions, token variants, and recomputed-vs-saved probe scores remain checked.
+`ActivationRecorder` remains responsible for autograd setup and hook cleanup.
+Shared dataset normalization, grading, and deterministic token ranking are
+reused without redesigning those modules.
+
+Compared with `experiment/flenqa-probe-jlens`, the three working notebooks plus
+`analysis.py` contain 1,393 code lines instead of 1,580 (counting blank lines and
+the unchanged loaders, excluding notebook JSON and markdown). The largest code
+cell in the primary notebook shrank from 138 to 65 lines. No new framework or
+classes were introduced. One redundant mixed-context pairing test was removed;
+the shared prompt-preparation tests protect that invariant upstream.
+
+Validation used the existing CPU-only suite (413 tests), notebook schema/code
+compilation and import checks, scoped Ruff lint/format checks, and an offline
+lockfile check. A temporary synthetic before/after run compared probe training,
+evaluation/export tables, seeded pair selection, static projections, and actual
+autograd sensitivities, including empty cohorts. It used no external data or
+real model assets. The neighboring failure-concept notebook's loader was
+restored to the canonical loader to fix a pre-existing test failure; its
+experiment cells were untouched. Repository-wide Ruff checks still report
+pre-existing style issues outside the probe code.
+
+Scientific caveats are separate from this cleanup: raw-prompt probes and chat
+answers use different input formats; static maps cannot establish a
+context-length effect; the external lens lacks fitting-provenance metadata;
+the final probe is post-normalization; and label decodability is not evidence
+of causal use. The evaluation notebook's broad "model wrong" summaries include
+unparseable answers, while the primary strong-failure cohort requires a parsed
+wrong answer. These existing distinctions are preserved, not resolved by the
+refactor. No real FLenQA result is claimed by the synthetic validation.

@@ -1,18 +1,13 @@
-"""Small correctness checks shared by the FLenQA probe notebooks."""
+"""Split checks, matched pairs, and the two probe-projection equations."""
 
 from __future__ import annotations
-
-from collections.abc import Iterable, Mapping
-from typing import Any
 
 import torch
 
 from jlens_reasoning.benchmarks.flenqa.dataset import FlenqaPrompt, FlenqaRow
 
 
-def validate_split(
-    split: Mapping[str, Any], rows: Iterable[FlenqaRow]
-) -> dict[int, str]:
+def validate_split(split: dict, rows: tuple[FlenqaRow, ...]) -> dict[int, str]:
     """Check the existing 180/60/60 split without regenerating its assignments."""
     expected = {
         "format_version": 1,
@@ -31,14 +26,11 @@ def validate_split(
         raise ValueError("Saved problem metadata does not match the full dataset")
     partitions = split.get("problems", {})
     sizes = {"train": 180, "validation": 60, "test": 60}
-    if set(partitions) != set(sizes):
-        raise ValueError("Expected train, validation, and test partitions")
+    if {name: len(ids) for name, ids in partitions.items()} != sizes:
+        raise ValueError("Expected a 180/60/60 train/validation/test split")
     mapping = {}
-    for partition, count in sizes.items():
-        ids = partitions[partition]
-        if len(ids) != count or any(type(i) is not int for i in ids):
-            raise ValueError("Invalid partition size or problem ID")
-        for problem_id in ids:
+    for partition, problem_ids in partitions.items():
+        for problem_id in problem_ids:
             if problem_id in mapping:
                 raise ValueError("Duplicate problem ID or split leakage")
             mapping[problem_id] = partition
@@ -48,8 +40,8 @@ def validate_split(
 
 
 def matched_prompt_pairs(
-    prompts: Iterable[FlenqaPrompt], *, short_ctx: int, long_ctx: int
-) -> list[dict[str, Any]]:
+    prompts: tuple[FlenqaPrompt, ...], *, short_ctx: int, long_ctx: int
+) -> list[dict]:
     """Match every provenance condition, rejecting ambiguous or changed tasks.
 
     Exact prompt deduplication can combine several conditions into one prompt.
@@ -62,10 +54,8 @@ def matched_prompt_pairs(
     grouped: dict[tuple, dict[int, FlenqaPrompt]] = {}
     invariants = {}
     for prompt in prompts:
-        contexts = {source.ctx_size for source in prompt.provenance}
-        if len(contexts) != 1:
-            raise ValueError("Prompt provenance must identify exactly one length")
-        ctx = next(iter(contexts))
+        # prepare_prompts already guarantees one context length per prompt.
+        ctx = prompt.provenance[0].ctx_size
         if ctx not in (short_ctx, long_ctx):
             continue
         invariant = (
@@ -106,27 +96,24 @@ def matched_prompt_pairs(
 
 
 def static_probe_projection(
-    lens: Any, layer: int, weight: torch.Tensor, unembedding: torch.Tensor
+    jlens_jacobian: torch.Tensor,
+    probe_weight: torch.Tensor,
+    unembedding: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return v=J_bar w_hat and linear vocabulary scores W_U v.
+    """Return J_bar @ unit_probe and W_U @ projected_probe on CPU float32.
 
     J rows are target coordinates, columns source coordinates. The installed
     lens.transport uses row batches: h @ J.T. Existing jlens_vector pulls back
     a token row u as J.T @ u; its dot with w_hat equals u @ J @ w_hat.
     These scores omit final normalization and are not normalized lens logits.
     """
-    weight = weight.detach().float().cpu()
-    if weight.ndim != 1 or not torch.isfinite(weight).all() or weight.norm() == 0:
+    probe_weight = probe_weight.detach().float().cpu()
+    probe_norm = probe_weight.norm()
+    if not torch.isfinite(probe_norm) or probe_norm == 0:
         raise ValueError("Probe weight must be a finite nonzero vector")
-    width = weight.numel()
-    jacobian = lens.jacobians[layer]
-    if jacobian.shape != (width, width) or not torch.isfinite(jacobian).all():
-        raise ValueError("J-Lens matrix does not match the probe coordinates")
-    if unembedding.ndim != 2 or unembedding.shape[1] != width:
-        raise ValueError("Unembedding width does not match the probe")
-    direction = weight / weight.norm()
-    propagated = lens.transport(direction, layer).float().cpu()
-    scores = unembedding.detach().float().cpu() @ propagated
-    if not torch.isfinite(scores).all():
+    probe_direction = probe_weight / probe_norm
+    projected_probe_direction = jlens_jacobian.float().cpu() @ probe_direction
+    token_scores = unembedding.detach().float().cpu() @ projected_probe_direction
+    if not torch.isfinite(token_scores).all():
         raise ValueError("Non-finite projected vocabulary scores")
-    return propagated, scores
+    return projected_probe_direction, token_scores
