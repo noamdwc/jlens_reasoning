@@ -1,22 +1,64 @@
-# jlens-reasoning
+# J-Lens Reasoning
 
-Research tooling for applying
-[Jacobian Lens](https://github.com/anthropics/jacobian-lens) to reasoning
-benchmarks. FLenQA is the first benchmark artifact; the environment is designed
-to support additional benchmarks without package-level changes.
+Experimental research code for studying how long-context reasoning changes in
+model representations, using Jacobian Lens readouts and controlled residual
+interventions.
 
-## Supported paths
+The project asks: when the same reasoning problem is placed in a longer
+context, do internal readouts change—and do candidate changes relate to answer
+behavior? The benchmark is [FLenQA](https://aclanthology.org/2024.acl-long.818/).
 
-- **Mac:** lightweight development, tests, and small CPU/MPS experiments.
-- **Colab:** interactive GPU experiments launched through the IDE's Colab
-  integration. Colab is intentionally not part of scripts or CI.
-- **GitHub Actions:** secret-free CPU and macOS compatibility tests.
+> Status: research prototype. The implementation and analysis workflows are
+> public; model-backed result artifacts are not yet committed. This README does
+> not claim that long-context failure has been explained.
 
-Python 3.11 is the baseline. Project metadata also supports Python 3.12 and 3.13.
+## What is built
 
-## Local setup
+- Typed FLenQA loading with exact task templates, schema/count checks, prompt
+  IDs, deduplication, and source-row provenance.
+- Independently tokenized position assets for facts, questions, sampled context,
+  and final-prompt positions.
+- Paired Jacobian/Logit Lens readouts with typed Parquet schemas and logit,
+  layer, vocabulary, and tokenization checks.
+- Behavioral scoring, frozen per-layer probes, and residual-space intervention
+  hooks with explicit controls.
+- Model-free CPU tests and a Colab workflow for model-backed experiments.
 
-Install `uv`, then run:
+## Experiments
+
+| Experiment | What it tests | Current status |
+| --- | --- | --- |
+| [J-Lens sanity](experiments/jlens_readout_sanity/jlens_readout_sanity.ipynb) | Qwen3.5-4B readouts and controlled concept/fact swaps | Gates and controls implemented; result artifact not committed |
+| [FLenQA behavior](notebooks/flenqa_full_run.ipynb) | Behavior across nominal lengths 250–3000 with provenance-preserving scoring | Runner and scorer implemented; no accuracy curve published |
+| [Readout drift](experiments/flenqa_lens_drift/flenqa_lens_drift.ipynb) | Position-aware Jacobian/Logit Lens distribution changes | Analysis implemented; no drift result published |
+| [Frozen probes](notebooks/flenqa_probe_assets.ipynb) / [evaluation](notebooks/flenqa_probe_eval.ipynb) | Whether answer directions are decodable on held-out problems | Workflow implemented; no probe report published |
+| [Intervention pilots](experiments/flenqa_lens_drift/flenqa_lens_intervention.ipynb) / [failure concepts](experiments/flenqa_lens_drift/flenqa_failure_concept_intervention.ipynb) | Whether candidate directions selectively change answer behavior | Mechanics and controls implemented; no causal result claimed |
+
+The intended text-only sanity artifact is:
+
+```text
+runs/jlens-readout-sanity/
+└── result.json
+```
+
+The `Qwen sanity threshold` is an experiment gate, not a result. The paper gap
+is explicit: this open-model setup is not a numerical replication of the
+Anthropic/Claude experiments.
+
+## Evidence boundary
+
+The repository contains implementation and workflow contracts, not a result
+release. In particular, it does not currently establish:
+
+- long-context accuracy degradation;
+- a causal layer, token, or representation explaining failure;
+- reasoning recovery from an intervention; or
+- probe decodability as evidence of causal model use.
+
+Every tracked notebook is saved without outputs, and generated model outputs,
+weights, lens checkpoints, and reports remain outside Git.
+
+## Quick start
 
 ```bash
 uv sync --locked --extra experiment
@@ -25,176 +67,22 @@ uv run ruff format --check .
 uv run ruff check .
 ```
 
-Local artifacts default to the ignored `artifacts/` directory. Override the
-location when needed:
+For Colab setup, asset download, run order, artifact contracts, and the
+reproducibility boundary, see [`docs/REPRODUCING.md`](docs/REPRODUCING.md).
 
-```bash
-export JLENS_REAS_ARTIFACT_ROOT=/absolute/path/to/artifacts
-```
+## Code map
 
-W&B uses the existing terminal login for experiment code. Environment setup
-does not require W&B locally.
+- `src/jlens_reasoning/` — reusable data, inference, evaluation, lens, and
+  intervention code.
+- `experiments/` — J-Lens sanity, drift, and intervention notebooks.
+- `notebooks/` — FLenQA drivers, scoring, and frozen probe workflows.
+- `tests/` — CPU-only unit and notebook-structure tests.
 
-## Artifact layout
+## Attribution
 
-The directory selected by `JLENS_REAS_ARTIFACT_ROOT` contains:
-
-```text
-datasets/
-cache/huggingface/
-lenses/
-checkpoints/
-runs/
-```
-
-FLenQA data belongs at `datasets/flenqa/`. Additional benchmarks use sibling
-directories. Data and experiment outputs are never committed.
-
-For Colab, the default artifact root is:
-
-```text
-/content/drive/MyDrive/jlens-reasoning
-```
-
-Manually sync input data from local storage to this dedicated Drive folder
-before an experiment, then sync results back afterward.
-
-## Colab setup
-
-Add this exact name to Colab Secrets when a notebook uses W&B:
-
-- `WANDB_API_KEY`: W&B API key.
-
-Before opening a notebook, build and upload the current Colab bundle from the
-repository root:
-
-```bash
-./scripts/upload_colab_wheel.sh
-```
-
-The script exports locked project runtime requirements and uploads them beside
-the project wheel and commit marker under `data/jlens-reasoning/wheels` on the
-configured Drive remote. It excludes notebook extras and Colab-owned packages
-so Colab keeps its preconfigured kernel, CUDA stack, NumPy, `fsspec`, and Rich.
-
-Open `notebooks/_template.ipynb` through the IDE's Colab integration and run the
-loader cell. It mounts Drive, installs the locked requirements, and
-force-installs the uploaded wheel. Run the uploader again whenever project code
-or dependencies change.
-
-Before the first model-backed experiment, run
-`notebooks/01_download_assets.ipynb`.
-
-```python
-from jlens_reasoning.environments.colab import initialize_colab
-
-context = initialize_colab(require_cuda=True)
-```
-
-W&B is enabled by default in Colab and every login failure raises an error.
-Disable it only when the notebook intentionally does not track an experiment:
-
-```python
-context = initialize_colab(enable_wandb=False, require_cuda=True)
-```
-
-Initialization mounts Drive, validates artifact writability, validates W&B when
-enabled, selects the device, and returns generic artifact paths. Experiment
-notebooks load their model and lens from Drive without Hugging Face
-authentication. W&B authentication does not create a run.
-
-Run `notebooks/00_environment_check.ipynb` after changing environment code. It
-does not download a model or benchmark.
-
-## J-Lens read-and-change sanity experiment
-
-`experiments/jlens_readout_sanity/jlens_readout_sanity.ipynb` is the first model-backed experiment.
-Open it through the IDE's Colab integration with a GPU runtime and run all cells.
-It uses the released `Qwen/Qwen3.5-4B` Jacobian lens, disables W&B, and writes
-results beneath:
-
-```text
-runs/jlens-readout-sanity/
-└── result.json
-```
-
-The experiment checks whether the J-Lens surfaces the unspoken `spider`
-intermediate and whether clamped coordinate swaps causally redirect next-token
-answers. It runs the paper's `spider`→`ant` example and the same
-`France`→`China` swap across capital, language, continent, and currency prompts
-at both the standard (`alpha=1`) and double (`alpha=2`) strengths. The result
-artifact reports exact per-swap ranks and applies an open-model capability gate;
-it does not claim numerical replication of Claude 4.5.
-
-The notebook prints a text-only report for every configured check. `PASS` or
-`FAIL` always reflects the Qwen sanity threshold used by the run. Where the
-paper provides a directly comparable target, the report also shows the paper
-gap as diagnostic context; that gap does not change pass/fail.
-
-All experiments that grade model responses are expected to follow the
-[LLM answer-evaluation policy](docs/llm-answer-evaluation.md). The policy keeps
-raw generation, visible output, gold-blind extraction, normalization, and
-scoring separate, distinguishes paper-faithful metrics from semantic
-correctness, and records adoption status for evaluators that still need to be
-migrated.
-
-## FLenQA benchmark runner
-
-Run `notebooks/flenqa_smoke.ipynb` before
-`notebooks/flenqa_full_run.ipynb`. Both are thin Colab drivers over
-`jlens_reasoning.benchmarks.flenqa`: they validate the dataset and fact spans,
-select meaningful fact, question, final-prompt, and
-padding-content positions, then save Jacobian Lens and Logit Lens top-k values
-at those positions. The full run also generates and saves the model response for
-each unique prompt:
-
-```text
-runs/flenqa-full-run/model_outputs.parquet
-```
-
-This table records the effective inference mode and decoding settings alongside
-raw output, structured reasoning/answer fields, exact wrapped input length, and
-prompt provenance.
-
-Each shard contains typed `prompts`, `positions`, and `topk` Parquet tables.
-The runner writes directly to the final shard files and is intentionally
-non-resumable. Its three output table directories must be empty before a run;
-after an interruption, restart with an empty output directory.
-
-## FLenQA accuracy by prompt length
-
-Run `notebooks/flenqa_accuracy.ipynb` after the full run. It reads the 9,862
-saved model outputs, applies the paper's binary scorer, and writes one result
-table:
-
-```text
-runs/flenqa-accuracy/results.parquet
-```
-
-The full run is deliberately non-resumable; if lens computation or generation
-is interrupted, rerun it from the beginning. Generation uses the shared Hugging
-Face chat-inference module in direct mode with its native chat template,
-thinking explicitly disabled, deterministic decoding, and the paper wrapper's
-400-token completion allowance. The accuracy table adds the parsed verdict and
-correctness to the saved model-output fields.
-
-Results produced by the earlier raw-prompt, 64-token notebook are not comparable
-and should be regenerated rather than appended to the corrected result table.
-
-For paper compatibility, the behavioral score uses the final standalone,
-case-insensitive `True` or `False` in each response and reports the published
-nominal length buckets of 250, 500, 1000, 2000, and 3000 tokens. The notebook
-asserts the expected unique-prompt and paper-weighted counts before saving.
-
-The headline curve restores the paper's random-placement source-row weighting.
-A second curve weights each unique prompt once, avoiding duplicate input weight
-at the shortest length and for incidental prompt collisions. The notebook also
-shows task-level accuracy, verdict frequencies, and measured token-length
-diagnostics.
-
-## CI policy
-
-CI installs the committed `uv.lock`, disables W&B, sets Hugging Face and
-Transformers offline modes for test runtime, and uses a temporary artifact root.
-CI tests imports and mocked setup behavior only; it never uses repository,
-Hugging Face, W&B, or Google Drive credentials.
+- [Anthropic's Jacobian Lens implementation](https://github.com/anthropics/jacobian-lens)
+  provides the upstream method and package.
+- [FLenQA / “Same Task, More Tokens”](https://aclanthology.org/2024.acl-long.818/)
+  provides the benchmark and research basis.
+- The [Qwen3.5-4B model](https://huggingface.co/Qwen/Qwen3.5-4B) and released
+  lens checkpoint are external assets.
