@@ -9,20 +9,55 @@ task-relevant information.
 
 1. Upload the current wheel with `scripts/upload_colab_wheel.sh --allow-dirty`
    when testing uncommitted changes, or omit that flag after committing.
-2. Use existing `notebooks/flenqa_probe_assets.ipynb` assets, or run that notebook
-   if they do not exist. It preserves the problem split and 250/500 training
-   policy. Do not retrain merely to change this analysis.
-3. Run `notebooks/flenqa_probe_eval.ipynb` once with the current wheel to export
-   `runs/flenqa-probe-eval/{probe_results.parquet,auroc.parquet,manifest.json}`.
-4. Run this experiment notebook in Colab. The CLI equivalent is
+2. Run `notebooks/flenqa_probe_assets.ipynb` to train **new chat-format probes**.
+   Old raw-prompt probes are incompatible. The notebook reuses the original
+   problem split and 250/500 training policy, and writes to a separate directory.
+3. Ensure generated answers contain `input_sha256`. Legacy answers lack this
+   evidence even if their metadata says `direct`: archive the old
+   `runs/flenqa-full-run/model_outputs.parquet`, then rerun the setup and
+   `save-model-outputs` cell of `notebooks/flenqa_full_run.ipynb` with the current
+   wheel. Skip its `run-benchmark` cell; existing lens readout shards do not
+   need to be regenerated for this alignment.
+4. Run `notebooks/flenqa_probe_eval.ipynb` to export
+   `runs/flenqa-probe-eval-chat-v2/{probe_results.parquet,auroc.parquet,manifest.json}`.
+5. Run this experiment notebook in Colab. The CLI equivalent is
    `scripts/run_colab_notebook.sh experiments/flenqa_probe_jlens/flenqa_probe_jlens.ipynb`.
 
-The probe checkpoint and split live under
-`/content/drive/MyDrive/jlens-reasoning/checkpoints/flenqa-probe-assets/`.
+The probe checkpoint and metadata live under
+`/content/drive/MyDrive/jlens-reasoning/checkpoints/flenqa-probe-assets-chat-v2/`.
+The shared split remains at `checkpoints/flenqa-probe-assets/problem_split.json`;
+do not delete or regenerate it during migration. Original raw probes and
+evaluation/analysis directories are retained for historical comparison.
 Saved generated answers live under
 `/content/drive/MyDrive/jlens-reasoning/runs/flenqa-full-run/`.
 Model and lens paths are the existing `MODEL_PATH` and `LENS_PATH` constants,
 under `/content/drive/MyDrive/data/jlens-reasoning/assets/`.
+
+## Input alignment and artifact compatibility
+
+`prepare_chat_inputs` in `jlens_reasoning.inference` is shared by generation,
+probe training, evaluation, and selected sensitivities. It supplies one user
+message to the tokenizer's direct chat template with `add_generation_prompt=True`
+and `enable_thinking=False`. There is no second tokenization, added BOS, padding,
+or truncation. The 4096-token limit includes the wrapper. The probe and gradient
+position is the final **wrapped** input token, immediately before generation.
+
+Version 2 metadata fingerprints the tokenizer backend (including vocabulary,
+normalizer, and special tokens) and chat template, and records the feature
+boundary and input policy. Loaders reject incompatible contracts. Answer rows
+record a SHA-256 of the actual input IDs and attention mask; evaluation checks
+this before forwarding the prompt and carries the hash/token count into every
+probe row. Sensitivity runs check it again, then reproduce both the saved probe
+score and next-token margin. Manifests bind the checkpoint, answer file, probe
+table, and AUROC table by hash. Do not relabel legacy artifacts as version 2 or
+backfill hashes onto old answers: regenerate them to establish this provenance.
+
+The descriptive margin column is now `output_margin` (and the gold-oriented
+analysis column is `gold_output_margin`), replacing the old `raw_*` names.
+New measurements must be reproduced before comparing them with the preliminary
+raw/chat conclusions in `docs/probe_jlens_routing_framework.md`. That document
+is retained unchanged as a historical research note, not a validated result of
+the aligned pipeline.
 
 ## Quantities and limitations
 
@@ -46,14 +81,13 @@ under `/content/drive/MyDrive/data/jlens-reasoning/assets/`.
   entry is post-final-norm. That probe remains in performance/sensitivity
   tables but is excluded from projection through block-output J-Lens maps.
 - Prompt sensitivity: `grad_h(True-minus-False margin) @ unit_probe`, at the
-  final raw-input token. Orienting both the margin and direction toward the
+  final wrapped input token. Orienting both the margin and direction toward the
   gold label gives the same derivative for either label.
-- Input formats: saved generated answers use the direct chat template; probes
-  and gradients use raw FLenQA text. Report cross-format failure associations
-  separately from the same-input next-token margin. The latter is a diagnostic,
-  not a graded generated answer.
+- Input formats: generated answers, probes, and gradients use the same direct
+  chat input. The next-token margin remains a diagnostic, not a graded generated
+  answer. This alignment does not establish causal use of the decoded feature.
 
-Results are saved under `runs/flenqa-probe-jlens/`: three figures, per-layer
+Results are saved under `runs/flenqa-probe-jlens-chat-v2/`: three figures, per-layer
 performance/failure tables, full strong-failure rows, static propagation,
 vocabulary scores, selected pair IDs, prompt and paired sensitivities, and a
 run manifest. The optional `notebooks/flenqa_probe_jlens_concepts.ipynb` now
@@ -65,8 +99,8 @@ The existing matched lengths are 2000 and 3000; performance covers all five
 lengths. Selected gradients are case studies, not independent population
 estimates. A missing cohort is reported explicitly.
 
-The next causal experiment must align probe and model-answer input formats
-first, then prespecify a layer and norm-controlled direction using development
+The next causal experiment must first reproduce measurements with the aligned
+pipeline, then prespecify a layer and norm-controlled direction using development
 data. Test on fresh held-out problems with identity and random-direction
 controls. This branch does not select an intervention strength or run it.
 
@@ -76,7 +110,7 @@ controls. This branch does not select an intervention strength or run it.
   variants → extract final-token states → fit and save probes. Training still
   uses all selected source rows, including identical prompt variants.
 - `notebooks/flenqa_probe_eval.ipynb`: load frozen probes → prepare unique test
-  prompts → grade saved chat answers → extract raw-prompt states → build one
+  prompts → grade saved chat answers → verify input hashes → extract chat states → build one
   `probe_results` table. Performance, failure summaries, AUROC, and export all
   use that table.
 - `flenqa_probe_jlens.ipynb`: load scores → define strong failures → inspect
@@ -86,49 +120,40 @@ controls. This branch does not select an intervention strength or run it.
 - `analysis.py` contains only three helpers: validate the saved problem split,
   match provenance conditions, and compute `J_bar @ unit_probe` followed by
   `W_U @ projected_probe`. The projection takes tensors directly.
+- `inputs.py` defines the direct-chat input contract and rejects incompatible
+  probe assets or prompt records; tokenization itself stays in shared inference.
 - `notebooks/flenqa_probe_jlens_concepts.ipynb` remains a small optional viewer
   of the exported vocabulary table.
 
-## Simplification notes
+## Refactor and validation
 
 The cleanup removes repeated split checks, upstream-guaranteed tensor/context
 checks, repeated answer grading in the analysis notebook, duplicate score-table
 assembly, and unused per-example metadata. New checkpoints omit the unused
-`unit_weight`; readers also accept existing checkpoints containing that field.
-Weights, training means, biases, split assignments, fit policy, output columns,
-and scientific definitions are unchanged.
+`unit_weight`. The alignment changes the feature inputs, so weights, training
+means, and biases must be refit. Split assignments, centering, validation-based
+regularization/layer selection, and the zero decision threshold are preserved.
 
 The split and pairing helpers remain because leakage and mismatched conditions
 can invalidate an experiment without causing a tensor error. Hashes still bind
 the evaluation manifest to its checkpoint and generated-answer file. Model
-identity, raw/chat input formats, the final-normalization boundary, finite probe
+identity, matching chat inputs, the final-normalization boundary, finite probe
 directions, token variants, and recomputed-vs-saved probe scores remain checked.
 `ActivationRecorder` remains responsible for autograd setup and hook cleanup.
 Shared dataset normalization, grading, and deterministic token ranking are
 reused without redesigning those modules.
 
-Compared with `experiment/flenqa-probe-jlens`, the three working notebooks plus
-`analysis.py` contain 1,393 code lines instead of 1,580 (counting blank lines and
-the unchanged loaders, excluding notebook JSON and markdown). The largest code
-cell in the primary notebook shrank from 138 to 65 lines. No new framework or
-classes were introduced. One redundant mixed-context pairing test was removed;
-the shared prompt-preparation tests protect that invariant upstream.
+The CPU regression suite executes the notebook extraction and sensitivity cells
+with a tiny randomly initialized model and a local tokenizer for all three
+FLenQA task renderers. It checks generation token/mask equality, the final
+wrapped position, training/evaluation feature equality, saved score/margin
+reproduction, hook cleanup, and rejection of stale records and tokenizers.
+These checks validate code wiring, not scientific outcomes on Qwen.
 
-Validation used the existing CPU-only suite (413 tests), notebook schema/code
-compilation and import checks, scoped Ruff lint/format checks, and an offline
-lockfile check. A temporary synthetic before/after run compared probe training,
-evaluation/export tables, seeded pair selection, static projections, and actual
-autograd sensitivities, including empty cohorts. It used no external data or
-real model assets. The neighboring failure-concept notebook's loader was
-restored to the canonical loader to fix a pre-existing test failure; its
-experiment cells were untouched. Repository-wide Ruff checks still report
-pre-existing style issues outside the probe code.
-
-Scientific caveats are separate from this cleanup: raw-prompt probes and chat
-answers use different input formats; static maps cannot establish a
-context-length effect; the external lens lacks fitting-provenance metadata;
+Scientific caveats remain: static maps cannot establish a context-length
+effect; the external lens lacks fitting-provenance metadata;
 the final probe is post-normalization; and label decodability is not evidence
 of causal use. The evaluation notebook's broad "model wrong" summaries include
 unparseable answers, while the primary strong-failure cohort requires a parsed
-wrong answer. These existing distinctions are preserved, not resolved by the
-refactor. No real FLenQA result is claimed by the synthetic validation.
+wrong answer. These existing distinctions are preserved. No real FLenQA result
+is claimed by the synthetic validation, and no J-gain intervention is run here.

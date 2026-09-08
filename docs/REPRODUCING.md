@@ -196,10 +196,18 @@ The probe workflow writes:
 
 ```text
 checkpoints/flenqa-probe-assets/
-├── problem_split.json
+└── problem_split.json
+checkpoints/flenqa-probe-assets-chat-v2/
 ├── probes.pt
 └── metadata.json
 ```
+
+Generation, probe extraction, evaluation, and selected sensitivities use the
+same direct chat template and final wrapped input token. Version 2 probes must
+be retrained using the existing split; legacy raw-input probes are incompatible.
+Saved answers must contain the actual input-token/mask hash from generation.
+See the [probe × J-Lens migration instructions](../experiments/flenqa_probe_jlens/README.md)
+for the rerun order and separate result directories.
 
 The split is at the underlying-problem level. Probes are trained on 250/500
 nominal-token rows from train problems, regularization is selected on
