@@ -11,9 +11,10 @@ usage() {
     cat <<EOF
 usage: $(basename "$0") [OPTIONS]
 
-Set both JLENS_DRIVE_SHARED_DRIVE_ID and JLENS_DRIVE_ROOT_FOLDER_ID to
-upload into the same Workspace Shared Drive project folder as the CLI runner.
-With neither variable set, the saved remote root is used.
+JLENS_RCLONE_CONFIG overrides the saved rclone config (also used by the runner).
+JLENS_DRIVE_ROOT_FOLDER_ID optionally selects a My Drive project parent folder.
+For Shared Drive mode, set JLENS_DRIVE_SHARED_DRIVE_ID as well.
+With neither folder override set, the saved remote root is used.
 
 Options:
   --remote NAME    rclone remote used for the wheel upload
@@ -58,17 +59,28 @@ if [ -n "$(git -C "$repository" status --porcelain)" ]; then
         "$(git -C "$repository" rev-parse HEAD)" >&2
 fi
 
-# Use the exact same folder IDs as the notebook mount without changing the
-# user's saved rclone remote or its OAuth credentials.
-if [ -n "${JLENS_DRIVE_SHARED_DRIVE_ID:-}" ] || [ -n "${JLENS_DRIVE_ROOT_FOLDER_ID:-}" ]; then
-    for variable in JLENS_DRIVE_SHARED_DRIVE_ID JLENS_DRIVE_ROOT_FOLDER_ID; do
-        if [[ ! "${!variable:-}" =~ ^[A-Za-z0-9_-]+$ ]]; then
-            printf 'error: set %s to a valid Drive ID\n' "$variable" >&2
-            exit 1
-        fi
-    done
-    drive_arguments=(--drive-team-drive "$JLENS_DRIVE_SHARED_DRIVE_ID"
-        --drive-root-folder-id "$JLENS_DRIVE_ROOT_FOLDER_ID")
+# Apply the same config and root overrides as the notebook runner.
+rclone_config=${JLENS_RCLONE_CONFIG:-${RCLONE_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/rclone/rclone.conf}}
+if [ ! -f "$rclone_config" ]; then
+    printf 'error: selected rclone config does not exist; set JLENS_RCLONE_CONFIG to the local config file\n' >&2
+    exit 1
+fi
+drive_arguments+=(--config "$rclone_config")
+if [ -n "${JLENS_DRIVE_SHARED_DRIVE_ID:-}" ] && [ -z "${JLENS_DRIVE_ROOT_FOLDER_ID:-}" ]; then
+    printf 'error: set JLENS_DRIVE_ROOT_FOLDER_ID with JLENS_DRIVE_SHARED_DRIVE_ID\n' >&2
+    exit 1
+fi
+for variable in JLENS_DRIVE_ROOT_FOLDER_ID JLENS_DRIVE_SHARED_DRIVE_ID; do
+    if [ -n "${!variable:-}" ] && [[ ! "${!variable}" =~ ^[A-Za-z0-9_-]+$ ]]; then
+        printf 'error: set %s to a valid Drive ID\n' "$variable" >&2
+        exit 1
+    fi
+done
+if [ -n "${JLENS_DRIVE_ROOT_FOLDER_ID:-}" ]; then
+    drive_arguments+=(--drive-root-folder-id "$JLENS_DRIVE_ROOT_FOLDER_ID")
+fi
+if [ -n "${JLENS_DRIVE_SHARED_DRIVE_ID:-}" ]; then
+    drive_arguments+=(--drive-team-drive "$JLENS_DRIVE_SHARED_DRIVE_ID")
 fi
 
 remote_root="${remote%:}:$drive_root"

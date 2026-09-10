@@ -13,12 +13,12 @@ usage() {
     cat <<USAGE
 usage: $(basename "$0") [OPTIONS] NOTEBOOK.ipynb
 
-Unattended Drive access uses a Google service-account JSON:
-  \$JLENS_DRIVE_SA_JSON  or  ~/.config/jlens/drive-sa.json
-Set JLENS_DRIVE_SHARED_DRIVE_ID to a Workspace Shared Drive ID and
-JLENS_DRIVE_ROOT_FOLDER_ID to its project folder (containing jlens-reasoning/
-and data/jlens-reasoning/). Grant the SA Content manager access.
-A regular shared My Drive folder cannot store service-account artifacts.
+Unattended My Drive access prefers the user OAuth remote [jlens] from:
+  \$JLENS_RCLONE_CONFIG, \$RCLONE_CONFIG, or ~/.config/rclone/rclone.conf
+Only this remote is uploaded; its OAuth scope determines VM access.
+Secondary SA mode: \$JLENS_DRIVE_SA_JSON or ~/.config/jlens/drive-sa.json,
+with JLENS_DRIVE_SHARED_DRIVE_ID and JLENS_DRIVE_ROOT_FOLDER_ID.
+Override selection with JLENS_DRIVE_AUTH=rclone|service_account|interactive.
 
 Options:
   --gpu TYPE       Colab accelerator (default: L4)
@@ -26,8 +26,8 @@ Options:
   --timeout SEC    Per-cell execution timeout (default: 7200)
   --keep           Keep the Colab session after the run
   --allow-interactive-drivemount
-                   Fall back to interactive colab drivemount when no SA JSON
-                   is configured (default: fail with a clear error)
+                   Fall back to interactive colab drivemount when no credentials are
+                   configured (default: fail with a clear error)
   -h, --help       Show this help
 USAGE
 }
@@ -122,43 +122,29 @@ fi
 notebook_name=$(basename "$notebook" .ipynb)
 session=${session:-"jlens-${notebook_name//_/-}"}
 
-resolve_sa_json() {
-    if [ -n "${JLENS_DRIVE_SA_JSON:-}" ]; then
-        printf '%s\n' "$JLENS_DRIVE_SA_JSON"
-        return 0
-    fi
-    printf '%s\n' "${HOME}/.config/jlens/drive-sa.json"
-}
-
-sa_json=$(resolve_sa_json)
 drive_helper="$repository/src/jlens_reasoning/environments/colab_drive.py"
-credential_staging=
-use_service_account=0
-notebook_started=0
-
-if [ -f "$sa_json" ]; then
-    use_service_account=1
-    for variable in JLENS_DRIVE_SHARED_DRIVE_ID JLENS_DRIVE_ROOT_FOLDER_ID; do
-        if [[ ! "${!variable:-}" =~ ^[A-Za-z0-9_-]+$ ]]; then
-            printf 'error: set %s to a valid Drive ID; service accounts require a Workspace Shared Drive\n' "$variable" >&2
-            exit 1
-        fi
-    done
-elif [ "$allow_interactive_drivemount" -eq 1 ] || \
-    [ "${JLENS_COLAB_ALLOW_INTERACTIVE_DRIVEMOUNT:-0}" = "1" ]; then
-    use_service_account=0
-else
-    printf 'error: unattended Colab CLI Drive access requires a service-account JSON\n' >&2
-    printf 'error: set JLENS_DRIVE_SA_JSON or create ~/.config/jlens/drive-sa.json\n' >&2
-    printf 'error: for interactive browser OAuth instead, pass --allow-interactive-drivemount\n' >&2
+if ! command -v python3 >/dev/null 2>&1; then
+    printf 'error: python3 is required to prepare Colab credentials\n' >&2
     exit 1
 fi
+if [ ! -f "$drive_helper" ]; then
+    printf 'error: missing Drive helper: %s\n' "$drive_helper" >&2
+    exit 1
+fi
+credential_staging=$(mktemp -d "${TMPDIR:-/tmp}/jlens-colab-creds.XXXXXX")
+# Also clean up when validation or VM allocation fails.
+trap 'rm -rf "$credential_staging"' EXIT
+if [ "$allow_interactive_drivemount" -eq 1 ]; then
+    export JLENS_COLAB_ALLOW_INTERACTIVE_DRIVEMOUNT=1
+fi
+auth_mode=$(python3 "$drive_helper" --stage-credentials "$credential_staging")
+notebook_started=0
 
 cleanup() {
     status=$?
     trap - EXIT
 
-    if [ "$use_service_account" -eq 1 ] && [ "$notebook_started" -eq 1 ]; then
+    if [ "$auth_mode" != "interactive" ] && [ "$notebook_started" -eq 1 ]; then
         printf 'Waiting for Drive uploads before teardown...\n'
         if ! flush_output=$(printf '%s\n' \
             'import runpy' \
@@ -196,42 +182,28 @@ cleanup() {
 colab new -s "$session" --gpu "$gpu"
 trap cleanup EXIT
 
-if [ "$use_service_account" -eq 1 ]; then
-    if [ ! -f "$drive_helper" ]; then
-        printf 'error: missing Drive helper: %s\n' "$drive_helper" >&2
-        exit 1
-    fi
-    credential_staging=$(mktemp -d "${TMPDIR:-/tmp}/jlens-colab-creds.XXXXXX")
-    cp "$sa_json" "$credential_staging/drive-sa.json"
+if [ "$auth_mode" != "interactive" ]; then
     cp "$drive_helper" "$credential_staging/colab_drive.py"
-
-    env_file="$credential_staging/jlens.env"
-    : > "$env_file"
-    if [ -n "${WANDB_API_KEY:-}" ]; then
-        printf 'WANDB_API_KEY=%s\n' "$WANDB_API_KEY" >> "$env_file"
-    fi
-    if [ -n "${JLENS_DRIVE_ROOT_FOLDER_ID:-}" ]; then
-        printf 'JLENS_DRIVE_ROOT_FOLDER_ID=%s\n' \
-            "$JLENS_DRIVE_ROOT_FOLDER_ID" >> "$env_file"
-    fi
-    printf 'JLENS_DRIVE_SHARED_DRIVE_ID=%s\n' \
-        "$JLENS_DRIVE_SHARED_DRIVE_ID" >> "$env_file"
-
-    printf 'from pathlib import Path\nPath("/content/jlens-credentials").mkdir(parents=True, exist_ok=True)\n' \
+    printf '%s\n' \
+        'from pathlib import Path' \
+        'credentials = Path("/content/jlens-credentials")' \
+        'credentials.mkdir(parents=True, exist_ok=True, mode=0o700)' \
+        'credentials.chmod(0o700)' \
         | colab exec -s "$session"
-
-    colab upload -s "$session" \
-        "$credential_staging/drive-sa.json" \
-        /content/jlens-credentials/drive-sa.json
-    colab upload -s "$session" \
-        "$credential_staging/colab_drive.py" \
-        /content/jlens-credentials/colab_drive.py
-    if [ -s "$env_file" ]; then
-        colab upload -s "$session" \
-            "$env_file" \
-            /content/jlens-credentials/jlens.env
+    for credential_file in "$credential_staging"/*; do
+        colab upload -s "$session" "$credential_file" \
+            "/content/jlens-credentials/$(basename "$credential_file")"
+    done
+    printf '%s\n' \
+        'from pathlib import Path' \
+        'for path in Path("/content/jlens-credentials").iterdir():' \
+        '    path.chmod(0o600)' \
+        | colab exec -s "$session"
+    if [ "$auth_mode" = "service_account" ]; then
+        printf 'Uploaded service-account Drive credentials for unattended mount\n'
+    else
+        printf 'Uploaded user rclone jlens credentials for unattended mount\n'
     fi
-    printf 'Uploaded service-account Drive credentials for unattended mount\n'
 else
     colab drivemount -s "$session"
 fi

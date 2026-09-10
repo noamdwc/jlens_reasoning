@@ -13,7 +13,7 @@ usage() {
 usage: $(basename "$0") [OPTIONS] EXPERIMENT
 
 Options:
-  --remote NAME    rclone remote used for the wheel upload
+  --remote NAME    Must be jlens (the notebook runner mounts this remote)
   --gpu TYPE       Colab accelerator (default: L4)
   --session NAME   Colab session name
   --timeout SEC    Per-cell execution timeout
@@ -32,6 +32,10 @@ while [ "$#" -gt 0 ]; do
         --remote)
             if [ "$#" -lt 2 ]; then
                 printf 'error: --remote requires a value\n' >&2
+                exit 2
+            fi
+            if [ "${2%:}" != "jlens" ]; then
+                printf 'error: chained Colab runs require --remote jlens so upload and execution use the same Drive root\n' >&2
                 exit 2
             fi
             upload_arguments+=("$1" "$2")

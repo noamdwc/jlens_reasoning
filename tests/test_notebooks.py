@@ -954,3 +954,18 @@ def test_asset_notebook_downloads_the_two_pinned_assets_to_drive() -> None:
     assert "neuronpedia/jacobian-lens" in source
     assert "16a01f309fcec900fdcec3f4cd5b64f3d00e4d5a" in source
     assert "rclone" not in source
+
+
+def test_loader_bootstraps_injected_user_rclone_without_importing_colab(tmp_path):
+    credentials = tmp_path / "credentials"
+    credentials.mkdir()
+    (credentials / "rclone.conf").write_text("[jlens]\ntype=drive\n")
+    marker = tmp_path / "bootstrapped"
+    (credentials / "colab_drive.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).touch()\n"
+    )
+    source = load_notebook(Path("notebooks/flenqa_probe_assets.ipynb")).cells[0].source
+    bootstrap = source.split("if not COMMIT_FILE.is_file():", 1)[0]
+    bootstrap = bootstrap.replace("/content/jlens-credentials", str(credentials))
+    exec(compile(bootstrap, "colab-loader", "exec"), {})
+    assert marker.is_file()

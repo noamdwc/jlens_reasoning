@@ -128,6 +128,10 @@ def run_uploader(
     bin_directory, command_log = fake_tools(tmp_path)
     build_source_log = tmp_path / "build-source.log"
     build_directory_log = tmp_path / "build-directory.log"
+    test_home = tmp_path / "home"
+    default_config = test_home / ".config" / "rclone" / "rclone.conf"
+    default_config.parent.mkdir(parents=True)
+    default_config.write_text("[jlens]\ntype = drive\ntoken = synthetic-default\n")
     environment = {
         **os.environ,
         "PATH": f"{bin_directory}{os.pathsep}{os.environ['PATH']}",
@@ -136,6 +140,7 @@ def run_uploader(
         "BUILD_DIRECTORY_LOG": str(build_directory_log),
         "RCLONE_PREFLIGHT_STATUS": str(preflight_status),
         "UPLOAD_DIRECTORY": str(tmp_path / "uploaded"),
+        "HOME": str(test_home),
     }
     result = subprocess.run(
         ["/bin/bash", str(repository / "scripts" / SCRIPT.name), *arguments],
@@ -148,13 +153,25 @@ def run_uploader(
     return result, command_log, build_source_log, build_directory_log
 
 
+def commands_without_config(log: Path) -> list[str]:
+    """Compare operation flags separately from config discovery, tested below."""
+    commands = []
+    for line in log.read_text().splitlines():
+        arguments = line.split("\t")
+        if "--config" in arguments:
+            index = arguments.index("--config")
+            del arguments[index : index + 2]
+        commands.append("\t".join(arguments))
+    return commands
+
+
 def test_exports_builds_uploads_and_cleans_the_colab_bundle(
     tmp_path: Path,
 ) -> None:
     result, command_log, build_source_log, build_directory_log = run_uploader(tmp_path)
 
     assert result.returncode == 0, result.stderr
-    commands = command_log.read_text(encoding="utf-8").splitlines()
+    commands = commands_without_config(command_log)
     assert commands[0] == "rclone\tlsd\tjlens:data/jlens-reasoning"
     export_command = commands[1].split("\t")
     assert export_command[:19] == [
@@ -256,7 +273,7 @@ def test_missing_remote_stops_before_building(tmp_path: Path) -> None:
     result, command_log, _, _ = run_uploader(tmp_path, preflight_status=1)
 
     assert result.returncode != 0
-    assert command_log.read_text(encoding="utf-8").splitlines() == [
+    assert commands_without_config(command_log) == [
         "rclone\tlsd\tjlens:data/jlens-reasoning"
     ]
 
@@ -269,7 +286,7 @@ def test_custom_remote_is_normalized(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    commands = command_log.read_text(encoding="utf-8").splitlines()
+    commands = commands_without_config(command_log)
     assert commands[0] == "rclone\tlsd\tresearch:data/jlens-reasoning"
     assert "uploaded research:data/jlens-reasoning/wheels/" in result.stdout
 
@@ -297,3 +314,66 @@ def test_shared_drive_upload_uses_same_root_as_notebook(tmp_path, monkeypatch):
     for call in calls:
         assert call[call.index("--drive-root-folder-id") + 1] == "folder-123"
         assert call[call.index("--drive-team-drive") + 1] == "team-456"
+
+
+def test_explicit_rclone_config_is_used_for_every_upload(tmp_path, monkeypatch):
+    config = tmp_path / "local.conf"
+    config.write_text("[jlens]\ntype = drive\ntoken = synthetic\n")
+    monkeypatch.setenv("JLENS_RCLONE_CONFIG", str(config))
+    result, log, _, _ = run_uploader(tmp_path)
+    assert result.returncode == 0, result.stderr
+    for line in log.read_text().splitlines():
+        args = line.split("\t")
+        if args[0] == "rclone":
+            assert args[args.index("--config") + 1] == str(config)
+
+
+def test_my_drive_root_override_does_not_require_shared_drive(tmp_path, monkeypatch):
+    monkeypatch.setenv("JLENS_DRIVE_ROOT_FOLDER_ID", "project-folder")
+    monkeypatch.delenv("JLENS_DRIVE_SHARED_DRIVE_ID", raising=False)
+    result, log, _, _ = run_uploader(tmp_path)
+    assert result.returncode == 0, result.stderr
+    for line in log.read_text().splitlines():
+        args = line.split("\t")
+        if args[0] == "rclone":
+            assert args[args.index("--drive-root-folder-id") + 1] == "project-folder"
+            assert "--drive-team-drive" not in args
+
+
+def test_xdg_config_is_explicitly_used_even_when_default_config_exists(
+    tmp_path, monkeypatch
+):
+    xdg = tmp_path / "xdg"
+    config = xdg / "rclone" / "rclone.conf"
+    config.parent.mkdir(parents=True)
+    config.write_text("[jlens]\ntype = drive\ntoken = synthetic-xdg\n")
+    monkeypatch.delenv("JLENS_RCLONE_CONFIG", raising=False)
+    monkeypatch.delenv("RCLONE_CONFIG", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+    result, log, _, _ = run_uploader(tmp_path)
+    assert result.returncode == 0, result.stderr
+    calls = [
+        line.split("\t")
+        for line in log.read_text().splitlines()
+        if line.startswith("rclone\t")
+    ]
+    assert len(calls) == 5
+    for args in calls:
+        assert args[args.index("--config") + 1] == str(config)
+
+
+def test_default_config_path_is_passed_explicitly_to_rclone(tmp_path, monkeypatch):
+    for key in ("JLENS_RCLONE_CONFIG", "RCLONE_CONFIG", "XDG_CONFIG_HOME"):
+        monkeypatch.delenv(key, raising=False)
+    result, log, _, _ = run_uploader(tmp_path)
+    assert result.returncode == 0, result.stderr
+    calls = [
+        line.split("\t")
+        for line in log.read_text().splitlines()
+        if line.startswith("rclone\t")
+    ]
+    assert len(calls) == 5
+    for args in calls:
+        assert args[args.index("--config") + 1] == str(
+            tmp_path / "home" / ".config" / "rclone" / "rclone.conf"
+        )

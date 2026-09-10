@@ -341,3 +341,92 @@ def test_flush_accepts_idle_but_mounted_vfs():
         runner=lambda cmd: subprocess.CompletedProcess(cmd, 0, json.dumps(stats), ""),
         timeout_seconds=0,
     )
+
+
+def test_user_oauth_mount_uses_selected_config_for_write_readback_and_mount(
+    tmp_path, monkeypatch
+):
+    config = tmp_path / "rclone.conf"
+    config.write_text(
+        '[jlens]\ntype = drive\ntoken = {"refresh_token":"fake-refresh"}\n'
+    )
+    mydrive = tmp_path / "MyDrive"
+    calls = []
+    monkeypatch.setattr(colab_drive, "_ensure_rclone", lambda _: "rclone")
+
+    def runner(cmd):
+        calls.append(cmd)
+        if cmd[1] == "cat":
+            return subprocess.CompletedProcess(cmd, 0, cmd[2].split(":", 1)[1], "")
+        if cmd[1] == "mount":
+            (mydrive / "jlens-reasoning").mkdir(parents=True)
+            (mydrive / "data" / "jlens-reasoning").mkdir(parents=True)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    colab_drive.mount_drive_with_rclone_config(
+        config, mydrive_root=mydrive, runner=runner, marker=tmp_path / "mounted"
+    )
+    assert [cmd[1] for cmd in calls] == ["copyto", "cat", "deletefile", "mount"]
+    for cmd in calls:
+        assert cmd[cmd.index("--config") + 1] == str(config)
+        assert "fake-refresh" not in " ".join(cmd)
+    mount = calls[-1]
+    assert mount[2:4] == ["jlens:", str(mydrive)]
+    assert "--allow-other" not in mount
+    assert (tmp_path / "mounted").exists()
+
+
+@pytest.mark.parametrize(
+    "override,expected",
+    [
+        ("auto", "rclone"),
+        ("service_account", "service_account"),
+        ("interactive", "interactive"),
+    ],
+)
+def test_runtime_auth_precedence_matches_host(tmp_path, override, expected):
+    config = tmp_path / "rclone.conf"
+    config.touch()
+    sa = tmp_path / "drive-sa.json"
+    sa.touch()
+    mydrive = tmp_path / "MyDrive"
+    calls = []
+
+    def mounted(mode):
+        calls.append(mode)
+        (mydrive / "jlens-reasoning").mkdir(parents=True)
+        (mydrive / "data" / "jlens-reasoning").mkdir(parents=True)
+
+    mode = colab_drive.ensure_colab_drive(
+        rclone_config=config,
+        sa_json=sa,
+        environ={"JLENS_DRIVE_AUTH": override},
+        mydrive_root=mydrive,
+        rclone_mounter=lambda *_a, **_kw: mounted("rclone"),
+        sa_mounter=lambda *_a, **_kw: mounted("service_account"),
+        interactive_mounter=lambda: mounted("interactive"),
+    )
+    assert mode == expected
+    assert calls == [expected]
+
+
+def test_failed_user_oauth_mount_does_not_fall_back_or_expose_tokens(tmp_path):
+    config = tmp_path / "rclone.conf"
+    config.touch()
+    calls = []
+
+    def failed(*_a, **_kw):
+        raise RuntimeError("fake-sensitive-token")
+
+    with pytest.raises(RuntimeError, match="rclone mount failed") as error:
+        colab_drive.ensure_colab_drive(
+            rclone_config=config,
+            sa_json=tmp_path / "missing.json",
+            mydrive_root=tmp_path / "MyDrive",
+            environ={},
+            rclone_mounter=failed,
+            interactive_mounter=lambda: calls.append("interactive"),
+        )
+    assert calls == []
+    assert "fake-sensitive-token" not in str(error.value)
+    assert error.value.__suppress_context__

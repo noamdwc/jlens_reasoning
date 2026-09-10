@@ -100,7 +100,7 @@ def test_forwards_upload_and_colab_options(tmp_path: Path) -> None:
     result, command_log, notebook = run_orchestrator(
         tmp_path,
         "--remote",
-        "research",
+        "jlens",
         "--gpu",
         "T4",
         "--session",
@@ -113,7 +113,7 @@ def test_forwards_upload_and_colab_options(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert command_log.read_text(encoding="utf-8").splitlines() == [
-        "upload\t--remote\tresearch\t--allow-dirty",
+        "upload\t--remote\tjlens\t--allow-dirty",
         (
             "run\t--gpu\tT4\t--session\tcustom-session"
             f"\t--timeout\t300\t--keep\t{notebook}"
@@ -161,3 +161,10 @@ def test_rejects_unknown_option_before_running_commands(tmp_path: Path) -> None:
     assert result.returncode == 2
     assert "unknown option: --unknown" in result.stderr
     assert not command_log.exists()
+
+
+def test_chained_run_rejects_mismatched_upload_remote_before_upload(tmp_path):
+    result, log, _ = run_orchestrator(tmp_path, "--remote", "research")
+    assert result.returncode != 0
+    assert "jlens" in result.stderr
+    assert not log.exists()

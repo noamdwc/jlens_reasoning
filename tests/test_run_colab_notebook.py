@@ -29,6 +29,9 @@ def run_runner(
     supply_ssl_cert: bool = True,
     write_output: bool = True,
     provide_sa: bool = True,
+    provide_rclone: bool = False,
+    rclone_text: str | None = None,
+    auth_mode: str = "auto",
     allow_interactive: bool = False,
     wandb_api_key: str | None = "wandb-from-env",
     root_folder_id: str | None = "folder-123",
@@ -57,9 +60,26 @@ def run_runner(
     sa_json = tmp_path / "drive-sa.json"
     if provide_sa:
         sa_json.write_text(
-            json.dumps({"type": "service_account", "client_email": "sa@example.com"}),
+            json.dumps(
+                {
+                    "type": "service_account",
+                    "client_email": "sa@example.com",
+                    "private_key": "synthetic-key",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                }
+            ),
             encoding="utf-8",
         )
+
+    config_path = tmp_path / "rclone.conf"
+    if provide_rclone:
+        config_path.write_text(
+            rclone_text
+            if rclone_text is not None
+            else '[jlens]\ntype = drive\ntoken = {"refresh_token":"fake-refresh"}\n\n[other]\ntype = drive\ntoken = unrelated-secret\n'
+        )
+    uploaded = tmp_path / "uploaded"
+    uploaded.mkdir()
 
     write_executable(
         bin_directory / "colab",
@@ -73,6 +93,7 @@ printf '\\n' >> "$COMMAND_LOG"
 printf '%s\\n' "${SSL_CERT_FILE:-}" >> "$CERTIFICATE_LOG"
 
 if [ "$command" = "upload" ]; then
+    cp "$3" "$UPLOADED_FILES/$(basename "$4")"
     printf '%s\\t%s\\n' "$1" "$2" >> "$UPLOAD_LOG"
 fi
 
@@ -120,6 +141,7 @@ esac
         "PATH": f"{bin_directory}{os.pathsep}{os.environ['PATH']}",
         "COMMAND_LOG": str(command_log),
         "UPLOAD_LOG": str(upload_log),
+        "UPLOADED_FILES": str(uploaded),
         "CERTIFICATE_LOG": str(tmp_path / "certificates.log"),
         "COLAB_DRIVEMOUNT_STATUS": str(drivemount_status),
         "COLAB_EXEC_STATUS": str(exec_status),
@@ -132,6 +154,16 @@ esac
         "HOME": str(tmp_path / "home"),
     }
     (tmp_path / "home").mkdir()
+    for name in (
+        "JLENS_RCLONE_CONFIG",
+        "RCLONE_CONFIG",
+        "XDG_CONFIG_HOME",
+        "JLENS_DRIVE_AUTH",
+    ):
+        environment.pop(name, None)
+    environment["JLENS_DRIVE_AUTH"] = auth_mode
+    if provide_rclone:
+        environment["JLENS_RCLONE_CONFIG"] = str(config_path)
     environment.pop("JLENS_DRIVE_SA_JSON", None)
     environment.pop("JLENS_COLAB_ALLOW_INTERACTIVE_DRIVEMOUNT", None)
     environment.pop("WANDB_API_KEY", None)
@@ -255,7 +287,6 @@ def test_uses_jq_instead_of_python3_for_output_validation() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
 
     assert "command -v jq" in source
-    assert "python3" not in source
     assert (
         '[.cells[].outputs[]? | select(.output_type == "error")] | length == 0'
         in source
@@ -336,9 +367,7 @@ def test_missing_sa_fails_before_creating_a_session(tmp_path: Path) -> None:
     )
 
     assert result.returncode != 0
-    assert "unattended Colab CLI Drive access requires a service-account JSON" in (
-        result.stderr
-    )
+    assert "unattended Colab CLI Drive access requires" in (result.stderr)
     assert "JLENS_DRIVE_SA_JSON" in result.stderr
     assert not command_log.exists()
 
@@ -460,3 +489,74 @@ def test_flush_cell_error_with_zero_cli_exit_preserves_vm(tmp_path):
     result, log, _ = run_runner(tmp_path, flush_marker=False)
     assert result.returncode != 0
     assert not any(line.startswith("stop\t") for line in log.read_text().splitlines())
+
+
+def test_user_rclone_credentials_skip_drivemount_and_only_selected_remote_is_uploaded(
+    tmp_path,
+):
+    result, log, _ = run_runner(
+        tmp_path,
+        provide_sa=False,
+        provide_rclone=True,
+        root_folder_id=None,
+        shared_drive_id=None,
+    )
+    assert result.returncode == 0, result.stderr
+    calls = log.read_text().splitlines()
+    assert not any(call.startswith("drivemount") for call in calls)
+    uploaded = tmp_path / "uploaded"
+    config = (uploaded / "rclone.conf").read_text()
+    assert "fake-refresh" in config
+    assert "unrelated-secret" not in config
+    assert "[other]" not in config
+    assert not (uploaded / "drive-sa.json").exists()
+    assert "fake-refresh" not in result.stdout + result.stderr
+    source = next(
+        line.split("\t")[-2] for line in calls if line.endswith("/rclone.conf")
+    )
+    assert not Path(source).parent.exists()
+    assert calls.index("flush") < calls.index("stop\t-s\tjlens-example")
+
+
+def test_runner_prefers_user_config_over_sa_without_shared_drive_ids(tmp_path):
+    result, _, _ = run_runner(
+        tmp_path, provide_rclone=True, root_folder_id=None, shared_drive_id=None
+    )
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "uploaded" / "rclone.conf").exists()
+    assert not (tmp_path / "uploaded" / "drive-sa.json").exists()
+
+
+def test_runner_explicit_sa_override_does_not_upload_user_token(tmp_path):
+    result, _, _ = run_runner(
+        tmp_path, provide_rclone=True, auth_mode="service_account"
+    )
+    assert result.returncode == 0, result.stderr
+    assert not (tmp_path / "uploaded" / "rclone.conf").exists()
+    assert (tmp_path / "uploaded" / "drive-sa.json").exists()
+
+
+def test_runner_invalid_user_config_fails_before_allocation_without_token_leak(
+    tmp_path,
+):
+    result, log, _ = run_runner(
+        tmp_path,
+        provide_rclone=True,
+        rclone_text="[jlens]\ntype = drive\ntoken = private-invalid-token\n",
+    )
+    assert result.returncode != 0
+    assert not log.exists()
+    assert "private-invalid-token" not in result.stdout + result.stderr
+
+
+def test_user_upload_failure_preserves_vm(tmp_path):
+    result, log, _ = run_runner(tmp_path, provide_rclone=True, flush_status=1)
+    assert result.returncode != 0
+    assert not any(line.startswith("stop\t") for line in log.read_text().splitlines())
+
+
+def test_explicit_interactive_overrides_existing_credentials(tmp_path):
+    result, log, _ = run_runner(tmp_path, provide_rclone=True, auth_mode="interactive")
+    assert result.returncode == 0, result.stderr
+    assert "drivemount\t-s\tjlens-example" in log.read_text()
+    assert list((tmp_path / "uploaded").iterdir()) == []

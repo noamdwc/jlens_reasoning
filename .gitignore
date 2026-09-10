@@ -17,3 +17,9 @@ docs/internal/
 **/drive-sa.json
 **/*-sa.json
 .config/jlens/
+
+# Injected user OAuth and environment credentials (never commit)
+**/rclone.conf
+**/jlens.env
+**/wandb.env
+.config/rclone/
