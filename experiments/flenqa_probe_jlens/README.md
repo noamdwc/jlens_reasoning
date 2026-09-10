@@ -11,23 +11,26 @@ task-relevant information.
    when testing uncommitted changes, or omit that flag after committing.
 2. Run `notebooks/flenqa_probe_assets.ipynb` to train **new chat-format probes**.
    Old raw-prompt probes are incompatible. The notebook reuses the original
-   problem split and 250/500 training policy, and writes to a separate directory.
+   problem split and 250/500 training policy, and overwrites `probes.pt` and
+   `metadata.json` in the original checkpoint directory.
 3. Ensure generated answers contain `input_sha256`. Legacy answers lack this
-   evidence even if their metadata says `direct`: archive the old
-   `runs/flenqa-full-run/model_outputs.parquet`, then rerun the setup and
+   evidence even if their metadata says `direct`: rerun the setup and
    `save-model-outputs` cell of `notebooks/flenqa_full_run.ipynb` with the current
-   wheel. Skip its `run-benchmark` cell; existing lens readout shards do not
-   need to be regenerated for this alignment.
+   wheel to overwrite `runs/flenqa-full-run/model_outputs.parquet`. Skip its
+   `run-benchmark` cell; existing lens readout shards do not need to be regenerated
+   for this alignment.
 4. Run `notebooks/flenqa_probe_eval.ipynb` to export
-   `runs/flenqa-probe-eval-chat-v2/{probe_results.parquet,auroc.parquet,manifest.json}`.
+   `runs/flenqa-probe-eval/{probe_results.parquet,auroc.parquet,manifest.json}`.
 5. Run this experiment notebook in Colab. The CLI equivalent is
    `scripts/run_colab_notebook.sh experiments/flenqa_probe_jlens/flenqa_probe_jlens.ipynb`.
 
 The probe checkpoint and metadata live under
-`/content/drive/MyDrive/jlens-reasoning/checkpoints/flenqa-probe-assets-chat-v2/`.
+`/content/drive/MyDrive/jlens-reasoning/checkpoints/flenqa-probe-assets/`.
 The shared split remains at `checkpoints/flenqa-probe-assets/problem_split.json`;
-do not delete or regenerate it during migration. Original raw probes and
-evaluation/analysis directories are retained for historical comparison.
+do not delete or regenerate it during migration. Each stage overwrites its
+artifacts in the original directories. No manual archiving or deletion is required. Complete probe training and answer generation
+before evaluation, then rerun analysis so downstream results match the new inputs.
+The version-2 metadata and input-hash checks still reject stale artifacts.
 Saved generated answers live under
 `/content/drive/MyDrive/jlens-reasoning/runs/flenqa-full-run/`.
 Model and lens paths are the existing `MODEL_PATH` and `LENS_PATH` constants,
@@ -87,7 +90,7 @@ the aligned pipeline.
   chat input. The next-token margin remains a diagnostic, not a graded generated
   answer. This alignment does not establish causal use of the decoded feature.
 
-Results are saved under `runs/flenqa-probe-jlens-chat-v2/`: three figures, per-layer
+Results are saved under `runs/flenqa-probe-jlens/`: three figures, per-layer
 performance/failure tables, full strong-failure rows, static propagation,
 vocabulary scores, selected pair IDs, prompt and paired sensitivities, and a
 run manifest. The optional `notebooks/flenqa_probe_jlens_concepts.ipynb` now
