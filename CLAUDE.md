@@ -36,6 +36,16 @@ cell installs from there. **Re-run the uploader after any code or dependency
 change**, otherwise Colab silently runs stale code.
 `./scripts/experiment_colab_run.sh` chains upload + notebook run.
 
+Unattended CLI Drive access uses a Google service-account JSON at
+`~/.config/jlens/drive-sa.json` or `JLENS_DRIVE_SA_JSON` (never commit it).
+`scripts/run_colab_notebook.sh` uploads the key plus
+`environments/colab_drive.py` to `/content/jlens-credentials/` and skips
+interactive `colab drivemount`. Share Drive folder `jlens-colab-root` (with
+`jlens-reasoning/` and `data/jlens-reasoning/`) with
+`jlens-colab@j-lens-reasoning.iam.gserviceaccount.com`. W&B under `colab exec`
+reads `WANDB_API_KEY` from the environment / uploaded env file when Secrets are
+unavailable.
+
 ## Layout
 
 ```text

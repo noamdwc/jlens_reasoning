@@ -88,6 +88,51 @@ Both scripts require the local `colab` CLI. The runner writes the executed
 notebook copy under `artifacts/colab/` by default and fails if a cell reports an
 error.
 
+### Unattended Colab CLI Drive access (service account)
+
+Interactive `colab drivemount` / `drive.mount` Approve clicks are not available
+under headless `colab exec`. Unattended runs authenticate to Drive with a Google
+service account instead.
+
+1. Create a service-account key for
+   `jlens-colab@j-lens-reasoning.iam.gserviceaccount.com` and store it locally
+   at `~/.config/jlens/drive-sa.json`, or set `JLENS_DRIVE_SA_JSON` to the key
+   path. **Never commit the key.**
+2. In Google Drive, create (or reuse) a folder named `jlens-colab-root` that
+   contains the usual layout:
+
+   ```text
+   jlens-colab-root/
+   ├── jlens-reasoning/          # artifact root
+   └── data/jlens-reasoning/     # wheels, datasets, assets
+   ```
+
+   Share that folder with the service-account email (Editor). Optionally set
+   `JLENS_DRIVE_ROOT_FOLDER_ID` to the folder ID to skip name discovery.
+3. Keep uploading wheels with `./scripts/upload_colab_wheel.sh` via the existing
+   laptop `rclone` remote — that path is unchanged.
+4. Run notebooks with `./scripts/run_colab_notebook.sh` / `experiment_colab_run.sh`.
+   When the SA JSON is present, the runner uploads it (and
+   `colab_drive.py`) to `/content/jlens-credentials/`, skips `colab drivemount`,
+   and the notebook loader mounts Drive with `rclone` under
+   `/content/drive/MyDrive/...`.
+
+Optional local env vars picked up by the runner and uploaded as
+`/content/jlens-credentials/jlens.env`:
+
+- `WANDB_API_KEY` — used when Colab Secrets (`userdata`) are unavailable under
+  `colab exec`. Pass `enable_wandb=False` in notebooks that do not track.
+- `JLENS_DRIVE_ROOT_FOLDER_ID` / `JLENS_DRIVE_ROOT_FOLDER_NAME`
+
+For a one-off interactive CLI mount instead of the SA flow:
+
+```bash
+./scripts/run_colab_notebook.sh --allow-interactive-drivemount notebooks/00_environment_check.ipynb
+```
+
+Browser Colab sessions without the uploaded SA JSON keep using
+`drive.mount("/content/drive")` as before.
+
 ## Download model and lens assets
 
 Run [`notebooks/01_download_assets.ipynb`](../notebooks/01_download_assets.ipynb)
