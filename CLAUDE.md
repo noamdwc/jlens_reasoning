@@ -36,6 +36,19 @@ cell installs from there. **Re-run the uploader after any code or dependency
 change**, otherwise Colab silently runs stale code.
 `./scripts/experiment_colab_run.sh` chains upload + notebook run.
 
+Unattended CLI Drive access uses a Google service-account JSON at
+`~/.config/jlens/drive-sa.json` or `JLENS_DRIVE_SA_JSON` (never commit it).
+`scripts/run_colab_notebook.sh` uploads the key plus
+`environments/colab_drive.py` to `/content/jlens-credentials/` and skips
+interactive `colab drivemount`. SA writes require a Workspace Shared Drive;
+regular shared My Drive folders have no SA storage quota. Set both
+`JLENS_DRIVE_SHARED_DRIVE_ID` and `JLENS_DRIVE_ROOT_FOLDER_ID` for uploads and
+runs, and grant the SA Content manager access. The uploader applies those IDs
+without changing the laptop remote. The runner drains rclone uploads before
+teardown and preserves the VM on upload failures. W&B under `colab exec`
+reads `WANDB_API_KEY` from the environment / uploaded env file when Secrets are
+unavailable.
+
 ## Layout
 
 ```text
@@ -45,6 +58,9 @@ src/jlens_reasoning/          # reusable library
   environments/               # initialize_colab, RuntimeContext
   evaluation.py               # answer grading state machine (see policy below)
   evaluation_utils.py         # extraction / normalization / rank primitives
+  probing/                    # probe contracts, features, fitting, scoring,
+                              # checkpoints and output objectives
+  probe_jlens.py              # probe/J-Lens transport and sensitivity analysis
   experiments_utils/          # generic mechanics: tokens, interventions,
                               # controls, artifacts, validation
 experiments/<name>/           # one self-contained package + its notebook
@@ -71,6 +87,16 @@ Split of responsibility: generic, reusable mechanics go in
 `jlens_reasoning.experiments_utils`; experiment policy, thresholds, result
 assembly, and reporting stay local to the owning experiment package
 (`constants.py`, `experiment.py`, `reporting.py`, `utils.py` facade).
+
+Core probing behavior belongs to `jlens_reasoning.probing`, the project source
+of truth for feature extraction, fitting, scoring, probe artifacts and output
+objectives. Combined probe/J-Lens analysis belongs to `jlens_reasoning.probe_jlens`:
+direction transport, prompt sensitivity and future implementation from
+`docs/probe_jlens_routing_framework.md`. Dependencies run from `probe_jlens` to
+`probing`, never the reverse. Experiments supply data, labels, splits, settings,
+and output objectives; notebooks call the shared APIs rather than implementing
+probe math. Chat preparation and input hashing remain in `inference.py`.
+See `docs/probing.md` and `docs/probe_jlens.md`.
 
 ## Conventions
 

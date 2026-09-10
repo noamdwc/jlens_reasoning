@@ -74,6 +74,10 @@ reproducibility boundary, see [`docs/REPRODUCING.md`](docs/REPRODUCING.md).
 
 - `src/jlens_reasoning/` — reusable data, inference, evaluation, lens, and
   intervention code.
+- [`src/jlens_reasoning/probing/`](docs/probing.md) — shared probe extraction,
+  fitting, scoring, and artifacts.
+- [`src/jlens_reasoning/probe_jlens.py`](docs/probe_jlens.md) — combined probe/J-Lens
+  transport, sensitivities, and future routing-framework implementation.
 - `experiments/` — J-Lens sanity, drift, and intervention notebooks.
 - `notebooks/` — FLenQA drivers, scoring, and frozen probe workflows.
 - `tests/` — CPU-only unit and notebook-structure tests.
