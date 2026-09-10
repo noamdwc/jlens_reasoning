@@ -281,3 +281,19 @@ def test_help_exits_without_running_commands(tmp_path: Path) -> None:
     assert "usage:" in result.stdout
     assert "--allow-dirty" in result.stdout
     assert not command_log.exists()
+
+
+def test_shared_drive_upload_uses_same_root_as_notebook(tmp_path, monkeypatch):
+    monkeypatch.setenv("JLENS_DRIVE_ROOT_FOLDER_ID", "folder-123")
+    monkeypatch.setenv("JLENS_DRIVE_SHARED_DRIVE_ID", "team-456")
+    result, log, _, _ = run_uploader(tmp_path)
+    assert result.returncode == 0, result.stderr
+    calls = [
+        line.split("\t")
+        for line in log.read_text().splitlines()
+        if line.startswith("rclone\t")
+    ]
+    assert len(calls) == 5
+    for call in calls:
+        assert call[call.index("--drive-root-folder-id") + 1] == "folder-123"
+        assert call[call.index("--drive-team-drive") + 1] == "team-456"
