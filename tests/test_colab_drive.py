@@ -96,10 +96,13 @@ def test_ensure_colab_drive_falls_back_to_interactive_mount(tmp_path: Path) -> N
     assert events == ["interactive"]
 
 
-def test_ensure_colab_drive_is_idempotent_when_layout_exists(tmp_path: Path) -> None:
+def test_ensure_colab_drive_is_idempotent_when_layout_is_mounted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     mydrive = tmp_path / "MyDrive"
     (mydrive / "jlens-reasoning").mkdir(parents=True)
     (mydrive / "data" / "jlens-reasoning").mkdir(parents=True)
+    monkeypatch.setattr(Path, "is_mount", lambda path: path == mydrive.parent)
     events: list[str] = []
 
     mode = colab_drive.ensure_colab_drive(
@@ -109,6 +112,49 @@ def test_ensure_colab_drive_is_idempotent_when_layout_exists(tmp_path: Path) -> 
     )
     assert mode == "interactive"
     assert events == []
+
+
+@pytest.mark.parametrize("service_account", [False, True])
+def test_ensure_colab_drive_does_not_skip_mount_for_local_folders(
+    tmp_path: Path, service_account: bool
+) -> None:
+    mydrive = tmp_path / "MyDrive"
+    (mydrive / "jlens-reasoning").mkdir(parents=True)
+    (mydrive / "data" / "jlens-reasoning").mkdir(parents=True)
+    sa_json = tmp_path / "drive-sa.json"
+    if service_account:
+        sa_json.write_text("{}")
+    events = []
+
+    colab_drive.ensure_colab_drive(
+        sa_json=sa_json,
+        mydrive_root=mydrive,
+        interactive_mounter=lambda: events.append("interactive"),
+        sa_mounter=lambda *_args, **_kwargs: events.append("service_account"),
+    )
+
+    assert events == ["service_account" if service_account else "interactive"]
+
+
+def test_service_account_mount_rejects_unmounted_local_layout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sa_json = tmp_path / "drive-sa.json"
+    sa_json.write_text("{}")
+    mydrive = tmp_path / "MyDrive"
+    (mydrive / "jlens-reasoning").mkdir(parents=True)
+    (mydrive / "data" / "jlens-reasoning").mkdir(parents=True)
+    monkeypatch.setattr(colab_drive, "_ensure_rclone", lambda _: "rclone")
+
+    with pytest.raises(RuntimeError, match="not empty"):
+        colab_drive.mount_drive_with_service_account(
+            sa_json,
+            mydrive_root=mydrive,
+            environ={
+                "JLENS_DRIVE_ROOT_FOLDER_ID": "folder",
+                "JLENS_DRIVE_SHARED_DRIVE_ID": "team",
+            },
+        )
 
 
 @pytest.mark.parametrize("root", ["", "bad,scope=drive", "a/b"])

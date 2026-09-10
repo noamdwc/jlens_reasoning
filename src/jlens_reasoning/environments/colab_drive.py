@@ -274,12 +274,11 @@ def mount_drive_with_service_account(
 
     mydrive_root.mkdir(parents=True, exist_ok=True)
     if any(mydrive_root.iterdir()):
-        # Already populated (prior mount or copy); require expected layout.
-        if drive_layout_ready(mydrive_root):
+        if mydrive_root.is_mount() and drive_layout_ready(mydrive_root):
             return
         raise RuntimeError(
-            f"{mydrive_root} is not empty and does not contain the expected "
-            "jlens-reasoning layout"
+            f"{mydrive_root} is not empty; expected an existing Drive mount "
+            "with the jlens-reasoning layout"
         )
 
     remote = _drive_remote(
@@ -328,7 +327,8 @@ def ensure_colab_drive(
 
     env = dict(os.environ if environ is None else environ)
     apply_env_files(environ=env)
-    if drive_layout_ready(mydrive_root):
+    mountpoint = mydrive_root if sa_json.is_file() else mydrive_root.parent
+    if mountpoint.is_mount() and drive_layout_ready(mydrive_root):
         return "service_account" if sa_json.is_file() else "interactive"
 
     if sa_json.is_file():
