@@ -69,8 +69,55 @@ def test_scoring_uses_saved_training_mean_bias_and_strict_zero_threshold():
     )
 
 
+def test_direction_only_needs_the_weight():
+    weight = torch.tensor([3.0, 4.0], dtype=torch.float64, requires_grad=True)
+    for probe in (weight, {"weight": weight}):
+        direction = unit_probe_direction(probe)
+        torch.testing.assert_close(direction, torch.tensor([0.6, 0.8]))
+        assert not direction.requires_grad
+
+
+def test_evaluation_handles_a_single_class():
+    probe = {
+        "weight": torch.tensor([1.0]),
+        "bias": torch.tensor(0.0),
+        "training_mean": torch.tensor([0.0]),
+    }
+    evaluation = evaluate_probe(probe, torch.tensor([[-2.0], [0.0]]), [0, 0])
+    assert evaluation.metrics["auroc"] is None
+    assert evaluation.metrics["accuracy"] == 1.0
+    assert evaluation.correct.tolist() == [True, True]
+    torch.testing.assert_close(evaluation.gold_margins, torch.tensor([2.0, 0.0]))
+    torch.testing.assert_close(
+        evaluation.gold_probabilities, torch.tensor([0.8807971, 0.5])
+    )
+
+
+def test_validation_loss_ties_choose_the_smaller_c():
+    fitted = fit_binary_probe(
+        torch.tensor([[-1.0], [1.0]]),
+        [0, 1],
+        torch.zeros(2, 1),
+        [0, 1],
+        c_grid=(10.0, 0.01, 1.0),
+        seed=1,
+    )
+    assert fitted["C"] == 0.01
+    assert fitted["validation"]["log_loss"] == pytest.approx(np.log(2))
+
+
 @pytest.mark.parametrize(
-    "case", ["empty_grid", "nonpositive_c", "bad_labels", "nonfinite", "width"]
+    "case",
+    [
+        "empty_grid",
+        "nonpositive_c",
+        "bad_labels",
+        "single_training_class",
+        "nonfinite",
+        "nonfinite_validation",
+        "width",
+        "broadcastable_width",
+    ],
 )
 def test_fitting_rejects_invalid_training_data(case):
     x = torch.tensor([[-1.0, 0.0], [1.0, 0.0]])
@@ -83,10 +130,16 @@ def test_fitting_rejects_invalid_training_data(case):
         grid = [0.0]
     if case == "bad_labels":
         y = [1, 2]
+    if case == "single_training_class":
+        y = [1, 1]
     if case == "nonfinite":
         x[0, 0] = float("nan")
+    if case == "nonfinite_validation":
+        val[0, 0] = float("nan")
     if case == "width":
         val = torch.ones(2, 3)
+    if case == "broadcastable_width":
+        val = torch.ones(2, 1)
     with pytest.raises(ValueError):
         fit_binary_probe(x, y, val, [0, 1], c_grid=grid, seed=1)
 
@@ -127,3 +180,31 @@ def test_checkpoint_roundtrip_and_validation(tmp_path):
     probe["weight"][0] = float("nan")
     with pytest.raises(ValueError):
         save_probe_checkpoint(path, {0: probe}, metadata=metadata)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("weight", torch.zeros(2)),
+        ("bias", torch.tensor(float("nan"))),
+        ("bias", torch.ones(2)),
+        ("training_mean", torch.tensor([float("inf"), 0.0])),
+        ("training_mean", torch.zeros(1)),
+    ],
+)
+def test_checkpoint_rejects_invalid_parameters_on_save_and_load(tmp_path, field, value):
+    probe = {
+        "weight": torch.tensor([1.0, 2.0]),
+        "bias": torch.tensor(0.0),
+        "training_mean": torch.zeros(2),
+        field: value,
+    }
+    metadata = {"format_version": 2, "num_layers": 1, "hidden_dim": 2}
+    path = tmp_path / "probes.pt"
+    with pytest.raises(ValueError):
+        save_probe_checkpoint(path, {0: probe}, metadata=metadata)
+    assert not path.exists()
+
+    torch.save({"format_version": 2, "layers": {0: probe}, "metadata": metadata}, path)
+    with pytest.raises(ValueError):
+        load_probe_checkpoint(path)

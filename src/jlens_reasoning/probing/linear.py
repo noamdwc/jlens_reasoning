@@ -12,25 +12,21 @@ from sklearn.metrics import accuracy_score, log_loss, roc_auc_score
 
 
 def _probe_tensors(probe: Mapping) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Read and validate the saved weight, scalar bias and training mean."""
     try:
-        weight, bias, mean = (
-            probe[name].detach().float().cpu()
-            for name in ("weight", "bias", "training_mean")
-        )
+        weight = probe["weight"].detach().float().cpu()
+        bias = probe["bias"].detach().float().cpu()
+        mean = probe["training_mean"].detach().float().cpu()
     except (KeyError, AttributeError) as error:
         raise ValueError(
             "Probe requires weight, bias and training_mean tensors"
         ) from error
-    if (
-        weight.ndim != 1
-        or weight.numel() == 0
-        or bias.ndim != 0
-        or mean.shape != weight.shape
-        or not all(torch.isfinite(tensor).all() for tensor in (weight, bias, mean))
-    ):
-        raise ValueError(
-            "Probe tensors must be finite with matching feature dimensions"
-        )
+    if weight.ndim != 1 or weight.numel() == 0:
+        raise ValueError("Probe weight must be a nonempty vector")
+    if bias.ndim != 0 or mean.shape != weight.shape:
+        raise ValueError("Probe requires a scalar bias and a mean matching its weight")
+    if not all(torch.isfinite(tensor).all() for tensor in (weight, bias, mean)):
+        raise ValueError("Probe tensors must be finite")
     return weight, bias, mean
 
 
@@ -48,11 +44,8 @@ def score_probe(probe: Mapping, features: torch.Tensor) -> torch.Tensor:
 
 def unit_probe_direction(probe: Mapping | torch.Tensor) -> torch.Tensor:
     """Positive-class unit direction, independent of centering and bias."""
-    weight = (
-        probe.detach().float().cpu()
-        if isinstance(probe, torch.Tensor)
-        else _probe_tensors(probe)[0]
-    )
+    weight = probe if isinstance(probe, torch.Tensor) else probe["weight"]
+    weight = weight.detach().float().cpu()
     if weight.ndim != 1 or weight.numel() == 0:
         raise ValueError("Probe weight must be a nonempty vector")
     norm = weight.norm()
@@ -62,6 +55,7 @@ def unit_probe_direction(probe: Mapping | torch.Tensor) -> torch.Tensor:
 
 
 def _binary_labels(labels: Sequence | np.ndarray, count: int) -> np.ndarray:
+    """Require one 0/1 label for each example; sklearn also accepts other labels."""
     labels = np.asarray(labels)
     if labels.shape != (count,) or not np.isin(labels, [0, 1]).all() or count == 0:
         raise ValueError("Expected one binary 0/1 label per example")
@@ -74,13 +68,19 @@ def binary_probe_metrics(labels: Sequence | np.ndarray, scores: torch.Tensor) ->
     if scores.ndim != 1 or not torch.isfinite(scores).all():
         raise ValueError("Expected a finite vector of probe scores")
     labels = _binary_labels(labels, len(scores))
+    return _metrics_from_scores(labels, scores)
+
+
+def _metrics_from_scores(labels: np.ndarray, scores: torch.Tensor) -> dict:
+    """Compute metrics after the caller has checked labels and scores."""
+    score_values = scores.numpy()
     return {
-        "accuracy": float(accuracy_score(labels, scores.numpy() > 0)),
+        "accuracy": float(accuracy_score(labels, score_values > 0)),
         "log_loss": float(
             log_loss(labels, torch.sigmoid(scores).numpy(), labels=[0, 1])
         ),
         "auroc": (
-            float(roc_auc_score(labels, scores.numpy()))
+            float(roc_auc_score(labels, score_values))
             if len(np.unique(labels)) == 2
             else None
         ),
@@ -97,34 +97,27 @@ def fit_binary_probe(
     seed: int,
     max_iter: int = 2000,
 ) -> dict:
-    """Fit L2 logistic probes; choose (validation log loss, C) lexicographically.
+    """Fit an L2 logistic probe, choosing C by the lowest validation log loss.
 
-    Only training features determine centering. Held-out data is never supplied
-    to this function. Return the existing tensor/metric checkpoint representation.
+    Break ties with the smaller C. Center both splits on the training mean, and
+    keep test data out of fitting. Return weights, centering and split metrics
+    in the checkpoint dictionary format.
     """
     train = train_features.detach().float().cpu().numpy()
     validation = validation_features.detach().float().cpu().numpy()
-    if (
-        train.ndim != 2
-        or validation.ndim != 2
-        or train.shape[1] == 0
-        or train.shape[1] != validation.shape[1]
-        or not np.isfinite(train).all()
-        or not np.isfinite(validation).all()
-    ):
-        raise ValueError("Expected finite train/validation matrices with equal width")
+    if train.ndim != 2 or validation.ndim != 2 or train.shape[1] != validation.shape[1]:
+        raise ValueError("Expected train/validation matrices with equal width")
     y_train = _binary_labels(train_labels, len(train))
     y_validation = _binary_labels(validation_labels, len(validation))
-    if len(np.unique(y_train)) != 2:
-        raise ValueError("Probe training requires both binary classes")
     grid = tuple(float(c) for c in c_grid)
     if not grid or any(not np.isfinite(c) or c <= 0 for c in grid):
         raise ValueError("Regularization grid must contain positive finite C values")
+
+    # Sklearn checks finite feature values and requires both training classes.
+    # Check widths above because NumPy centering could otherwise broadcast them.
     training_mean = train.mean(axis=0, dtype=np.float64).astype(np.float32)
-    centered_train, centered_validation = (
-        train - training_mean,
-        validation - training_mean,
-    )
+    centered_train = train - training_mean
+    centered_validation = validation - training_mean
     candidates = []
     for c in grid:
         # L2 is the default; omitting the deprecated penalty argument also works
@@ -134,9 +127,8 @@ def fit_binary_probe(
         )
         candidate.fit(centered_train, y_train)
         probability = candidate.predict_proba(centered_validation)[:, 1]
-        candidates.append(
-            (log_loss(y_validation, probability, labels=[0, 1]), c, candidate)
-        )
+        validation_loss = log_loss(y_validation, probability, labels=[0, 1])
+        candidates.append((validation_loss, c, candidate))
     _, selected_c, fitted = min(candidates, key=lambda item: (item[0], item[1]))
     probe = {
         "weight": torch.from_numpy(fitted.coef_[0].astype(np.float32, copy=True)),
@@ -144,7 +136,8 @@ def fit_binary_probe(
         "training_mean": torch.from_numpy(training_mean),
         "C": selected_c,
     }
-    unit_probe_direction(probe)
+    # Downstream J-Lens analysis needs a nonzero, normalizable probe direction.
+    unit_probe_direction(probe["weight"])
     for name, features, labels in (
         ("train", centered_train, y_train),
         ("validation", centered_validation, y_validation),
@@ -175,14 +168,15 @@ def evaluate_probe(
     scores = score_probe(probe, features)
     if scores.ndim != 1:
         raise ValueError("Probe evaluation requires a batch of feature vectors")
-    labels = torch.from_numpy(_binary_labels(labels, len(scores)))
+    labels = _binary_labels(labels, len(scores))
+    gold_labels = torch.from_numpy(labels)
     predictions = scores > 0
-    margins = (2 * labels - 1) * scores
+    gold_margins = (2 * gold_labels - 1) * scores
     return ProbeEvaluation(
-        scores,
-        predictions,
-        margins,
-        torch.sigmoid(margins),
-        predictions == labels.bool(),
-        binary_probe_metrics(labels.numpy(), scores),
+        scores=scores,
+        predictions=predictions,
+        gold_margins=gold_margins,
+        gold_probabilities=torch.sigmoid(gold_margins),
+        correct=predictions == gold_labels.bool(),
+        metrics=_metrics_from_scores(labels, scores),
     )

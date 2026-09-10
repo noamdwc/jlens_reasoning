@@ -83,6 +83,21 @@ then orients margins toward the supplied binary labels. Sigmoid values are probe
 scores, not a guarantee of calibration under distribution shift. Generated model
 answers are still graded through the separate shared evaluation module.
 
+## Reading the implementation
+
+Start with `features.py` to see how a prompt becomes one vector per layer, then
+`linear.py` for fitting and evaluation. Fitting centers on the training mean,
+tries each C, and selects the lowest validation loss (smaller C breaks ties).
+The probe stays a plain dictionary so saved checkpoints and notebooks use the
+same representation.
+
+Validation protects the boundaries where a mistake could silently change the
+analysis: 0/1 labels, feature dimensions, exact chat inputs, and saved checkpoint
+compatibility. Scikit-learn handles finite fitting data and the requirement for
+both training classes. Evaluation checks its inputs once before computing
+metrics. Direction calculation only needs the weight; checkpoint validation
+also checks bias, centering, and the declared layer layout.
+
 ## Combining probes with J-Lens
 
 Direction transport and prompt sensitivity live in the separate

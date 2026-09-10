@@ -13,18 +13,14 @@ def token_margin(
     negative_ids: Sequence[int],
 ) -> torch.Tensor:
     """Mean positive-token logit minus mean negative-token logit, with gradients."""
-    if (
-        logits.ndim != 1
-        or not positive_ids
-        or not negative_ids
-        or set(positive_ids) & set(negative_ids)
-    ):
-        raise ValueError(
-            "Output margin requires nonempty disjoint token groups and vector logits"
-        )
+    if logits.ndim != 1:
+        raise ValueError("Output margin requires vector logits")
+    if not positive_ids or not negative_ids:
+        raise ValueError("Output margin requires nonempty token groups")
+    if set(positive_ids) & set(negative_ids):
+        raise ValueError("Output margin token groups must be disjoint")
     if any(i < 0 or i >= logits.numel() for i in (*positive_ids, *negative_ids)):
         raise ValueError("Output margin token is outside the vocabulary")
-    return (
-        logits[list(positive_ids)].float().mean()
-        - logits[list(negative_ids)].float().mean()
-    )
+    positive_mean = logits[list(positive_ids)].float().mean()
+    negative_mean = logits[list(negative_ids)].float().mean()
+    return positive_mean - negative_mean

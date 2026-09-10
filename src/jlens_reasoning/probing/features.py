@@ -15,6 +15,12 @@ from .contracts import ProbeConfig, validate_input_record
 
 @dataclass(frozen=True, slots=True)
 class ProbeFeatures:
+    """One vector per layer, final-token logits, and the input identity used.
+
+    States and logits are detached CPU float32 tensors. Each state has shape
+    [hidden_dim]; logits has shape [vocab_size].
+    """
+
     states: tuple[torch.Tensor, ...]
     logits: torch.Tensor
     input_record: dict
@@ -34,8 +40,8 @@ def prepare_probe_inputs(
     inputs = prepare_chat_inputs(tokenizer, prompt, config=config.inference)
     if input_record is not None:
         validate_input_record(input_record, inputs)
-    length = inputs["input_ids"].shape[1]
-    if not -length <= config.token_position < length:
+    num_tokens = inputs["input_ids"].shape[1]
+    if not -num_tokens <= config.token_position < num_tokens:
         raise ValueError("Probe token position is outside the wrapped input")
     return {key: value.to(model.device) for key, value in inputs.items()}
 

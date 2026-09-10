@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 
 from .contracts import validate_probe_input_contract
-from .linear import unit_probe_direction
+from .linear import _probe_tensors
 
 
 def _validate_checkpoint(checkpoint: Mapping) -> None:
@@ -19,16 +19,21 @@ def _validate_checkpoint(checkpoint: Mapping) -> None:
             "Unsupported probe checkpoint version. Retrain compatible probes."
         )
     layers = checkpoint.get("layers", {})
-    count, width = metadata.get("num_layers"), metadata.get("hidden_dim")
-    if type(count) is not int or count <= 0 or type(width) is not int or width <= 0:
-        raise ValueError(
-            "Probe metadata must specify positive num_layers and hidden_dim"
-        )
-    if set(layers) != set(range(count)):
+    num_layers = metadata.get("num_layers")
+    hidden_dim = metadata.get("hidden_dim")
+    if type(num_layers) is not int or num_layers <= 0:
+        raise ValueError("Probe metadata must specify positive num_layers")
+    if type(hidden_dim) is not int or hidden_dim <= 0:
+        raise ValueError("Probe metadata must specify positive hidden_dim")
+    if set(layers) != set(range(num_layers)):
         raise ValueError("Probe checkpoint must contain every declared layer")
     for probe in layers.values():
-        if unit_probe_direction(probe).numel() != width:
+        weight, _, _ = _probe_tensors(probe)
+        if weight.numel() != hidden_dim:
             raise ValueError("Probe width does not match checkpoint metadata")
+        norm = weight.norm()
+        if not torch.isfinite(norm) or norm == 0:
+            raise ValueError("Probe weight must be a finite nonzero vector")
 
 
 def save_probe_checkpoint(
@@ -65,7 +70,8 @@ def load_probe_checkpoint(
     _validate_checkpoint(checkpoint)
     metadata = checkpoint["metadata"]
     if metadata_path is not None:
-        if json.loads(Path(metadata_path).read_text(encoding="utf-8")) != metadata:
+        sidecar_metadata = json.loads(Path(metadata_path).read_text(encoding="utf-8"))
+        if sidecar_metadata != metadata:
             raise ValueError("Probe checkpoint and sidecar metadata disagree")
     if expected_contract is not None:
         validate_probe_input_contract(metadata, expected_contract)
