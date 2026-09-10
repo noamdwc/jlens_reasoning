@@ -15,9 +15,10 @@ usage: $(basename "$0") [OPTIONS] NOTEBOOK.ipynb
 
 Unattended Drive access uses a Google service-account JSON:
   \$JLENS_DRIVE_SA_JSON  or  ~/.config/jlens/drive-sa.json
-Share a Drive folder named jlens-colab-root (containing jlens-reasoning/ and
-data/jlens-reasoning/) with jlens-colab@j-lens-reasoning.iam.gserviceaccount.com,
-or set JLENS_DRIVE_ROOT_FOLDER_ID.
+Set JLENS_DRIVE_SHARED_DRIVE_ID to a Workspace Shared Drive ID and
+JLENS_DRIVE_ROOT_FOLDER_ID to its project folder (containing jlens-reasoning/
+and data/jlens-reasoning/). Grant the SA Content manager access.
+A regular shared My Drive folder cannot store service-account artifacts.
 
 Options:
   --gpu TYPE       Colab accelerator (default: L4)
@@ -133,9 +134,16 @@ sa_json=$(resolve_sa_json)
 drive_helper="$repository/src/jlens_reasoning/environments/colab_drive.py"
 credential_staging=
 use_service_account=0
+notebook_started=0
 
 if [ -f "$sa_json" ]; then
     use_service_account=1
+    for variable in JLENS_DRIVE_SHARED_DRIVE_ID JLENS_DRIVE_ROOT_FOLDER_ID; do
+        if [[ ! "${!variable:-}" =~ ^[A-Za-z0-9_-]+$ ]]; then
+            printf 'error: set %s to a valid Drive ID; service accounts require a Workspace Shared Drive\n' "$variable" >&2
+            exit 1
+        fi
+    done
 elif [ "$allow_interactive_drivemount" -eq 1 ] || \
     [ "${JLENS_COLAB_ALLOW_INTERACTIVE_DRIVEMOUNT:-0}" = "1" ]; then
     use_service_account=0
@@ -149,6 +157,23 @@ fi
 cleanup() {
     status=$?
     trap - EXIT
+
+    if [ "$use_service_account" -eq 1 ] && [ "$notebook_started" -eq 1 ]; then
+        printf 'Waiting for Drive uploads before teardown...\n'
+        if ! flush_output=$(printf '%s\n' \
+            'import runpy' \
+            'helper = runpy.run_path("/content/jlens-credentials/colab_drive.py")' \
+            'helper["flush_colab_drive"]()' \
+            'print("JLENS_DRIVE_UPLOADS_COMPLETE")' \
+            | colab exec -s "$session" --timeout 660) || \
+            [[ "$flush_output" != *JLENS_DRIVE_UPLOADS_COMPLETE* ]]; then
+            printf 'error: Drive uploads could not be confirmed; preserving the VM and cached artifacts\n' >&2
+            keep=1
+            if [ "$status" -eq 0 ]; then
+                status=1
+            fi
+        fi
+    fi
 
     if [ -n "$credential_staging" ] && [ -d "$credential_staging" ]; then
         rm -rf "$credential_staging"
@@ -189,10 +214,8 @@ if [ "$use_service_account" -eq 1 ]; then
         printf 'JLENS_DRIVE_ROOT_FOLDER_ID=%s\n' \
             "$JLENS_DRIVE_ROOT_FOLDER_ID" >> "$env_file"
     fi
-    if [ -n "${JLENS_DRIVE_ROOT_FOLDER_NAME:-}" ]; then
-        printf 'JLENS_DRIVE_ROOT_FOLDER_NAME=%s\n' \
-            "$JLENS_DRIVE_ROOT_FOLDER_NAME" >> "$env_file"
-    fi
+    printf 'JLENS_DRIVE_SHARED_DRIVE_ID=%s\n' \
+        "$JLENS_DRIVE_SHARED_DRIVE_ID" >> "$env_file"
 
     printf 'from pathlib import Path\nPath("/content/jlens-credentials").mkdir(parents=True, exist_ok=True)\n' \
         | colab exec -s "$session"
@@ -213,6 +236,7 @@ else
     colab drivemount -s "$session"
 fi
 
+notebook_started=1
 colab exec -s "$session" --timeout "$timeout" -f "$notebook"
 
 cli_output_notebook="${notebook%.ipynb}_output.ipynb"

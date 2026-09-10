@@ -98,8 +98,13 @@ service account instead.
    `jlens-colab@j-lens-reasoning.iam.gserviceaccount.com` and store it locally
    at `~/.config/jlens/drive-sa.json`, or set `JLENS_DRIVE_SA_JSON` to the key
    path. **Never commit the key.**
-2. In Google Drive, create (or reuse) a folder named `jlens-colab-root` that
-   contains the usual layout:
+2. Use a **Google Workspace Shared Drive**. A regular My Drive folder shared
+   with an Editor is insufficient: service accounts cannot own new files and
+   have no personal storage quota. Grant the service account **Content manager**
+   access to the Shared Drive, and grant your laptop's `rclone` user access too.
+   See [Google's Shared Drive documentation](https://developers.google.com/workspace/drive/api/guides/about-shareddrives).
+3. Create a project folder inside that Shared Drive (for example
+   `jlens-colab-root`) with this layout:
 
    ```text
    jlens-colab-root/
@@ -107,31 +112,64 @@ service account instead.
    └── data/jlens-reasoning/     # wheels, datasets, assets
    ```
 
-   Share that folder with the service-account email (Editor). Optionally set
-   `JLENS_DRIVE_ROOT_FOLDER_ID` to the folder ID to skip name discovery.
-3. Keep uploading wheels with `./scripts/upload_colab_wheel.sh` via the existing
-   laptop `rclone` remote — that path is unchanged.
-4. Run notebooks with `./scripts/run_colab_notebook.sh` / `experiment_colab_run.sh`.
-   When the SA JSON is present, the runner uploads it (and
-   `colab_drive.py`) to `/content/jlens-credentials/`, skips `colab drivemount`,
-   and the notebook loader mounts Drive with `rclone` under
-   `/content/drive/MyDrive/...`.
+   Export both IDs in the shell used for uploads and runs:
 
-Optional local env vars picked up by the runner and uploaded as
-`/content/jlens-credentials/jlens.env`:
+   ```bash
+   export JLENS_DRIVE_SHARED_DRIVE_ID="your-shared-drive-id"
+   export JLENS_DRIVE_ROOT_FOLDER_ID="your-project-folder-id"
+   ```
 
-- `WANDB_API_KEY` — used when Colab Secrets (`userdata`) are unavailable under
-  `colab exec`. Pass `enable_wandb=False` in notebooks that do not track.
-- `JLENS_DRIVE_ROOT_FOLDER_ID` / `JLENS_DRIVE_ROOT_FOLDER_NAME`
+   The IDs identify the Shared Drive and the project folder within it,
+   respectively. Name discovery is no longer supported, so uploads and mounts
+   cannot silently resolve different roots.
+4. Run `./scripts/upload_colab_wheel.sh`, then `./scripts/run_colab_notebook.sh`,
+   or use `./scripts/experiment_colab_run.sh` to chain them. The uploader applies
+   the same Shared Drive and folder IDs to every `rclone` operation, while
+   retaining the laptop remote's user credentials. It does not modify the saved
+   remote configuration. With neither ID set, standalone uploads keep the
+   original My Drive destination for browser notebooks.
 
-For a one-off interactive CLI mount instead of the SA flow:
+The runner validates both IDs before allocating a VM. It uploads the key,
+`colab_drive.py`, and the IDs to `/content/jlens-credentials/`, then skips
+`colab drivemount`. The loader verifies a real Drive upload and readback before
+mounting the folder at `/content/drive/MyDrive`. The small probe is moved to
+Drive trash afterward, which Content manager access permits.
+
+`WANDB_API_KEY`, if set locally, is also uploaded in `jlens.env` and used when
+Colab Secrets are unavailable. Pass `enable_wandb=False` for notebooks without
+tracking.
+
+At teardown, including notebook failures and `--keep` runs, the runner waits
+up to ten minutes for rclone's queued and active uploads. Notebook writes must
+be closed before the final cell finishes. If upload status is unavailable,
+reports an error, or times out, the command fails and **keeps the VM** so cached
+artifacts can be recovered. This may continue using Colab quota. Inspect the
+kept session before stopping it:
+
+```bash
+printf '%s\n' 'import runpy' \
+  'runpy.run_path("/content/jlens-credentials/colab_drive.py")["flush_colab_drive"]()' \
+  | colab exec -s YOUR_SESSION --timeout 660
+```
+
+Stop it with `colab stop -s YOUR_SESSION` only after uploads succeed or after
+recovering the needed files. Rclone status is exposed only on the VM's loopback
+interface; upload diagnostics can be inspected with `rclone rc vfs/stats` there.
+
+For an interactive CLI mount when no SA JSON is configured:
 
 ```bash
 ./scripts/run_colab_notebook.sh --allow-interactive-drivemount notebooks/00_environment_check.ipynb
 ```
 
 Browser Colab sessions without the uploaded SA JSON keep using
-`drive.mount("/content/drive")` as before.
+`drive.mount("/content/drive")`. These loaders expect the original My Drive
+layout; to use the Shared Drive bundle interactively, add My Drive shortcuts
+for `jlens-reasoning` and `data/jlens-reasoning` pointing to the corresponding
+project folders. Otherwise use the original My Drive bundle with both ID
+variables unset. Without access to a Workspace Shared Drive, use this
+interactive route; sharing a personal folder with the service account is not
+an unattended write solution.
 
 ## Download model and lens assets
 

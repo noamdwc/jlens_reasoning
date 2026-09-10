@@ -40,9 +40,12 @@ Unattended CLI Drive access uses a Google service-account JSON at
 `~/.config/jlens/drive-sa.json` or `JLENS_DRIVE_SA_JSON` (never commit it).
 `scripts/run_colab_notebook.sh` uploads the key plus
 `environments/colab_drive.py` to `/content/jlens-credentials/` and skips
-interactive `colab drivemount`. Share Drive folder `jlens-colab-root` (with
-`jlens-reasoning/` and `data/jlens-reasoning/`) with
-`jlens-colab@j-lens-reasoning.iam.gserviceaccount.com`. W&B under `colab exec`
+interactive `colab drivemount`. SA writes require a Workspace Shared Drive;
+regular shared My Drive folders have no SA storage quota. Set both
+`JLENS_DRIVE_SHARED_DRIVE_ID` and `JLENS_DRIVE_ROOT_FOLDER_ID` for uploads and
+runs, and grant the SA Content manager access. The uploader applies those IDs
+without changing the laptop remote. The runner drains rclone uploads before
+teardown and preserves the VM on upload failures. W&B under `colab exec`
 reads `WANDB_API_KEY` from the environment / uploaded env file when Secrets are
 unavailable.
 

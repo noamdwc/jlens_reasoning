@@ -32,6 +32,9 @@ def run_runner(
     allow_interactive: bool = False,
     wandb_api_key: str | None = "wandb-from-env",
     root_folder_id: str | None = "folder-123",
+    shared_drive_id: str | None = "team-456",
+    flush_status: int = 0,
+    flush_marker: bool = True,
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path | None]:
     bin_directory = tmp_path / "bin"
     bin_directory.mkdir()
@@ -73,7 +76,7 @@ if [ "$command" = "upload" ]; then
     printf '%s\\t%s\\n' "$1" "$2" >> "$UPLOAD_LOG"
 fi
 
-if [ "$command" = "exec" ] && [ "${COLAB_WRITE_OUTPUT:-1}" -eq 1 ]; then
+if [ "$command" = "exec" ]; then
     notebook=
     while [ "$#" -gt 0 ]; do
         if [ "$1" = "-f" ]; then
@@ -82,7 +85,17 @@ if [ "$command" = "exec" ] && [ "${COLAB_WRITE_OUTPUT:-1}" -eq 1 ]; then
         fi
         shift
     done
-    if [ -n "$notebook" ]; then
+    if [ -z "$notebook" ]; then
+        code=$(cat)
+        if [[ "$code" == *flush_colab_drive* ]]; then
+            printf 'flush\\n' >> "$COMMAND_LOG"
+            if [ "${COLAB_FLUSH_MARKER:-1}" -eq 1 ]; then
+                printf 'JLENS_DRIVE_UPLOADS_COMPLETE\\n'
+            fi
+            exit "${COLAB_FLUSH_STATUS:-0}"
+        fi
+    fi
+    if [ -n "$notebook" ] && [ "${COLAB_WRITE_OUTPUT:-1}" -eq 1 ]; then
         output_notebook="${notebook%.ipynb}_output.ipynb"
         if [ "${COLAB_OUTPUT_ERROR:-0}" -eq 1 ]; then
             printf '%s\\n' '{"cells":[{"id":"broken","outputs":[{"output_type":"error","ename":"RuntimeError","evalue":"boom"}]}]}' > "$output_notebook"
@@ -112,6 +125,8 @@ esac
         "COLAB_EXEC_STATUS": str(exec_status),
         "COLAB_OUTPUT_ERROR": "1" if output_error else "0",
         "COLAB_STOP_STATUS": str(stop_status),
+        "COLAB_FLUSH_STATUS": str(flush_status),
+        "COLAB_FLUSH_MARKER": "1" if flush_marker else "0",
         "COLAB_WRITE_OUTPUT": "1" if write_output else "0",
         "JLENS_COLAB_OUTPUT_DIR": str(tmp_path / "artifacts"),
         "HOME": str(tmp_path / "home"),
@@ -122,6 +137,9 @@ esac
     environment.pop("WANDB_API_KEY", None)
     environment.pop("JLENS_DRIVE_ROOT_FOLDER_ID", None)
     environment.pop("JLENS_DRIVE_ROOT_FOLDER_NAME", None)
+    environment.pop("JLENS_DRIVE_SHARED_DRIVE_ID", None)
+    if shared_drive_id is not None:
+        environment["JLENS_DRIVE_SHARED_DRIVE_ID"] = shared_drive_id
     if provide_sa:
         environment["JLENS_DRIVE_SA_JSON"] = str(sa_json)
     if allow_interactive:
@@ -138,9 +156,6 @@ esac
         environment.pop("SSL_CERT_FILE", None)
 
     cli_arguments = list(arguments)
-    if allow_interactive and "--allow-interactive-drivemount" not in cli_arguments:
-        # env flag alone is enough; keep CLI optional
-        pass
 
     result = subprocess.run(
         [
@@ -178,7 +193,7 @@ def test_runs_local_notebook_with_service_account_and_stops_session(
         line.endswith("/content/jlens-credentials/colab_drive.py") for line in lines
     )
     assert any(line.endswith("/content/jlens-credentials/jlens.env") for line in lines)
-    assert lines[-2] == (f"exec\t-s\tjlens-example\t--timeout\t7200\t-f\t{notebook}")
+    assert lines[-4] == (f"exec\t-s\tjlens-example\t--timeout\t7200\t-f\t{notebook}")
     assert lines[-1] == "stop\t-s\tjlens-example"
     assert "Uploaded service-account Drive credentials" in result.stdout
     assert upload_log is not None
@@ -196,7 +211,7 @@ def test_keep_preserves_session(tmp_path: Path) -> None:
     lines = command_log.read_text(encoding="utf-8").splitlines()
     assert lines[0] == "new\t-s\tjlens-example\t--gpu\tL4"
     assert "drivemount" not in "\n".join(lines)
-    assert lines[-1] == (
+    assert lines[-3] == (
         f"exec\t-s\tjlens-example\t--timeout\t7200\t-f\t{tmp_path / 'example.ipynb'}"
     )
     assert "Keeping Colab session: jlens-example" in result.stdout
@@ -216,7 +231,7 @@ def test_accepts_gpu_session_and_timeout_overrides(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     lines = command_log.read_text(encoding="utf-8").splitlines()
     assert lines[0] == "new\t-s\tcustom-run\t--gpu\tT4"
-    assert lines[-2] == (
+    assert lines[-4] == (
         f"exec\t-s\tcustom-run\t--timeout\t300\t-f\t{tmp_path / 'example.ipynb'}"
     )
     assert lines[-1] == "stop\t-s\tcustom-run"
@@ -410,3 +425,38 @@ def test_rejects_non_notebook_input_before_creating_a_session(
     assert result.returncode == 2
     assert "notebook must use the .ipynb extension" in result.stderr
     assert not command_log.exists()
+
+
+def test_missing_shared_drive_fails_before_allocating_vm(tmp_path):
+    result, log, _ = run_runner(tmp_path, shared_drive_id=None)
+    assert result.returncode != 0
+    assert "JLENS_DRIVE_SHARED_DRIVE_ID" in result.stderr
+    assert not log.exists()
+
+
+def test_missing_root_fails_before_allocating_vm(tmp_path):
+    result, log, _ = run_runner(tmp_path, root_folder_id=None)
+    assert result.returncode != 0
+    assert "JLENS_DRIVE_ROOT_FOLDER_ID" in result.stderr
+    assert not log.exists()
+
+
+def test_flush_runs_before_stop_even_on_cell_failure(tmp_path):
+    result, log, _ = run_runner(tmp_path, output_error=True)
+    assert result.returncode != 0
+    calls = log.read_text().splitlines()
+    assert "flush" in calls
+    assert calls.index("flush") < calls.index("stop\t-s\tjlens-example")
+
+
+def test_flush_failure_preserves_vm_and_fails_run(tmp_path):
+    result, log, _ = run_runner(tmp_path, flush_status=1)
+    assert result.returncode != 0
+    assert "Keeping Colab session" in result.stdout
+    assert not any(line.startswith("stop\t") for line in log.read_text().splitlines())
+
+
+def test_flush_cell_error_with_zero_cli_exit_preserves_vm(tmp_path):
+    result, log, _ = run_runner(tmp_path, flush_marker=False)
+    assert result.returncode != 0
+    assert not any(line.startswith("stop\t") for line in log.read_text().splitlines())

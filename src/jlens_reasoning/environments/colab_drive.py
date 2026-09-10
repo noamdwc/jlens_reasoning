@@ -15,7 +15,9 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 import time
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
@@ -29,9 +31,10 @@ MYDRIVE_ROOT = Path("/content/drive/MyDrive")
 ARTIFACTS_PATH = MYDRIVE_ROOT / "jlens-reasoning"
 DATA_PATH = MYDRIVE_ROOT / "data" / "jlens-reasoning"
 
-DEFAULT_ROOT_FOLDER_NAME = "jlens-colab-root"
 ROOT_FOLDER_ID_ENV = "JLENS_DRIVE_ROOT_FOLDER_ID"
-ROOT_FOLDER_NAME_ENV = "JLENS_DRIVE_ROOT_FOLDER_NAME"
+SHARED_DRIVE_ID_ENV = "JLENS_DRIVE_SHARED_DRIVE_ID"
+RCLONE_RC_ADDR = "127.0.0.1:5572"
+MOUNT_MARKER_VM_PATH = CREDENTIALS_DIR / "rclone-mounted"
 
 CommandRunner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
 
@@ -142,92 +145,93 @@ def _ensure_rclone(runner: CommandRunner) -> str:
     return installed
 
 
-def _drive_remote(
-    sa_json: Path,
-    *,
-    root_folder_id: str | None = None,
-    shared_with_me: bool = False,
-) -> str:
-    parts = [
-        "drive",
-        f"service_account_file={sa_json}",
-        "scope=drive",
-    ]
-    if root_folder_id:
-        parts.append(f"root_folder_id={root_folder_id}")
-    if shared_with_me:
-        parts.append("shared_with_me=true")
-    return ":" + ",".join(parts)
+def _drive_remote(sa_json: Path, *, root_folder_id: str, shared_drive_id: str) -> str:
+    return (
+        f":drive,service_account_file={sa_json},scope=drive,"
+        f"root_folder_id={root_folder_id},team_drive={shared_drive_id}"
+    )
 
 
-def _rclone_lsjson(
-    rclone: str,
-    sa_json: Path,
-    *,
-    shared_with_me: bool,
-    runner: CommandRunner,
-) -> list[dict[str, object]]:
-    remote = _drive_remote(sa_json, shared_with_me=shared_with_me)
-    result = runner([rclone, "lsjson", f"{remote}:"])
-    _require_success(result, action="rclone lsjson")
-    payload = json.loads(result.stdout or "[]")
-    if not isinstance(payload, list):
-        raise RuntimeError("rclone lsjson returned a non-list payload")
-    return payload
+def _required_drive_id(env: Mapping[str, str], name: str) -> str:
+    value = env.get(name, "").strip()
+    if not value or any(
+        c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+        for c in value
+    ):
+        raise RuntimeError(
+            f"Set {name} to a valid Drive ID; service accounts require a Workspace Shared Drive"
+        )
+    return value
 
 
-def resolve_root_folder_id(
-    sa_json: Path,
-    *,
-    rclone: str,
-    runner: CommandRunner,
-    environ: Mapping[str, str] | None = None,
-) -> str:
-    """Resolve the shared Drive folder that should appear as MyDrive."""
-
-    env = dict(os.environ if environ is None else environ)
-    apply_env_files(environ=env)
-
-    configured = env.get(ROOT_FOLDER_ID_ENV, "").strip()
-    if configured:
-        return configured
-
-    folder_name = env.get(ROOT_FOLDER_NAME_ENV, "").strip() or DEFAULT_ROOT_FOLDER_NAME
-    candidates_by_id: dict[str, dict[str, object]] = {}
-    for shared_with_me in (True, False):
+def _verify_remote_write(rclone: str, remote: str, runner: CommandRunner) -> None:
+    """Verify persistence through the API, bypassing the mount's local cache."""
+    probe_name = f".jlens-write-probe-{uuid.uuid4().hex}"
+    destination = f"{remote}:{probe_name}"
+    with tempfile.TemporaryDirectory() as directory:
+        probe = Path(directory) / probe_name
+        probe.write_text(probe_name, encoding="utf-8")
+        _require_success(
+            runner([rclone, "copyto", str(probe), destination]),
+            action="Drive write probe (use a writable Workspace Shared Drive)",
+        )
         try:
-            entries = _rclone_lsjson(
-                rclone,
-                sa_json,
-                shared_with_me=shared_with_me,
-                runner=runner,
+            result = runner([rclone, "cat", destination])
+            _require_success(result, action="Drive write probe readback")
+            if result.stdout != probe_name:
+                raise RuntimeError("Drive write probe readback did not match")
+        finally:
+            _require_success(
+                runner([rclone, "deletefile", destination, "--drive-use-trash=true"]),
+                action="Drive write probe cleanup",
             )
-        except RuntimeError:
-            continue
-        for entry in entries:
-            if entry.get("Name") != folder_name:
-                continue
-            mime = str(entry.get("MimeType", ""))
-            is_dir = bool(entry.get("IsDir")) or mime.endswith("folder")
-            folder_id = entry.get("ID")
-            if is_dir and folder_id:
-                candidates_by_id[str(folder_id)] = entry
 
-    candidates = list(candidates_by_id.values())
-    if not candidates:
-        raise RuntimeError(
-            "Could not find shared Drive folder "
-            f"{folder_name!r} for the service account; share that folder "
-            f"(containing jlens-reasoning/ and data/jlens-reasoning/) with the "
-            f"SA and/or set {ROOT_FOLDER_ID_ENV}"
+
+def wait_for_drive_uploads(
+    *,
+    runner: CommandRunner = _default_runner,
+    timeout_seconds: float = 600.0,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Wait for the daemon's queued and active uploads, failing closed."""
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        result = runner(
+            ["rclone", "rc", "--url", f"http://{RCLONE_RC_ADDR}", "vfs/stats"]
         )
-    if len(candidates) > 1:
-        raise RuntimeError(
-            f"Multiple Drive folders named {folder_name!r} are visible to the "
-            f"service account; set {ROOT_FOLDER_ID_ENV} to disambiguate"
-        )
-    folder_id = str(candidates[0]["ID"])
-    return folder_id
+        _require_success(result, action="Drive upload status")
+        try:
+            stats = json.loads(result.stdout)
+            cache = stats["diskCache"]
+            counts = [
+                cache[name]
+                for name in ("uploadsQueued", "uploadsInProgress", "erroredFiles")
+            ]
+            out_of_space = cache["outOfSpace"]
+            if (
+                any(type(value) is not int or value < 0 for value in counts)
+                or type(out_of_space) is not bool
+            ):
+                raise ValueError("invalid counters")
+        except (ValueError, KeyError, TypeError):
+            raise RuntimeError(
+                "Invalid Drive upload status; cannot confirm persistence"
+            ) from None
+        if counts[2] or out_of_space:
+            raise RuntimeError(
+                "Drive uploads failed; preserve the VM to recover cached files"
+            )
+        if not any(counts):
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError("Timed out waiting for Drive uploads; preserve the VM")
+        sleep(1.0)
+
+
+def flush_colab_drive(*, marker: Path = MOUNT_MARKER_VM_PATH) -> None:
+    # Bootstrap failures before mounting have no daemon or buffered artifacts.
+    if marker.is_file():
+        wait_for_drive_uploads()
 
 
 def _wait_for_layout(
@@ -255,6 +259,7 @@ def mount_drive_with_service_account(
     runner: CommandRunner = _default_runner,
     environ: Mapping[str, str] | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    marker: Path = MOUNT_MARKER_VM_PATH,
 ) -> None:
     """Mount the shared SA Drive root at ``/content/drive/MyDrive`` via rclone."""
 
@@ -263,13 +268,9 @@ def mount_drive_with_service_account(
 
     env = dict(os.environ if environ is None else environ)
     apply_env_files(environ=env)
+    shared_drive_id = _required_drive_id(env, SHARED_DRIVE_ID_ENV)
+    root_folder_id = _required_drive_id(env, ROOT_FOLDER_ID_ENV)
     rclone = _ensure_rclone(runner)
-    root_folder_id = resolve_root_folder_id(
-        sa_json,
-        rclone=rclone,
-        runner=runner,
-        environ=env,
-    )
 
     mydrive_root.mkdir(parents=True, exist_ok=True)
     if any(mydrive_root.iterdir()):
@@ -281,7 +282,10 @@ def mount_drive_with_service_account(
             "jlens-reasoning layout"
         )
 
-    remote = _drive_remote(sa_json, root_folder_id=root_folder_id)
+    remote = _drive_remote(
+        sa_json, root_folder_id=root_folder_id, shared_drive_id=shared_drive_id
+    )
+    _verify_remote_write(rclone, remote, runner)
     result = runner(
         [
             rclone,
@@ -289,6 +293,9 @@ def mount_drive_with_service_account(
             f"{remote}:",
             str(mydrive_root),
             "--daemon",
+            "--rc",
+            "--rc-addr",
+            RCLONE_RC_ADDR,
             "--allow-other",
             "--vfs-cache-mode",
             "full",
@@ -297,6 +304,8 @@ def mount_drive_with_service_account(
         ]
     )
     _require_success(result, action="rclone mount")
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch()
     _wait_for_layout(mydrive_root, sleep=sleep)
 
 
