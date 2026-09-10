@@ -45,6 +45,9 @@ src/jlens_reasoning/          # reusable library
   environments/               # initialize_colab, RuntimeContext
   evaluation.py               # answer grading state machine (see policy below)
   evaluation_utils.py         # extraction / normalization / rank primitives
+  probing/                    # probe contracts, features, fitting, scoring,
+                              # checkpoints and output objectives
+  probe_jlens.py              # probe/J-Lens transport and sensitivity analysis
   experiments_utils/          # generic mechanics: tokens, interventions,
                               # controls, artifacts, validation
 experiments/<name>/           # one self-contained package + its notebook
@@ -71,6 +74,16 @@ Split of responsibility: generic, reusable mechanics go in
 `jlens_reasoning.experiments_utils`; experiment policy, thresholds, result
 assembly, and reporting stay local to the owning experiment package
 (`constants.py`, `experiment.py`, `reporting.py`, `utils.py` facade).
+
+Core probing behavior belongs to `jlens_reasoning.probing`, the project source
+of truth for feature extraction, fitting, scoring, probe artifacts and output
+objectives. Combined probe/J-Lens analysis belongs to `jlens_reasoning.probe_jlens`:
+direction transport, prompt sensitivity and future implementation from
+`docs/probe_jlens_routing_framework.md`. Dependencies run from `probe_jlens` to
+`probing`, never the reverse. Experiments supply data, labels, splits, settings,
+and output objectives; notebooks call the shared APIs rather than implementing
+probe math. Chat preparation and input hashing remain in `inference.py`.
+See `docs/probing.md` and `docs/probe_jlens.md`.
 
 ## Conventions
 

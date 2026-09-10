@@ -117,11 +117,15 @@ controls. This branch does not select an intervention strength or run it.
   performance → project directions → select matched pairs → differentiate
   selected prompts → compare and export. Loading, tables, and plots have
   separate cells so intermediate results remain inspectable.
-- `analysis.py` contains only three helpers: validate the saved problem split,
-  match provenance conditions, and compute `J_bar @ unit_probe` followed by
-  `W_U @ projected_probe`. The projection takes tensors directly.
-- `inputs.py` defines the direct-chat input contract and rejects incompatible
-  probe assets or prompt records; tokenization itself stays in shared inference.
+- [`jlens_reasoning.probing`](../../docs/probing.md) owns feature extraction,
+  centered logistic fitting, frozen scoring/metrics, checkpoint serialization,
+  and input compatibility.
+- [`jlens_reasoning.probe_jlens`](../../docs/probe_jlens.md) owns direction
+  projection and prompt sensitivities, and is the home for future routing-framework
+  implementation. The notebooks call these shared APIs at each visible stage.
+- `analysis.py` contains FLenQA-specific split validation and provenance pairing.
+- `constants.py` selects FLenQA's direct-chat profile and final-token feature
+  position; tokenization itself stays in shared inference.
 - `notebooks/flenqa_probe_jlens_concepts.ipynb` remains a small optional viewer
   of the exported vocabulary table.
 
@@ -142,6 +146,11 @@ directions, token variants, and recomputed-vs-saved probe scores remain checked.
 `ActivationRecorder` remains responsible for autograd setup and hook cleanup.
 Shared dataset normalization, grading, and deterministic token ranking are
 reused without redesigning those modules.
+
+The shared probing extraction preserves the chat-v2 artifact format and fitting
+calculations; that refactor alone does not require retraining aligned probes.
+Scikit-learn now comes from locked package dependencies. Rebuild/upload the wheel
+bundle before running these notebooks in Colab.
 
 The CPU regression suite executes the notebook extraction and sensitivity cells
 with a tiny randomly initialized model and a local tokenizer for all three

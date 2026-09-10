@@ -1,8 +1,6 @@
-"""Split checks, matched pairs, and the two probe-projection equations."""
+"""FLenQA problem split checks and matched experimental pairs."""
 
 from __future__ import annotations
-
-import torch
 
 from jlens_reasoning.benchmarks.flenqa.dataset import FlenqaPrompt, FlenqaRow
 
@@ -93,27 +91,3 @@ def matched_prompt_pairs(
         for key, pair in sorted(grouped.items())
         if short_ctx in pair and long_ctx in pair
     ]
-
-
-def static_probe_projection(
-    jlens_jacobian: torch.Tensor,
-    probe_weight: torch.Tensor,
-    unembedding: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return J_bar @ unit_probe and W_U @ projected_probe on CPU float32.
-
-    J rows are target coordinates, columns source coordinates. The installed
-    lens.transport uses row batches: h @ J.T. Existing jlens_vector pulls back
-    a token row u as J.T @ u; its dot with w_hat equals u @ J @ w_hat.
-    These scores omit final normalization and are not normalized lens logits.
-    """
-    probe_weight = probe_weight.detach().float().cpu()
-    probe_norm = probe_weight.norm()
-    if not torch.isfinite(probe_norm) or probe_norm == 0:
-        raise ValueError("Probe weight must be a finite nonzero vector")
-    probe_direction = probe_weight / probe_norm
-    projected_probe_direction = jlens_jacobian.float().cpu() @ probe_direction
-    token_scores = unembedding.detach().float().cpu() @ projected_probe_direction
-    if not torch.isfinite(token_scores).all():
-        raise ValueError("Non-finite projected vocabulary scores")
-    return projected_probe_direction, token_scores

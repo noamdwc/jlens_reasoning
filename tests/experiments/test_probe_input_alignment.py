@@ -11,15 +11,9 @@ import pytest
 import torch
 import transformers
 from jlens.hooks import ActivationRecorder
-from tokenizers import Tokenizer, models, pre_tokenizers
-from transformers import LlamaConfig, LlamaForCausalLM, PreTrainedTokenizerFast
+from transformers import LlamaConfig, LlamaForCausalLM
 
-from experiments.flenqa_probe_jlens.inputs import (
-    PROBE_INPUT_CONFIG,
-    probe_input_contract,
-    validate_input_record,
-    validate_probe_input_contract,
-)
+from experiments.flenqa_probe_jlens.constants import PROBE_CONFIG
 from jlens_reasoning.benchmarks.flenqa.dataset import (
     FlenqaRow,
     build_prompt_text,
@@ -33,39 +27,14 @@ from jlens_reasoning.inference import (
     generate_chat,
     prepare_chat_inputs,
 )
-
-
-@pytest.fixture
-def tokenizer():
-    backend = Tokenizer(
-        models.WordLevel(
-            {
-                "[UNK]": 0,
-                "[BOS]": 1,
-                "[EOS]": 2,
-                "[USER]": 3,
-                "[ASSISTANT]": 4,
-                "True": 5,
-                "False": 6,
-                "cat": 7,
-                "true": 8,
-                "TRUE": 9,
-                "false": 10,
-                "FALSE": 11,
-            },
-            unk_token="[UNK]",
-        )
-    )
-    backend.pre_tokenizer = pre_tokenizers.Whitespace()
-    return PreTrainedTokenizerFast(
-        tokenizer_object=backend,
-        unk_token="[UNK]",
-        bos_token="[BOS]",
-        eos_token="[EOS]",
-        pad_token="[EOS]",
-        additional_special_tokens=["[USER]", "[ASSISTANT]"],
-        chat_template="{{ bos_token }}[USER]{{ messages[0]['content'] }}{{ eos_token }}{% if add_generation_prompt %}[ASSISTANT]{% endif %}",
-    )
+from jlens_reasoning.probe_jlens import probe_sensitivities
+from jlens_reasoning.probing import (
+    extract_probe_features,
+    probe_input_contract,
+    token_margin,
+    validate_input_record,
+    validate_probe_input_contract,
+)
 
 
 def notebook_cell(path: str, cell_id: str) -> str:
@@ -76,7 +45,7 @@ def notebook_cell(path: str, cell_id: str) -> str:
 
 
 def test_probe_contract_rejects_legacy_assets_and_changed_template(tokenizer):
-    expected = probe_input_contract(tokenizer)
+    expected = probe_input_contract(tokenizer, config=PROBE_CONFIG)
     validate_probe_input_contract(expected, expected)
     with pytest.raises(ValueError, match="Retrain"):
         validate_probe_input_contract(
@@ -84,19 +53,21 @@ def test_probe_contract_rejects_legacy_assets_and_changed_template(tokenizer):
         )
     tokenizer.chat_template += " True"
     with pytest.raises(ValueError, match="Retrain"):
-        validate_probe_input_contract(expected, probe_input_contract(tokenizer))
+        validate_probe_input_contract(
+            expected, probe_input_contract(tokenizer, config=PROBE_CONFIG)
+        )
 
 
 def test_contract_detects_changed_vocabulary_but_ignores_runtime_padding(tokenizer):
-    original = probe_input_contract(tokenizer)
+    original = probe_input_contract(tokenizer, config=PROBE_CONFIG)
     tokenizer(["cat", "cat cat"], padding=True)
-    assert probe_input_contract(tokenizer) == original
+    assert probe_input_contract(tokenizer, config=PROBE_CONFIG) == original
     tokenizer.add_tokens(["new"])
-    assert probe_input_contract(tokenizer) != original
+    assert probe_input_contract(tokenizer, config=PROBE_CONFIG) != original
 
 
 def test_input_record_requires_exact_tokens_not_just_length(tokenizer):
-    encoded = prepare_chat_inputs(tokenizer, "cat", config=PROBE_INPUT_CONFIG)
+    encoded = prepare_chat_inputs(tokenizer, "cat", config=PROBE_CONFIG.inference)
     assert encoded["input_ids"].tolist() == [[1, 3, 7, 2, 4]]
     record = {"input_sha256": chat_input_fingerprint(encoded), "n_input_tokens": 5}
     validate_input_record(record, encoded)
@@ -174,7 +145,10 @@ def test_notebook_training_evaluation_and_gradients_use_generation_inputs(
             tqdm=lambda values, **kwargs: values,
             prepare_chat_inputs=prepare_chat_inputs,
             chat_input_fingerprint=chat_input_fingerprint,
-            PROBE_INPUT_CONFIG=PROBE_INPUT_CONFIG,
+            PROBE_CONFIG=PROBE_CONFIG,
+            extract_probe_features=extract_probe_features,
+            probe_sensitivities=probe_sensitivities,
+            token_margin=token_margin,
             probe_input_contract=probe_input_contract,
             validate_probe_input_contract=validate_probe_input_contract,
             validate_input_record=validate_input_record,

@@ -13,6 +13,7 @@ dependencies = [
   "jlens",
   "numpy",
   "pyarrow>=18.0.0",
+  "scikit-learn>=1.5",
   "torch",
   "tqdm",
   "transformers>=5.5",
