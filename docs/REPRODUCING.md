@@ -256,11 +256,17 @@ runs/flenqa-full-run/
 └── model_outputs.parquet
 ```
 
-The runner refuses to append to non-empty table directories. If it is
-interrupted, remove or move the incomplete run and restart into empty output
-directories. The raw model-output table preserves generated text, token IDs
-and pieces, answer fields, status fields, inference settings, measured wrapped
-input length, nominal FLenQA length, prompt provenance, and code revision.
+The runner refuses to append to non-empty table directories by default. The
+full-run and smoke notebooks explicitly set `overwrite=True`: rerunning their
+benchmark cells removes the previous `prompts`, `positions`, and `topk` shards
+before writing new ones. A failed rerun can leave partial shards; rerun the
+benchmark cell to replace them. This option does not remove
+`model_outputs.parquet`, which its own generation cell overwrites separately.
+For the probe-input alignment rerun, skip the benchmark cell and run only the
+setup and model-output generation cells. The raw model-output table preserves
+generated text, token IDs and pieces, answer fields, status fields, inference
+settings, measured wrapped input length, nominal FLenQA length, prompt
+provenance, and code revision.
 
 The accuracy notebook writes:
 
