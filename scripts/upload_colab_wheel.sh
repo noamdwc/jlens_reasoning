@@ -5,10 +5,15 @@ repository=$(cd "$(dirname "$0")/.." && pwd -P)
 allow_dirty=0
 drive_root="data/jlens-reasoning"
 remote="jlens"
+drive_arguments=()
 
 usage() {
     cat <<EOF
 usage: $(basename "$0") [OPTIONS]
+
+Set both JLENS_DRIVE_SHARED_DRIVE_ID and JLENS_DRIVE_ROOT_FOLDER_ID to
+upload into the same Workspace Shared Drive project folder as the CLI runner.
+With neither variable set, the saved remote root is used.
 
 Options:
   --remote NAME    rclone remote used for the wheel upload
@@ -53,9 +58,22 @@ if [ -n "$(git -C "$repository" status --porcelain)" ]; then
         "$(git -C "$repository" rev-parse HEAD)" >&2
 fi
 
+# Use the exact same folder IDs as the notebook mount without changing the
+# user's saved rclone remote or its OAuth credentials.
+if [ -n "${JLENS_DRIVE_SHARED_DRIVE_ID:-}" ] || [ -n "${JLENS_DRIVE_ROOT_FOLDER_ID:-}" ]; then
+    for variable in JLENS_DRIVE_SHARED_DRIVE_ID JLENS_DRIVE_ROOT_FOLDER_ID; do
+        if [[ ! "${!variable:-}" =~ ^[A-Za-z0-9_-]+$ ]]; then
+            printf 'error: set %s to a valid Drive ID\n' "$variable" >&2
+            exit 1
+        fi
+    done
+    drive_arguments=(--drive-team-drive "$JLENS_DRIVE_SHARED_DRIVE_ID"
+        --drive-root-folder-id "$JLENS_DRIVE_ROOT_FOLDER_ID")
+fi
+
 remote_root="${remote%:}:$drive_root"
 printf 'Uploading Colab wheel bundle to %s/wheels/\n' "$remote_root"
-rclone lsd "$remote_root" >/dev/null
+rclone lsd "$remote_root" ${drive_arguments[@]+"${drive_arguments[@]}"} >/dev/null
 
 workspace=$(mktemp -d "${TMPDIR:-/tmp}/jlens-wheel.XXXXXX")
 trap 'rm -rf "$workspace"' EXIT
@@ -111,7 +129,8 @@ upload() {
     local destination=$2
 
     printf 'Uploading %s...\n' "$(basename "$source_file")"
-    rclone copyto "$source_file" "$destination" --ignore-times --progress
+    rclone copyto "$source_file" "$destination" --ignore-times --progress \
+        ${drive_arguments[@]+"${drive_arguments[@]}"}
 }
 
 upload "$requirements_file" "$remote_requirements"

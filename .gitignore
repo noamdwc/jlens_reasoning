@@ -13,3 +13,7 @@ wandb/
 .claude/
 docs/superpowers/
 docs/internal/
+# Google service-account keys (never commit)
+**/drive-sa.json
+**/*-sa.json
+.config/jlens/

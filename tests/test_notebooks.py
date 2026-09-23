@@ -91,6 +91,9 @@ def test_notebooks_share_one_canonical_drive_loader_cell() -> None:
         "%pip install -qq ", "%pip install "
     )
     assert 'drive.mount("/content/drive")' in loader
+    assert "/content/jlens-credentials/drive-sa.json" in loader
+    assert "/content/jlens-credentials/colab_drive.py" in loader
+    assert "runpy.run_path" in loader
     assert "/content/drive/MyDrive/data/jlens-reasoning/wheels" in loader
     assert "requirements-colab.txt" in loader
     assert "project-commit.txt" in loader
