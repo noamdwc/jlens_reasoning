@@ -92,6 +92,10 @@ def test_notebooks_use_colab_utils_cells_and_stable_r2_prefix() -> None:
         setup = notebook_cells_by_id(path)["project-setup"]
         assert '"uv",' in setup and '"export",' in setup
         assert (
+            "%pip install -qq --disable-pip-version-check --no-deps {PROJECT_DIR}"
+            in setup
+        )
+        assert (
             "source_bundle_sha256(PROJECT_DIR)"
             in notebook_cells_by_id(path)["source-provenance"]
         )
