@@ -6,6 +6,8 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .ipynb_checkpoints/
+*_out.ipynb
+*_output.ipynb
 .env
 artifacts/
 wandb/

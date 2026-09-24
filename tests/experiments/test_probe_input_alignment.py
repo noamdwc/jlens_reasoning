@@ -172,7 +172,8 @@ def test_notebook_training_evaluation_and_gradients_use_generation_inputs(
             InferenceConfig=InferenceConfig,
             generate_chat=lambda *args, **kwargs: generated,
             MODEL_NAME="synthetic",
-            PROJECT_COMMIT="synthetic",
+            PROJECT_SOURCE_SHA256="synthetic",
+            OUTPUT_DIR=tmp_path,
         )
         save_cell = notebook_cell(
             "notebooks/flenqa_full_run.ipynb", "save-model-outputs"

@@ -72,46 +72,59 @@ def test_notebooks_have_no_saved_outputs_or_execution_counts() -> None:
             assert cell.get("outputs", []) == []
 
 
-def test_notebooks_share_one_canonical_drive_loader_cell() -> None:
-    recurring_paths = [
-        Path("notebooks/_template.ipynb"),
-        *FLENQA_NOTEBOOKS,
-        *EXPERIMENT_NOTEBOOKS,
-    ]
-    recurring_loaders = [
-        load_notebook(path).cells[0].source for path in recurring_paths
-    ]
-    loader = recurring_loaders[0]
-    environment_check_loader = (
-        load_notebook(Path("notebooks/00_environment_check.ipynb")).cells[0].source
+def test_notebooks_use_colab_utils_cells_and_stable_r2_prefix() -> None:
+    cells = [notebook_cells_by_id(path) for path in ALL_NOTEBOOKS]
+    checks = {item["check-environment"] for item in cells}
+    helpers = {item["r2-helpers"] for item in cells}
+    assert len(checks) == len(helpers) == 1
+    check = checks.pop()
+    helper = helpers.pop()
+    assert 'CONFIG = read_env(PROJECT_DIR / ".colab.env")' in check
+    assert 'CONFIG.get("R2_DATA_PREFIX", "").strip("/") != ARTIFACT_PREFIX' in check
+    assert 'OUTPUT_DIR = PROJECT_DIR / "output"' in check
+    assert (
+        'key = f"{ARTIFACT_PREFIX}/{path.relative_to(OUTPUT_DIR).as_posix()}"' in helper
     )
+    assert "def upload_artifacts():" in helper
+    for path in NOTEBOOKS:
+        notebook = load_notebook(path)
+        assert any(cell.id == "download-data" for cell in notebook.cells)
+        setup = notebook_cells_by_id(path)["project-setup"]
+        assert '"uv",' in setup and '"export",' in setup
+        assert (
+            "source_bundle_sha256(PROJECT_DIR)"
+            in notebook_cells_by_id(path)["source-provenance"]
+        )
 
-    assert all(candidate == loader for candidate in recurring_loaders)
-    assert environment_check_loader == loader.replace(
-        "%pip install -qq ", "%pip install "
+    accuracy_inputs = notebook_cells_by_id(FLENQA_ACCURACY_NOTEBOOK)["download-data"]
+    assert '"runs/flenqa-full-run/model_outputs.parquet"' in accuracy_inputs
+    assert "topk" not in accuracy_inputs
+
+
+def test_colab_results_are_written_under_the_r2_upload_directory() -> None:
+    output_paths = {
+        Path("notebooks/flenqa_smoke.ipynb"): "runs/flenqa-smoke",
+        Path("notebooks/flenqa_full_run.ipynb"): "runs/flenqa-full-run",
+        Path("notebooks/flenqa_accuracy.ipynb"): "runs/flenqa-accuracy",
+        Path("notebooks/flenqa_probe_assets.ipynb"): "checkpoints/flenqa-probe-assets",
+        Path("notebooks/flenqa_probe_eval.ipynb"): "runs/flenqa-probe-eval",
+        FLENQA_PROBE_JLENS_NOTEBOOK: "runs/flenqa-probe-jlens",
+        Path("experiments/jlens_readout_sanity/jlens_readout_sanity.ipynb"): (
+            "runs/jlens-readout-sanity"
+        ),
+    }
+    for path, relative in output_paths.items():
+        source = "\n".join(notebook_cells_by_id(path).values())
+        assert f'OUTPUT_DIR / "{relative}"' in source
+
+    full_run = notebook_cells_by_id(Path("notebooks/flenqa_full_run.ipynb"))
+    assert (
+        'MODEL_OUTPUT_PATH = OUTPUT_DIR / "runs/flenqa-full-run"'
+        in full_run["save-model-outputs"]
     )
-    assert 'drive.mount("/content/drive")' in loader
-    assert "/content/jlens-credentials/drive-sa.json" in loader
-    assert "/content/jlens-credentials/colab_drive.py" in loader
-    assert "runpy.run_path" in loader
-    assert "/content/drive/MyDrive/data/jlens-reasoning/wheels" in loader
-    assert "requirements-colab.txt" in loader
-    assert "project-commit.txt" in loader
-    assert "project-dirty.txt" in loader
-    assert "PROJECT_COMMIT" in loader
-    assert "PROJECT_WORKING_TREE_DIRTY" in loader
-    assert 'glob("jlens_reasoning-*.whl")' in loader
-    assert loader.count("%pip install -qq") == 2
-    assert environment_check_loader.count("%pip install") == 2
-    assert "%pip install -q" not in environment_check_loader
-    assert "--requirement" in loader
-    assert "--no-deps" in loader
-    assert "subprocess.run" not in loader
-    assert "sys.executable" not in loader
-    assert "GITHUB_TOKEN_JLENS_REAS" not in loader
-    assert "scripts/colab_bootstrap.py" not in loader
-    assert "PROJECT_REF" not in loader
-    assert not Path("scripts/colab_bootstrap.py").exists()
+    probe_assets = notebook_cells_by_id(Path("notebooks/flenqa_probe_assets.ipynb"))
+    assert 'SPLIT_PATH = ASSET_DIR / "problem_split.json"' in probe_assets["setup"]
+    assert "shutil.copy2(previous_split, SPLIT_PATH)" in probe_assets["setup"]
 
 
 def test_asset_notebook_installs_dependencies_very_quietly() -> None:
@@ -138,8 +151,8 @@ def test_notebooks_use_the_colab_environment_module() -> None:
             "from jlens_reasoning.environments.colab import initialize_colab" in source
         )
         assert "context = initialize_colab(" in source
-        assert "PROJECT_DIR" not in source
-        assert "rev-parse" not in source
+        assert "PROJECT_DIR" in source
+        assert "drive.mount" not in source
 
 
 def test_experiment_notebooks_exclude_flenqa_benchmark_drivers() -> None:
@@ -917,7 +930,7 @@ def test_readout_execution_saving_and_reporting_are_separate_cells() -> None:
 
     save_source = cells_by_id["save-result"]
     assert "result.provenance" in save_source
-    assert '"working_tree_dirty": PROJECT_WORKING_TREE_DIRTY' in save_source
+    assert '"source_sha256": PROJECT_SOURCE_SHA256' in save_source
     assert "write_results" in save_source
     assert "run_experiment" not in save_source
     assert "result.cases" not in save_source
@@ -942,30 +955,14 @@ def test_readout_sanity_documents_text_only_result_artifact() -> None:
     assert "paper gap" in normalized
 
 
-def test_asset_notebook_downloads_the_two_pinned_assets_to_drive() -> None:
+def test_asset_notebook_downloads_the_two_pinned_assets_to_r2_output() -> None:
     notebook = load_notebook(ASSET_NOTEBOOK)
     source = "\n".join(cell.source for cell in notebook.cells)
 
-    assert 'drive.mount("/content/drive")' in source
-    assert 'userdata.get("HF_TOKEN")' in source
-    assert "/content/drive/MyDrive/data/jlens-reasoning" in source
+    assert 'R2_CREDENTIALS.get("HF_TOKEN")' in source
+    assert "root = OUTPUT_DIR" in source
     assert "Qwen/Qwen3.5-4B" in source
     assert "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a" in source
     assert "neuronpedia/jacobian-lens" in source
     assert "16a01f309fcec900fdcec3f4cd5b64f3d00e4d5a" in source
-    assert "rclone" not in source
-
-
-def test_loader_bootstraps_injected_user_rclone_without_importing_colab(tmp_path):
-    credentials = tmp_path / "credentials"
-    credentials.mkdir()
-    (credentials / "rclone.conf").write_text("[jlens]\ntype=drive\n")
-    marker = tmp_path / "bootstrapped"
-    (credentials / "colab_drive.py").write_text(
-        f"from pathlib import Path\nPath({str(marker)!r}).touch()\n"
-    )
-    source = load_notebook(Path("notebooks/flenqa_probe_assets.ipynb")).cells[0].source
-    bootstrap = source.split("if not COMMIT_FILE.is_file():", 1)[0]
-    bootstrap = bootstrap.replace("/content/jlens-credentials", str(credentials))
-    exec(compile(bootstrap, "colab-loader", "exec"), {})
-    assert marker.is_file()
+    assert "drive.mount" not in source

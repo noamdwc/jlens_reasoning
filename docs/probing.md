@@ -114,6 +114,5 @@ FLenQA's settings live in `experiments/flenqa_probe_jlens/constants.py`; its
 split, context sizes, regularization grid, label orientation, and failure cohorts
 remain visible in the experiment notebooks.
 
-Scikit-learn is a declared, locked package dependency. Rebuild/upload the wheel
-bundle before running the migrated notebooks in Colab so their imports resolve
-against the updated package.
+Scikit-learn is a declared, locked package dependency. The Colab notebooks
+install the current source bundle and locked dependencies sent by `colab-utils`.

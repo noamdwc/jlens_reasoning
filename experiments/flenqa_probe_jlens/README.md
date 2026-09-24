@@ -7,8 +7,9 @@ task-relevant information.
 
 ## Run
 
-1. Upload the current wheel with `scripts/upload_colab_wheel.sh --allow-dirty`
-   when testing uncommitted changes, or omit that flag after committing.
+1. Run notebooks through `./scripts/run_colab_notebook.sh` from the repository root.
+   Set `R2_CREDENTIALS_FILE` and use the same data and artifact prefix in
+   `.colab.env` as described in `docs/REPRODUCING.md`.
 2. Run `notebooks/flenqa_probe_assets.ipynb` to train **new chat-format probes**.
    Old raw-prompt probes are incompatible. The notebook reuses the original
    problem split and 250/500 training policy, and overwrites `probes.pt` and
@@ -16,25 +17,25 @@ task-relevant information.
 3. Ensure generated answers contain `input_sha256`. Legacy answers lack this
    evidence even if their metadata says `direct`: rerun the setup and
    `save-model-outputs` cell of `notebooks/flenqa_full_run.ipynb` with the current
-   wheel to overwrite `runs/flenqa-full-run/model_outputs.parquet`. Skip its
+   source to overwrite `runs/flenqa-full-run/model_outputs.parquet`. Skip its
    `run-benchmark` cell; existing lens readout shards do not need to be regenerated
    for this alignment.
 4. Run `notebooks/flenqa_probe_eval.ipynb` to export
    `runs/flenqa-probe-eval/{probe_results.parquet,auroc.parquet,manifest.json}`.
-5. Run this experiment notebook in Colab. The CLI equivalent is
-   `scripts/run_colab_notebook.sh experiments/flenqa_probe_jlens/flenqa_probe_jlens.ipynb`.
+5. Run this experiment notebook with
+   `./scripts/run_colab_notebook.sh experiments/flenqa_probe_jlens/flenqa_probe_jlens.ipynb`.
 
 The probe checkpoint and metadata live under
-`/content/drive/MyDrive/jlens-reasoning/checkpoints/flenqa-probe-assets/`.
+`<R2_DATA_PREFIX>/checkpoints/flenqa-probe-assets/`.
 The shared split remains at `checkpoints/flenqa-probe-assets/problem_split.json`;
 do not delete or regenerate it during migration. Each stage overwrites its
 artifacts in the original directories. No manual archiving or deletion is required. Complete probe training and answer generation
 before evaluation, then rerun analysis so downstream results match the new inputs.
 The version-2 metadata and input-hash checks still reject stale artifacts.
 Saved generated answers live under
-`/content/drive/MyDrive/jlens-reasoning/runs/flenqa-full-run/`.
+`<R2_DATA_PREFIX>/runs/flenqa-full-run/`.
 Model and lens paths are the existing `MODEL_PATH` and `LENS_PATH` constants,
-under `/content/drive/MyDrive/data/jlens-reasoning/assets/`.
+under `<R2_DATA_PREFIX>/assets/`.
 
 ## Input alignment and artifact compatibility
 
@@ -152,8 +153,8 @@ reused without redesigning those modules.
 
 The shared probing extraction preserves the chat-v2 artifact format and fitting
 calculations; that refactor alone does not require retraining aligned probes.
-Scikit-learn now comes from locked package dependencies. Rebuild/upload the wheel
-bundle before running these notebooks in Colab.
+Scikit-learn now comes from locked package dependencies. Each Colab run installs
+the current source bundle.
 
 The CPU regression suite executes the notebook extraction and sensitivity cells
 with a tiny randomly initialized model and a local tokenizer for all three
