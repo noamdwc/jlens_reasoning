@@ -86,6 +86,12 @@ def test_notebooks_use_colab_utils_cells_and_stable_r2_prefix() -> None:
         'key = f"{ARTIFACT_PREFIX}/{path.relative_to(OUTPUT_DIR).as_posix()}"' in helper
     )
     assert "def upload_artifacts():" in helper
+    for path in ALL_NOTEBOOKS:
+        upload = load_notebook(path).cells[-1]
+        assert upload.id == "upload-artifacts"
+        assert upload.source == (
+            'upload_artifacts()\nprint("COLAB_NOTEBOOK_UPLOAD_COMPLETE")'
+        )
     for path in NOTEBOOKS:
         notebook = load_notebook(path)
         assert any(cell.id == "download-data" for cell in notebook.cells)

@@ -7,9 +7,10 @@ task-relevant information.
 
 ## Run
 
-1. Run notebooks through `./scripts/run_colab_notebook.sh` from the repository root.
-   Set `R2_CREDENTIALS_FILE` and use the same data and artifact prefix in
-   `.colab.env` as described in `docs/REPRODUCING.md`.
+1. Set up the sibling local `colab-utils` checkout and run notebooks through
+   `./scripts/run_colab_notebook.sh` from this repository root. Use the same R2
+   data and artifact prefix in `.colab.env` and configure the external
+   credentials file as described in [the reproduction guide](../../docs/REPRODUCING.md).
 2. Run `notebooks/flenqa_probe_assets.ipynb` to train **new chat-format probes**.
    Old raw-prompt probes are incompatible. The notebook reuses the original
    problem split and 250/500 training policy, and overwrites `probes.pt` and

@@ -3,6 +3,7 @@ set -euo pipefail
 
 repository=$(cd "$(dirname "$0")/.." && pwd -P)
 export R2_CREDENTIALS_FILE="${R2_CREDENTIALS_FILE:-$HOME/.config/colab-utils/r2.env}"
+export NOTEBOOK_UPLOADS_ARTIFACTS=1
 
 # The Colab CLI's Python has no default CA file on this macOS installation.
 if [[ ! -f ${SSL_CERT_FILE:-} ]]; then

@@ -48,11 +48,16 @@ Data and generated outputs are never committed. The `artifacts/` directory is
 also the default destination for executed notebook copies produced by the
 Colab CLI.
 
-## Colab workflow with `colab-utils`
+## Colab workflow with local `colab-utils`
 
-Use `scripts/run_colab_notebook.sh` from this repository root. It calls the
-sibling `../colab-utils/run.sh` runner. Install and authenticate the Google
-Colab CLI.
+Keep a checkout of the local `colab-utils` repository beside this project, so
+`../colab-utils/run.sh` exists when you are in the `jlens_reasoning` root. The
+project entry point is `./scripts/run_colab_notebook.sh`; run it from this
+repository root with one notebook path per invocation. It calls that sibling
+runner and configures the credentials path and notebook artifact upload. Install
+and authenticate the Google Colab CLI first. The runner also needs Bash, Git,
+tar, and Python 3 on the local machine.
+
 The repository's [`.colab.env`](../.colab.env) selects the `side-projects` bucket and the
 `jlens-reasoning` object prefix. Keep credentials in a private file outside
 this repository:
@@ -72,6 +77,10 @@ The script defaults `R2_CREDENTIALS_FILE` to
 ./scripts/run_colab_notebook.sh experiments/jlens_readout_sanity/jlens_readout_sanity.ipynb
 ```
 
+Set `COLAB_ENV_FILE` to a separate file with the same keys as `.colab.env`
+when a run needs an isolated R2 prefix. This keeps the repository's default
+configuration unchanged.
+
 If your credential file is elsewhere, set `R2_CREDENTIALS_FILE` for that run:
 
 ```bash
@@ -79,8 +88,10 @@ R2_CREDENTIALS_FILE=/path/to/r2.env \
   ./scripts/run_colab_notebook.sh notebooks/00_environment_check.ipynb
 ```
 
-The runner sends the current contents of files in Git's index, checks the
-notebook's `check-environment` cell, and executes it in `/content/project`.
+The runner sends the current working-tree contents of paths selected by Git's
+index. Untracked files are omitted unless selected with `git add -N`. It checks
+the notebook's `check-environment` cell, then executes the notebook in
+`/content/project`.
 The notebooks export locked requirements with `uv`, install this project from
 the sent source, and record a SHA-256 of their source bundle. The runner saves
 executed notebooks under `artifacts/colab/` when
@@ -92,8 +103,10 @@ downloads only the objects it needs from that prefix into
 the key `jlens-reasoning/assets/models/qwen3.5-4b/` in the `side-projects`
 bucket becomes
 `/content/project/data/assets/models/qwen3.5-4b/` in Colab. New results go under
-`/content/project/output`. After execution, `colab-utils` uploads only the
-output files, preserving their paths under the same prefix:
+`/content/project/output`. Each notebook uploads its output files to R2 in its
+final cell, preserving their paths under the same prefix. The `colab-utils`
+runner confirms that upload and skips a second transfer; if a notebook fails,
+it still attempts to upload any partial output files.
 
 ```text
 <R2_DATA_PREFIX>/
@@ -109,8 +122,9 @@ new files from `output/`. Running a notebook again replaces the R2 objects at
 its output paths. Model backed notebooks download the pinned model assets, and
 the drift notebook downloads the full top-k table; allow enough runtime disk
 space for those inputs. Run dependent notebooks in the order below.
-`EXPECT_GPU=true` requests a T4; set it to
-`false` for the asset download notebook if desired. The runner does not run
+`EXPECT_GPU=true` requests a T4 by default; set `COLAB_GPU=A100` for a
+one-run GPU override when more memory is needed. Set `EXPECT_GPU=false` for
+the asset download notebook if desired. The runner does not run
 multiple notebooks in one invocation.
 
 Existing Drive assets and compatible `runs/` or `checkpoints/` can be copied
