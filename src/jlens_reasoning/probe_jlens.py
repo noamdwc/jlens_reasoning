@@ -105,6 +105,8 @@ def probe_sensitivities(
     layers = sorted(probes)
     with (
         torch.enable_grad(),
+        # Long prompts otherwise retain every decoder intermediate on the GPU.
+        torch.autograd.graph.save_on_cpu(),
         ActivationRecorder(blocks, at=range(num_layers), start_graph_at=0) as recorder,
     ):
         outputs = model(
@@ -139,11 +141,14 @@ def probe_sensitivities(
         if saved_records is not None:
             saved = saved_records[layer]
             for name, recomputed in (("probe_score", score), ("output_margin", value)):
-                if name not in saved or not np.isclose(
-                    recomputed, float(saved[name]), rtol=rtol, atol=atol
-                ):
+                if name not in saved:
+                    raise ValueError(f"Layer {layer}: missing saved {name}")
+                saved_value = float(saved[name])
+                if not np.isclose(recomputed, saved_value, rtol=rtol, atol=atol):
                     raise ValueError(
-                        f"Recomputed {name} disagrees with saved probe results"
+                        f"Layer {layer}: recomputed {name}={recomputed:.6g} "
+                        f"disagrees with saved {name}={saved_value:.6g} "
+                        f"(rtol={rtol}, atol={atol})"
                     )
         result.append(ProbeSensitivity(layer, score, value, sensitivity))
     return tuple(result)
