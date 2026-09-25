@@ -13,14 +13,28 @@ from .contracts import (
     validate_probe_input_contract,
 )
 from .features import ProbeFeatures, extract_probe_features
+from .linear import (
+    ProbeEvaluation,
+    binary_probe_metrics,
+    evaluate_probe,
+    fit_binary_probe,
+    score_probe,
+    unit_probe_direction,
+)
 from .objectives import token_margin
 
 __all__ = [
+    "ProbeEvaluation",
+    "evaluate_probe",
     "ProbeConfig",
     "ProbeFeatures",
+    "binary_probe_metrics",
     "extract_probe_features",
+    "fit_binary_probe",
     "probe_input_contract",
+    "score_probe",
     "token_margin",
+    "unit_probe_direction",
     "validate_input_record",
     "validate_probe_input_contract",
 ]
