@@ -103,3 +103,31 @@ def test_drive_mount_failure_is_fatal_and_redacted(tmp_path: Path) -> None:
 
     assert "sensitive mount detail" not in str(error.value)
     assert error.value.__cause__ is None
+
+
+def test_wandb_key_can_come_from_environment(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WANDB_API_KEY", "env-wandb-key")
+    events: list[object] = []
+
+    def get_secret(name: str) -> str:
+        raise AssertionError(f"secrets should not be used: {name}")
+
+    context = initialize_colab(
+        artifact_root=tmp_path,
+        secret_getter=get_secret,
+        drive_mounter=lambda: events.append("drive-mounted"),
+        wandb_authenticator=lambda **kwargs: events.append(("wandb", kwargs)) or True,
+        device_selector=lambda **_: torch.device("cuda"),
+    )
+
+    assert events == [
+        "drive-mounted",
+        (
+            "wandb",
+            {
+                "api_key": "env-wandb-key",
+                "enabled": True,
+            },
+        ),
+    ]
+    assert context.wandb_enabled is True

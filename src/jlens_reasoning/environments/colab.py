@@ -9,6 +9,11 @@ from pathlib import Path
 import torch
 
 from jlens_reasoning.config import ARTIFACT_ROOT_ENV, create_artifact_paths
+from jlens_reasoning.environments.colab_drive import (
+    SA_JSON_VM_PATH,
+    ensure_colab_drive,
+    resolve_wandb_api_key,
+)
 from jlens_reasoning.environments.common import RuntimeContext, create_runtime_context
 from jlens_reasoning.runtime import select_device
 from jlens_reasoning.tracking import authenticate_wandb
@@ -23,23 +28,15 @@ def _get_colab_secret(name: str) -> str:
 
 
 def _mount_google_drive() -> None:
-    from google.colab import drive
-
-    drive.mount("/content/drive")
+    ensure_colab_drive(sa_json=SA_JSON_VM_PATH)
 
 
-def _required_secret(
-    name: str,
+def _required_wandb_key(
     secret_getter: Callable[[str], str],
 ) -> str:
-    try:
-        value = secret_getter(name)
-    except Exception:
-        raise RuntimeError(f"Required Colab secret {name} is unavailable") from None
-
+    value = resolve_wandb_api_key(secret_getter=secret_getter)
     if not value:
-        raise RuntimeError(f"Required Colab secret {name} is unavailable")
-
+        raise RuntimeError("Required Colab secret WANDB_API_KEY is unavailable")
     return value
 
 
@@ -69,7 +66,7 @@ def initialize_colab(
 
     wandb_enabled = False
     if enable_wandb:
-        wandb_key = _required_secret("WANDB_API_KEY", secret_getter)
+        wandb_key = _required_wandb_key(secret_getter)
         try:
             wandb_enabled = wandb_authenticator(
                 api_key=wandb_key,
