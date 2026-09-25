@@ -11,10 +11,15 @@ import torch
 from .contracts import validate_probe_input_contract
 from .linear import _probe_tensors
 
+FORMAT_VERSION = 2
+
 
 def _validate_checkpoint(checkpoint: Mapping) -> None:
     metadata = checkpoint.get("metadata", {})
-    if checkpoint.get("format_version") != 2 or metadata.get("format_version") != 2:
+    if (
+        checkpoint.get("format_version") != FORMAT_VERSION
+        or metadata.get("format_version") != FORMAT_VERSION
+    ):
         raise ValueError(
             "Unsupported probe checkpoint version. Retrain compatible probes."
         )
@@ -45,7 +50,7 @@ def save_probe_checkpoint(
 ) -> None:
     """Save the v2 tensor layout; optionally write its matching JSON sidecar."""
     checkpoint = {
-        "format_version": 2,
+        "format_version": FORMAT_VERSION,
         "metadata": dict(metadata),
         "layers": dict(layers),
     }
