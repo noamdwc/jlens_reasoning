@@ -41,6 +41,14 @@ def static_probe_projection(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return J @ unit_probe and W_U @ projected_probe as CPU float32 tensors.
 
+    For probe weight w, Jacobian J and unembedding matrix W_U::
+
+        unit_probe = w / ||w||_2
+        projected = J @ unit_probe
+        scores = W_U @ projected
+
+    Returns (projected, scores), where scores has one entry per vocabulary token.
+
     J rows are target coordinates; columns are source coordinates. Supply a map
     for the same feature boundary as the probe. Block-output maps cannot accept
     the final normalized probe. Scores omit final normalization; they are not
@@ -102,6 +110,20 @@ def probe_sensitivities(
     atol: float = 0.05,
 ) -> tuple[ProbeSensitivity, ...]:
     """Differentiate an output scalar along each positive-class unit probe.
+
+    Let h_l be the layer-l state at config.token_position, w_l the probe weight,
+    mu_l its training mean, b_l its bias, and z the final-position next-token
+    logits. Each returned record contains::
+
+        probe_score = (h_l - mu_l) @ w_l + b_l
+        output_margin = objective(z)
+        unit_probe_l = w_l / ||w_l||_2
+        sensitivity = grad_h_l(output_margin) @ unit_probe_l
+
+    Sensitivity is the local derivative for perturbing only the selected token
+    along unit_probe_l. For a small step epsilon, the first-order output change
+    is epsilon * sensitivity. Despite its name, output_margin can be any scalar
+    supplied by objective; it need not be a token-logit margin.
 
     The caller supplies model blocks and the next-token logit objective. This
     function owns autograd hooks, feature selection, scoring and saved-result
