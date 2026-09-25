@@ -223,13 +223,25 @@ runs/flenqa-full-run/
 └── model_outputs.parquet
 ```
 
-The runner refuses to append to non-empty table directories. If it is
-interrupted, `colab-utils` can still upload partial output shards. Remove or
-move the incomplete `runs/flenqa-full-run/` objects in R2 before restarting;
-a fresh VM has empty local output directories and cannot detect stale R2
-shards. The raw model-output table preserves generated text, token IDs
-and pieces, answer fields, status fields, inference settings, measured wrapped
-input length, nominal FLenQA length, prompt provenance, and code revision.
+The runner refuses to append to non-empty table directories by default. The
+full-run and smoke notebooks explicitly set `overwrite=True`: rerunning their
+benchmark cells removes the previous local `prompts`, `positions`, and `topk`
+shards before writing new ones. This option does not remove
+`model_outputs.parquet`, which its own generation cell overwrites separately.
+
+`overwrite=True` does not delete stale R2 objects. If a run is interrupted,
+`colab-utils` can still upload partial output shards. Before restarting a
+benchmark, remove or move the previous run's `prompts/`, `positions/`, and
+`topk/` objects under `runs/flenqa-full-run/` (or `runs/flenqa-smoke/`) in R2.
+A fresh VM has empty local output directories and cannot detect stale remote
+shards; uploading replacement files does not remove extra objects left by an
+earlier run. Preserve `model_outputs.parquet` when only replacing lens shards.
+
+For the probe-input alignment rerun, skip the benchmark cell and run only the
+setup and model-output generation cells. The raw model-output table preserves
+generated text, token IDs and pieces, answer fields, status fields, inference
+settings, measured wrapped input length, nominal FLenQA length, prompt
+provenance, and code revision.
 
 The accuracy notebook writes:
 
