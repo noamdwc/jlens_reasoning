@@ -136,6 +136,7 @@ def probe_sensitivities(
         raise ValueError("Probe layers must be nonempty valid model layer indices")
     if len(blocks) != num_layers:
         raise ValueError("Expected one model block per hidden-state layer")
+    # Rebuild the input and check that it matches any saved probe results.
     inputs = prepare_probe_inputs(model, tokenizer, prompt, config=config)
     if saved_records is not None:
         for layer in probes:
@@ -149,6 +150,7 @@ def probe_sensitivities(
         _checkpoint_blocks(blocks),
         ActivationRecorder(blocks, at=range(num_layers), start_graph_at=0) as recorder,
     ):
+        # Keep the computation graph linking layer states to next-token logits.
         outputs = model(
             **inputs, output_hidden_states=True, logits_to_keep=1, use_cache=False
         )
@@ -160,24 +162,32 @@ def probe_sensitivities(
                     states[layer][0, config.token_position],
                     recorder.activations[layer][0, config.token_position],
                 )
+        # output_margin = objective(z), where z is the final-position logit vector.
         margin = objective(outputs.logits[0, -1].float())
         if margin.ndim != 0 or not torch.isfinite(margin):
             raise ValueError("Probe output objective must return a finite scalar")
+        # Differentiate the scalar margin with respect to each full layer tensor.
+        # Each gradient has shape [batch, tokens, hidden_dim]; selecting the
+        # probed token below gives grad_h_l(output_margin).
         gradients = torch.autograd.grad(
             margin, tuple(states[layer] for layer in layers)
         )
     value = float(margin.detach().cpu())
     result = []
     for layer, gradient in zip(layers, gradients, strict=True):
+        # Probe readout at h_l: (h_l - training_mean_l) @ w_l + b_l.
         score = float(
             score_probe(probes[layer], states[layer][0, config.token_position])
         )
+        # Select grad_h_l and project it onto w_l / ||w_l||_2. This scalar
+        # measures the local margin change per unit step along the probe axis.
         sensitivity = float(
             gradient[0, config.token_position].detach().float().cpu()
             @ unit_probe_direction(probes[layer])
         )
         if not math.isfinite(sensitivity):
             raise ValueError("Non-finite probe sensitivity")
+        # Confirm this forward pass reproduces the saved score and objective.
         if saved_records is not None:
             saved = saved_records[layer]
             for name, recomputed in (("probe_score", score), ("output_margin", value)):
