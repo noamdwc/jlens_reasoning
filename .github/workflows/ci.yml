@@ -28,9 +28,6 @@ jobs:
           - os: macos-latest
             python-version: "3.11"
 
-    env:
-      JLENS_REAS_ARTIFACT_ROOT: ${{ runner.temp }}/jlens-reasoning-test-artifacts
-
     steps:
       - uses: actions/checkout@v5
 
@@ -54,4 +51,6 @@ jobs:
         run: uv run ruff check .
 
       - name: Run tests
+        env:
+          JLENS_REAS_ARTIFACT_ROOT: ${{ runner.temp }}/jlens-reasoning-test-artifacts
         run: uv run pytest -v
