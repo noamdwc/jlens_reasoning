@@ -79,7 +79,7 @@ def test_r2_download_selects_only_requested_inputs(tmp_path: Path) -> None:
         )
 
 
-def test_colab_initialization_mounts_drive_and_authenticates_wandb(
+def test_colab_initialization_authenticates_wandb(
     tmp_path: Path,
 ) -> None:
     events: list[object] = []
@@ -88,13 +88,11 @@ def test_colab_initialization_mounts_drive_and_authenticates_wandb(
     context = initialize_colab(
         artifact_root=tmp_path,
         secret_getter=secrets.__getitem__,
-        drive_mounter=lambda: events.append("drive-mounted"),
         wandb_authenticator=lambda **kwargs: events.append(("wandb", kwargs)) or True,
         device_selector=lambda **_: torch.device("cuda"),
     )
 
     assert events == [
-        "drive-mounted",
         (
             "wandb",
             {
@@ -115,7 +113,6 @@ def test_wandb_is_enabled_by_default_and_failure_is_fatal(tmp_path: Path) -> Non
         initialize_colab(
             artifact_root=tmp_path,
             secret_getter=secrets.__getitem__,
-            drive_mounter=lambda: None,
             wandb_authenticator=lambda **_: (_ for _ in ()).throw(
                 RuntimeError("W&B authentication failed")
             ),
@@ -137,7 +134,6 @@ def test_wandb_can_be_explicitly_disabled(tmp_path: Path) -> None:
         enable_wandb=False,
         artifact_root=tmp_path,
         secret_getter=get_secret,
-        drive_mounter=lambda: None,
         wandb_authenticator=lambda **_: (_ for _ in ()).throw(
             AssertionError("W&B authentication must be skipped")
         ),
@@ -155,7 +151,6 @@ def test_required_secret_error_does_not_include_secret_value(
         initialize_colab(
             artifact_root=tmp_path,
             secret_getter=lambda _: (_ for _ in ()).throw(KeyError("private")),
-            drive_mounter=lambda: None,
             device_selector=lambda **_: torch.device("cuda"),
         )
 
@@ -163,16 +158,27 @@ def test_required_secret_error_does_not_include_secret_value(
     assert error.value.__cause__ is None
 
 
-def test_drive_mount_failure_is_fatal_and_redacted(tmp_path: Path) -> None:
-    with pytest.raises(RuntimeError, match="Google Drive mount failed") as error:
-        initialize_colab(
-            artifact_root=tmp_path,
-            secret_getter=lambda _: "unused",
-            drive_mounter=lambda: (_ for _ in ()).throw(
-                RuntimeError("sensitive mount detail")
-            ),
-            device_selector=lambda **_: torch.device("cuda"),
-        )
+def test_wandb_key_can_come_from_environment(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WANDB_API_KEY", "env-wandb-key")
+    events: list[object] = []
 
-    assert "sensitive mount detail" not in str(error.value)
-    assert error.value.__cause__ is None
+    def get_secret(name: str) -> str:
+        raise AssertionError(f"secrets should not be used: {name}")
+
+    context = initialize_colab(
+        artifact_root=tmp_path,
+        secret_getter=get_secret,
+        wandb_authenticator=lambda **kwargs: events.append(("wandb", kwargs)) or True,
+        device_selector=lambda **_: torch.device("cuda"),
+    )
+
+    assert events == [
+        (
+            "wandb",
+            {
+                "api_key": "env-wandb-key",
+                "enabled": True,
+            },
+        ),
+    ]
+    assert context.wandb_enabled is True
