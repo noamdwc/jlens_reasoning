@@ -48,154 +48,121 @@ Data and generated outputs are never committed. The `artifacts/` directory is
 also the default destination for executed notebook copies produced by the
 Colab CLI.
 
-## Colab bundle workflow
+## Colab workflow with local `colab-utils`
 
-Colab notebooks install the exact project wheel and locked runtime requirements
-from a Drive folder. From the repository root, configure an `rclone` remote and
-run:
+Keep a checkout of the local `colab-utils` repository beside this project, so
+`../colab-utils/run.sh` exists when you are in the `jlens_reasoning` root. The
+project entry point is `./scripts/run_colab_notebook.sh`; run it from this
+repository root with one notebook path per invocation. It calls that sibling
+runner and configures the credentials path and notebook artifact upload. Install
+and authenticate the Google Colab CLI first. The runner also needs Bash, Git,
+tar, and Python 3 on the local machine.
 
-```bash
-./scripts/upload_colab_wheel.sh
-```
-
-The uploader exports locked non-development requirements, builds the wheel,
-and uploads them with `project-commit.txt` and `project-dirty.txt` under:
+The repository's [`.colab.env`](../.colab.env) selects the `side-projects` bucket and the
+`jlens-reasoning` object prefix. Keep credentials in a private file outside
+this repository:
 
 ```text
-<rclone-remote>:data/jlens-reasoning/wheels/
+R2_ACCOUNT_ID=...
+R2_ACCESS_KEY_ID=...
+R2_SECRET_ACCESS_KEY=...
+# HF_TOKEN=...  # required only for notebooks/01_download_assets.ipynb
 ```
 
-The canonical loader cell in each notebook mounts Drive, validates those
-markers, installs the requirements, and force-installs the wheel. Re-run the
-uploader after any project-code or dependency change. Otherwise Colab can run
-stale code. The uploader refuses a dirty tree unless `--allow-dirty` is
-explicitly provided.
-
-The `scripts/experiment_colab_run.sh` helper chains the upload and notebook
-execution for an experiment package:
+The script defaults `R2_CREDENTIALS_FILE` to
+`$HOME/.config/colab-utils/r2.env`. Pass it any notebook path:
 
 ```bash
-./scripts/experiment_colab_run.sh --gpu L4 jlens_readout_sanity
+./scripts/run_colab_notebook.sh notebooks/00_environment_check.ipynb
+./scripts/run_colab_notebook.sh experiments/jlens_readout_sanity/jlens_readout_sanity.ipynb
 ```
 
-The standalone runner is useful for shared notebooks:
+Set `COLAB_ENV_FILE` to a separate file with the same keys as `.colab.env`
+when a run needs an isolated R2 prefix. This keeps the repository's default
+configuration unchanged.
+
+If your credential file is elsewhere, set `R2_CREDENTIALS_FILE` for that run:
 
 ```bash
-./scripts/run_colab_notebook.sh --gpu L4 notebooks/flenqa_full_run.ipynb
+R2_CREDENTIALS_FILE=/path/to/r2.env \
+  ./scripts/run_colab_notebook.sh notebooks/00_environment_check.ipynb
 ```
 
-Both scripts require the local `colab` CLI. The runner writes the executed
-notebook copy under `artifacts/colab/` by default and fails if a cell reports an
-error.
+The runner sends the current working-tree contents of paths selected by Git's
+index. Untracked files are omitted unless selected with `git add -N`. It checks
+the notebook's `check-environment` cell, then executes the notebook in
+`/content/project`.
+The notebooks export locked requirements with `uv`, install this project from
+the sent source, and record a SHA-256 of their source bundle. The runner saves
+executed notebooks under `artifacts/colab/` when
+`NOTEBOOK_OUTPUT_DIR=artifacts/colab` is set in `.colab.env`.
 
-### Unattended Colab CLI Drive access (service account)
+Use the **same** `R2_DATA_PREFIX` and `R2_ARTIFACT_PREFIX`. Each notebook
+downloads only the objects it needs from that prefix into
+`/content/project/data`, removing the prefix from the local path. For example,
+the key `jlens-reasoning/assets/models/qwen3.5-4b/` in the `side-projects`
+bucket becomes
+`/content/project/data/assets/models/qwen3.5-4b/` in Colab. New results go under
+`/content/project/output`. Each notebook uploads its output files to R2 in its
+final cell, preserving their paths under the same prefix. The `colab-utils`
+runner confirms that upload and skips a second transfer; if a notebook fails,
+it still attempts to upload any partial output files.
 
-Interactive `colab drivemount` / `drive.mount` Approve clicks are not available
-under headless `colab exec`. Unattended runs authenticate to Drive with a Google
-service account instead.
-
-1. Create a service-account key for
-   `jlens-colab@j-lens-reasoning.iam.gserviceaccount.com` and store it locally
-   at `~/.config/jlens/drive-sa.json`, or set `JLENS_DRIVE_SA_JSON` to the key
-   path. **Never commit the key.**
-2. Use a **Google Workspace Shared Drive**. A regular My Drive folder shared
-   with an Editor is insufficient: service accounts cannot own new files and
-   have no personal storage quota. Grant the service account **Content manager**
-   access to the Shared Drive, and grant your laptop's `rclone` user access too.
-   See [Google's Shared Drive documentation](https://developers.google.com/workspace/drive/api/guides/about-shareddrives).
-3. Create a project folder inside that Shared Drive (for example
-   `jlens-colab-root`) with this layout:
-
-   ```text
-   jlens-colab-root/
-   ├── jlens-reasoning/          # artifact root
-   └── data/jlens-reasoning/     # wheels, datasets, assets
-   ```
-
-   Export both IDs in the shell used for uploads and runs:
-
-   ```bash
-   export JLENS_DRIVE_SHARED_DRIVE_ID="your-shared-drive-id"
-   export JLENS_DRIVE_ROOT_FOLDER_ID="your-project-folder-id"
-   ```
-
-   The IDs identify the Shared Drive and the project folder within it,
-   respectively. Name discovery is no longer supported, so uploads and mounts
-   cannot silently resolve different roots.
-4. Run `./scripts/upload_colab_wheel.sh`, then `./scripts/run_colab_notebook.sh`,
-   or use `./scripts/experiment_colab_run.sh` to chain them. The uploader applies
-   the same Shared Drive and folder IDs to every `rclone` operation, while
-   retaining the laptop remote's user credentials. It does not modify the saved
-   remote configuration. With neither ID set, standalone uploads keep the
-   original My Drive destination for browser notebooks.
-
-The runner validates both IDs before allocating a VM. It uploads the key,
-`colab_drive.py`, and the IDs to `/content/jlens-credentials/`, then skips
-`colab drivemount`. The loader verifies a real Drive upload and readback before
-mounting the folder at `/content/drive/MyDrive`. The small probe is moved to
-Drive trash afterward, which Content manager access permits.
-
-`WANDB_API_KEY`, if set locally, is also uploaded in `jlens.env` and used when
-Colab Secrets are unavailable. Pass `enable_wandb=False` for notebooks without
-tracking.
-
-At teardown, including notebook failures and `--keep` runs, the runner waits
-up to ten minutes for rclone's queued and active uploads. Notebook writes must
-be closed before the final cell finishes. If upload status is unavailable,
-reports an error, or times out, the command fails and **keeps the VM** so cached
-artifacts can be recovered. This may continue using Colab quota. Inspect the
-kept session before stopping it:
-
-```bash
-printf '%s\n' 'import runpy' \
-  'runpy.run_path("/content/jlens-credentials/colab_drive.py")["flush_colab_drive"]()' \
-  | colab exec -s YOUR_SESSION --timeout 660
+```text
+<R2_DATA_PREFIX>/
+├── assets/models/qwen3.5-4b/
+├── assets/lenses/qwen3.5-4b/
+├── datasets/flenqa/
+├── checkpoints/
+└── runs/
 ```
 
-Stop it with `colab stop -s YOUR_SESSION` only after uploads succeed or after
-recovering the needed files. Rclone status is exposed only on the VM's loopback
-interface; upload diagnostics can be inspected with `rclone rc vfs/stats` there.
+Later notebooks read the previous run's files from `data/` and upload their
+new files from `output/`. Running a notebook again replaces the R2 objects at
+its output paths. Model backed notebooks download the pinned model assets, and
+the drift notebook downloads the full top-k table; allow enough runtime disk
+space for those inputs. Run dependent notebooks in the order below.
+`EXPECT_GPU=true` requests a T4 by default; set `COLAB_GPU=A100` for a
+one-run GPU override when more memory is needed. Set `EXPECT_GPU=false` for
+the asset download notebook if desired. The runner does not run
+multiple notebooks in one invocation.
 
-For an interactive CLI mount when no SA JSON is configured:
+Existing Drive assets and compatible `runs/` or `checkpoints/` can be copied
+to these same R2 paths before running their consumers; they do not need to be
+regenerated just because the Colab transport changed.
 
-```bash
-./scripts/run_colab_notebook.sh --allow-interactive-drivemount notebooks/00_environment_check.ipynb
-```
-
-Browser Colab sessions without the uploaded SA JSON keep using
-`drive.mount("/content/drive")`. These loaders expect the original My Drive
-layout; to use the Shared Drive bundle interactively, add My Drive shortcuts
-for `jlens-reasoning` and `data/jlens-reasoning` pointing to the corresponding
-project folders. Otherwise use the original My Drive bundle with both ID
-variables unset. Without access to a Workspace Shared Drive, use this
-interactive route; sharing a personal folder with the service account is not
-an unattended write solution.
+Keep the external credential file private. It is uploaded to the temporary
+Colab VM. `colab-utils` stops the VM after the run;
+its README describes recovery if upload fails. The local executed notebook
+contains cell outputs and should remain under ignored `artifacts/` unless it
+is intentionally released.
 
 ## Download model and lens assets
 
 Run [`notebooks/01_download_assets.ipynb`](../notebooks/01_download_assets.ipynb)
-once in Colab with `HF_TOKEN` stored in Colab Secrets. It downloads the pinned
-Qwen3.5-4B model snapshot and the pinned Neuronpedia Jacobian Lens checkpoint
-to the Drive asset root:
+once through `colab-utils`, with `HF_TOKEN` in the external credential file. It
+downloads the pinned Qwen3.5-4B model snapshot and Neuronpedia Jacobian Lens
+checkpoint into `output/assets/`, which the runner uploads to R2:
 
 ```text
-/content/drive/MyDrive/data/jlens-reasoning/assets/
+<R2_DATA_PREFIX>/assets/
 ├── models/qwen3.5-4b/
 └── lenses/qwen3.5-4b/Qwen3.5-4B_jacobian_lens_n1000.pt
 ```
 
-The experiment notebooks load those assets locally from Drive and do not need
-Hugging Face authentication after the download step. The current model and
+Experiment notebooks download those assets from R2 and do not need Hugging Face
+authentication after the asset download step. The current model and
 lens revisions are declared in
 [`experiments/jlens_readout_sanity/constants.py`](../experiments/jlens_readout_sanity/constants.py)
-and the download notebook.
+and the download notebook. Stage the external FLenQA `load_from_disk` export
+under `<R2_DATA_PREFIX>/datasets/flenqa/` before benchmark runs.
 
 ## Run order
 
 1. **Environment check:** run
    [`notebooks/00_environment_check.ipynb`](../notebooks/00_environment_check.ipynb)
-   after changing environment setup. It checks runtime and artifact paths but
-   does not download a model or benchmark.
+   after changing environment setup. It checks runtime and R2 access but
+   does not load a model or benchmark.
 2. **Assets:** run
    [`notebooks/01_download_assets.ipynb`](../notebooks/01_download_assets.ipynb)
    when the pinned model/lens files are not already present.
@@ -258,10 +225,18 @@ runs/flenqa-full-run/
 
 The runner refuses to append to non-empty table directories by default. The
 full-run and smoke notebooks explicitly set `overwrite=True`: rerunning their
-benchmark cells removes the previous `prompts`, `positions`, and `topk` shards
-before writing new ones. A failed rerun can leave partial shards; rerun the
-benchmark cell to replace them. This option does not remove
+benchmark cells removes the previous local `prompts`, `positions`, and `topk`
+shards before writing new ones. This option does not remove
 `model_outputs.parquet`, which its own generation cell overwrites separately.
+
+`overwrite=True` does not delete stale R2 objects. If a run is interrupted,
+`colab-utils` can still upload partial output shards. Before restarting a
+benchmark, remove or move the previous run's `prompts/`, `positions/`, and
+`topk/` objects under `runs/flenqa-full-run/` (or `runs/flenqa-smoke/`) in R2.
+A fresh VM has empty local output directories and cannot detect stale remote
+shards; uploading replacement files does not remove extra objects left by an
+earlier run. Preserve `model_outputs.parquet` when only replacing lens shards.
+
 For the probe-input alignment rerun, skip the benchmark cell and run only the
 setup and model-output generation cells. The raw model-output table preserves
 generated text, token IDs and pieces, answer fields, status fields, inference
@@ -306,17 +281,17 @@ under the probe contract; it is not a causal intervention.
 
 ## Reproducibility boundary
 
-The code, tests, notebook source, lockfile, and commit markers make the
+The code, tests, notebook source, lockfile, and source bundle hashes make the
 software path inspectable and help prevent stale-code runs. Exact model-backed
 reproduction additionally requires:
 
-- the FLenQA dataset export in the configured Drive data directory. This
+- the FLenQA dataset export under the configured R2 data prefix. This
   repository validates the published count invariants but does not pin a
   dataset revision, so record the source revision or file hash with each run;
 - the pinned Qwen3.5-4B and Neuronpedia lens assets;
 - the Colab runtime/device and installed dependency versions;
 - enough storage for Parquet top-k tables and model outputs; and
-- the executed artifacts and their project commit marker.
+- the executed artifacts and their project source SHA-256.
 
 GitHub Actions intentionally does not provide this environment. Its purpose is
 to catch library, evaluation, notebook-structure, and packaging regressions

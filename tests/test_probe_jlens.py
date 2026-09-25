@@ -74,6 +74,7 @@ def test_sensitivity_matches_direct_autograd_and_removes_hooks_on_error(
         for layer, state in enumerate(features.states)
     }
     hooks = [dict(layer._forward_hooks) for layer in model.model.layers]
+    forwards = [layer.forward for layer in model.model.layers]
     model.requires_grad_(False)
     result = probe_sensitivities(
         model,
@@ -86,6 +87,7 @@ def test_sensitivity_matches_direct_autograd_and_removes_hooks_on_error(
         saved_records=records,
     )
     assert [r.sensitivity for r in result] == pytest.approx(expected, abs=1e-7)
+    assert [layer.forward for layer in model.model.layers] == forwards
     records[1]["probe_score"] += 10
     with pytest.raises(ValueError, match="score"):
         probe_sensitivities(
@@ -113,6 +115,7 @@ def test_sensitivity_matches_direct_autograd_and_removes_hooks_on_error(
             objective=failing_objective,
         )
     assert [dict(layer._forward_hooks) for layer in model.model.layers] == hooks
+    assert [layer.forward for layer in model.model.layers] == forwards
 
 
 def test_saved_margin_keeps_additive_tolerance_for_existing_exports(model, tokenizer):

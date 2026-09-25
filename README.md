@@ -67,8 +67,16 @@ uv run ruff format --check .
 uv run ruff check .
 ```
 
-For Colab setup, asset download, run order, artifact contracts, and the
-reproducibility boundary, see [`docs/REPRODUCING.md`](docs/REPRODUCING.md).
+Model-backed notebooks run through the local `colab-utils` checkout beside this
+repository. From this repository root, use the project script with a notebook
+path, for example:
+
+```bash
+./scripts/run_colab_notebook.sh notebooks/00_environment_check.ipynb
+```
+
+See [`docs/REPRODUCING.md`](docs/REPRODUCING.md) for Colab CLI authentication,
+R2 credentials, asset download, run order, and artifact contracts.
 
 ## Code map
 

@@ -12,13 +12,16 @@ J-relevant components, J-merging and second-order J-gain are future work.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 import numpy as np
 import torch
 from jlens.hooks import ActivationRecorder
+from torch.utils.checkpoint import checkpoint
 
 from .probing import (
     ProbeConfig,
@@ -70,6 +73,21 @@ class ProbeSensitivity:
     sensitivity: float
 
 
+@contextmanager
+def _checkpoint_blocks(blocks: Sequence[torch.nn.Module]) -> Iterator[None]:
+    """Recompute block internals during backward, retaining the probed outputs."""
+    forwards = [block.forward for block in blocks]
+    try:
+        for block, forward in zip(blocks, forwards, strict=True):
+            # Non-reentrant checkpointing supports autograd.grad in eval mode.
+            # Wrap forward itself so recorder hooks run only on the initial pass.
+            block.forward = partial(checkpoint, forward, use_reentrant=False)
+        yield
+    finally:
+        for block, forward in zip(blocks, forwards, strict=True):
+            block.forward = forward
+
+
 def probe_sensitivities(
     model: Any,
     tokenizer: Any,
@@ -105,6 +123,8 @@ def probe_sensitivities(
     layers = sorted(probes)
     with (
         torch.enable_grad(),
+        # Offloading every intermediate to CPU can exhaust Colab host RAM.
+        _checkpoint_blocks(blocks),
         ActivationRecorder(blocks, at=range(num_layers), start_graph_at=0) as recorder,
     ):
         outputs = model(
@@ -139,11 +159,14 @@ def probe_sensitivities(
         if saved_records is not None:
             saved = saved_records[layer]
             for name, recomputed in (("probe_score", score), ("output_margin", value)):
-                if name not in saved or not np.isclose(
-                    recomputed, float(saved[name]), rtol=rtol, atol=atol
-                ):
+                if name not in saved:
+                    raise ValueError(f"Layer {layer}: missing saved {name}")
+                saved_value = float(saved[name])
+                if not np.isclose(recomputed, saved_value, rtol=rtol, atol=atol):
                     raise ValueError(
-                        f"Recomputed {name} disagrees with saved probe results"
+                        f"Layer {layer}: recomputed {name}={recomputed:.6g} "
+                        f"disagrees with saved {name}={saved_value:.6g} "
+                        f"(rtol={rtol}, atol={atol})"
                     )
         result.append(ProbeSensitivity(layer, score, value, sensitivity))
     return tuple(result)
