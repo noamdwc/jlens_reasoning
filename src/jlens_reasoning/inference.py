@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -138,6 +140,7 @@ class InferenceResult:
     input_token_count: int
     generated_token_count: int
     config: InferenceConfig
+    input_sha256: str
 
     def __post_init__(self) -> None:
         if self.input_token_count <= 0:
@@ -194,13 +197,17 @@ def _eos_token_ids(value: int | Sequence[int] | None) -> set[int]:
     return {int(token_id) for token_id in value or ()}
 
 
-def generate_chat(
-    model: Any,
+def prepare_chat_inputs(
     tokenizer: Any,
     prompt: str,
     *,
     config: InferenceConfig,
-) -> InferenceResult:
+) -> dict[str, torch.Tensor]:
+    """Tokenize the complete chat input shared by generation and analysis.
+
+    No truncation, padding, or second tokenization is applied. The final
+    position is the last template token immediately before generation.
+    """
     if not isinstance(prompt, str) or not prompt.strip():
         raise InferenceInputError("prompt must be non-empty text")
     if not getattr(tokenizer, "chat_template", None):
@@ -228,8 +235,10 @@ def generate_chat(
 
     input_ids = encoded["input_ids"]
     attention_mask = encoded["attention_mask"]
-    if input_ids.ndim != 2 or input_ids.shape[0] != 1:
+    if input_ids.ndim != 2 or input_ids.shape[0] != 1 or input_ids.shape[1] == 0:
         raise InferenceInputError("chat inference requires exactly one input sequence")
+    if attention_mask.shape != input_ids.shape or not torch.all(attention_mask == 1):
+        raise InferenceInputError("chat inference requires an unpadded attention mask")
     input_token_count = int(input_ids.shape[1])
     if (
         config.max_input_tokens is not None
@@ -239,9 +248,31 @@ def generate_chat(
             f"wrapped input has {input_token_count} tokens and exceeds configured "
             f"limit {config.max_input_tokens}"
         )
+    return {"input_ids": input_ids, "attention_mask": attention_mask}
 
-    input_ids = input_ids.to(model.device)
-    attention_mask = attention_mask.to(model.device)
+
+def chat_input_fingerprint(inputs: Mapping[str, torch.Tensor]) -> str:
+    """Bind an artifact to the actual token IDs and attention mask, on any device."""
+    payload = {
+        key: inputs[key].detach().cpu().tolist()
+        for key in ("input_ids", "attention_mask")
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def generate_chat(
+    model: Any,
+    tokenizer: Any,
+    prompt: str,
+    *,
+    config: InferenceConfig,
+) -> InferenceResult:
+    encoded = prepare_chat_inputs(tokenizer, prompt, config=config)
+    input_sha256 = chat_input_fingerprint(encoded)
+    input_token_count = int(encoded["input_ids"].shape[1])
+
+    input_ids = encoded["input_ids"].to(model.device)
+    attention_mask = encoded["attention_mask"].to(model.device)
     try:
         with torch.inference_mode():
             generated = model.generate(
@@ -280,4 +311,5 @@ def generate_chat(
         input_token_count=input_token_count,
         generated_token_count=len(generated_ids),
         config=config,
+        input_sha256=input_sha256,
     )
