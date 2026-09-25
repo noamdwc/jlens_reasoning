@@ -1,4 +1,8 @@
-"""Differentiable output objectives usable by probe evaluation and analyses."""
+"""Supporting output diagnostics for probe evaluation and sensitivity analysis.
+
+These are analysis objectives, not losses used to train the probes. The token
+margin is an auxiliary readout of the language model's output preference.
+"""
 
 from __future__ import annotations
 
