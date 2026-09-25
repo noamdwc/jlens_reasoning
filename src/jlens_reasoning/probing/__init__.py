@@ -6,6 +6,7 @@ objectives. Probe/J-Lens analysis lives separately in jlens_reasoning.probe_jlen
 
 from __future__ import annotations
 
+from .artifacts import load_probe_checkpoint, save_probe_checkpoint
 from .contracts import (
     ProbeConfig,
     probe_input_contract,
@@ -31,7 +32,9 @@ __all__ = [
     "binary_probe_metrics",
     "extract_probe_features",
     "fit_binary_probe",
+    "load_probe_checkpoint",
     "probe_input_contract",
+    "save_probe_checkpoint",
     "score_probe",
     "token_margin",
     "unit_probe_direction",

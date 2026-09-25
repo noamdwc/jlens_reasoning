@@ -10,6 +10,8 @@ from jlens_reasoning.probing import (
     binary_probe_metrics,
     evaluate_probe,
     fit_binary_probe,
+    load_probe_checkpoint,
+    save_probe_checkpoint,
     score_probe,
     unit_probe_direction,
 )
@@ -140,3 +142,69 @@ def test_fitting_rejects_invalid_training_data(case):
         val = torch.ones(2, 1)
     with pytest.raises(ValueError):
         fit_binary_probe(x, y, val, [0, 1], c_grid=grid, seed=1)
+
+
+def test_checkpoint_roundtrip_and_validation(tmp_path):
+    probe = {
+        "weight": torch.tensor([2.0, -1.0]),
+        "bias": torch.tensor(0.5),
+        "training_mean": torch.tensor([3.0, 4.0]),
+    }
+    metadata = {
+        "format_version": 2,
+        "model_name": "test",
+        "num_layers": 1,
+        "hidden_dim": 2,
+        "input_format": "chat_template_direct",
+        "input_contract": {"tokenizer_sha256": "test"},
+        "feature_contract": "test",
+        "feature_position": "test",
+    }
+    path, sidecar = tmp_path / "probes.pt", tmp_path / "metadata.json"
+    save_probe_checkpoint(path, {0: probe}, metadata=metadata, metadata_path=sidecar)
+    loaded = load_probe_checkpoint(
+        path, metadata_path=sidecar, expected_contract=metadata, model_name="test"
+    )
+    torch.testing.assert_close(
+        score_probe(loaded["layers"][0], torch.tensor([4.0, 3.0])), torch.tensor(3.5)
+    )
+    with pytest.raises(ValueError, match="model"):
+        load_probe_checkpoint(path, model_name="different")
+    with pytest.raises(ValueError):
+        load_probe_checkpoint(
+            path, expected_contract={**metadata, "feature_position": "different"}
+        )
+    sidecar.write_text("{}")
+    with pytest.raises(ValueError, match="metadata"):
+        load_probe_checkpoint(path, metadata_path=sidecar)
+    probe["weight"][0] = float("nan")
+    with pytest.raises(ValueError):
+        save_probe_checkpoint(path, {0: probe}, metadata=metadata)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("weight", torch.zeros(2)),
+        ("bias", torch.tensor(float("nan"))),
+        ("bias", torch.ones(2)),
+        ("training_mean", torch.tensor([float("inf"), 0.0])),
+        ("training_mean", torch.zeros(1)),
+    ],
+)
+def test_checkpoint_rejects_invalid_parameters_on_save_and_load(tmp_path, field, value):
+    probe = {
+        "weight": torch.tensor([1.0, 2.0]),
+        "bias": torch.tensor(0.0),
+        "training_mean": torch.zeros(2),
+        field: value,
+    }
+    metadata = {"format_version": 2, "num_layers": 1, "hidden_dim": 2}
+    path = tmp_path / "probes.pt"
+    with pytest.raises(ValueError):
+        save_probe_checkpoint(path, {0: probe}, metadata=metadata)
+    assert not path.exists()
+
+    torch.save({"format_version": 2, "layers": {0: probe}, "metadata": metadata}, path)
+    with pytest.raises(ValueError):
+        load_probe_checkpoint(path)
