@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 import torch
 import transformers
@@ -182,6 +183,10 @@ def test_notebook_training_evaluation_and_gradients_use_generation_inputs(
         generated_table = pa.Table.from_pylist(
             ns["records"], schema=ns["MODEL_OUTPUT_SCHEMA"]
         )
+        # Answer-only reruns must save on a fresh VM without running the benchmark.
+        ns.update(model_outputs=generated_table, pq=pq)
+        exec(save_cell[save_cell.index("MODEL_OUTPUT_PATH.parent.mkdir") :], ns)
+        assert pq.read_table(ns["MODEL_OUTPUT_PATH"]).equals(generated_table)
         ns.update(
             test_prompts=[prompt],
             answer_token_variants=answer_token_variants,
