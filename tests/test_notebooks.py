@@ -111,6 +111,32 @@ def test_notebooks_use_colab_utils_cells_and_stable_r2_prefix() -> None:
     assert "topk" not in accuracy_inputs
 
 
+def test_colab_results_are_written_under_the_r2_upload_directory() -> None:
+    output_paths = {
+        Path("notebooks/flenqa_smoke.ipynb"): "runs/flenqa-smoke",
+        Path("notebooks/flenqa_full_run.ipynb"): "runs/flenqa-full-run",
+        Path("notebooks/flenqa_accuracy.ipynb"): "runs/flenqa-accuracy",
+        Path("notebooks/flenqa_probe_assets.ipynb"): "checkpoints/flenqa-probe-assets",
+        Path("notebooks/flenqa_probe_eval.ipynb"): "runs/flenqa-probe-eval",
+        FLENQA_PROBE_JLENS_NOTEBOOK: "runs/flenqa-probe-jlens",
+        Path("experiments/jlens_readout_sanity/jlens_readout_sanity.ipynb"): (
+            "runs/jlens-readout-sanity"
+        ),
+    }
+    for path, relative in output_paths.items():
+        source = "\n".join(notebook_cells_by_id(path).values())
+        assert f'OUTPUT_DIR / "{relative}"' in source
+
+    full_run = notebook_cells_by_id(Path("notebooks/flenqa_full_run.ipynb"))
+    assert (
+        'MODEL_OUTPUT_PATH = OUTPUT_DIR / "runs/flenqa-full-run"'
+        in full_run["save-model-outputs"]
+    )
+    probe_assets = notebook_cells_by_id(Path("notebooks/flenqa_probe_assets.ipynb"))
+    assert 'SPLIT_PATH = ASSET_DIR / "problem_split.json"' in probe_assets["setup"]
+    assert "shutil.copy2(previous_split, SPLIT_PATH)" in probe_assets["setup"]
+
+
 def test_asset_notebook_installs_dependencies_very_quietly() -> None:
     source = "\n".join(cell.source for cell in load_notebook(ASSET_NOTEBOOK).cells)
 
