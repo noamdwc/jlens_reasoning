@@ -13,7 +13,9 @@ from jlens_reasoning.inference import (
     InferenceGenerationError,
     InferenceInputError,
     InferenceMode,
+    chat_input_fingerprint,
     generate_chat,
+    prepare_chat_inputs,
 )
 
 
@@ -159,6 +161,51 @@ def test_generate_chat_direct_uses_template_and_preserves_output() -> None:
     assert result.input_token_count == 2
     assert result.generated_token_count == 2
     assert result.config is config
+
+
+def test_generation_and_analysis_share_exact_chat_inputs() -> None:
+    tokenizer = FakeTokenizer()
+    config = InferenceConfig.direct(max_input_tokens=4)
+    model = FakeModel([22, 2])
+
+    inputs = prepare_chat_inputs(tokenizer, "Question?", config=config)
+    result = generate_chat(model, tokenizer, "Question?", config=config)
+
+    assert inputs["input_ids"].tolist() == [[10, 11]]
+    for key in ("input_ids", "attention_mask"):
+        torch.testing.assert_close(inputs[key], model.generate_kwargs[key])
+    assert result.input_sha256 == chat_input_fingerprint(inputs)
+
+
+def test_input_fingerprint_detects_token_and_mask_changes() -> None:
+    inputs = {
+        "input_ids": torch.tensor([[10, 11]]),
+        "attention_mask": torch.ones(1, 2, dtype=torch.long),
+    }
+    original = chat_input_fingerprint(inputs)
+    assert original == chat_input_fingerprint(
+        {key: value.clone() for key, value in inputs.items()}
+    )
+    inputs["input_ids"][0, -1] = 12
+    assert chat_input_fingerprint(inputs) != original
+    inputs["input_ids"][0, -1] = 11
+    inputs["attention_mask"][0, -1] = 0
+    assert chat_input_fingerprint(inputs) != original
+
+
+@pytest.mark.parametrize("ids,mask", [([], []), ([10, 11], [1]), ([10, 11], [1, 0])])
+def test_chat_inputs_reject_empty_or_padded_sequences(ids, mask) -> None:
+    class InvalidTokenizer(FakeTokenizer):
+        def apply_chat_template(self, messages, **kwargs):
+            return {
+                "input_ids": torch.tensor([ids]),
+                "attention_mask": torch.tensor([mask]),
+            }
+
+    with pytest.raises(InferenceInputError):
+        prepare_chat_inputs(
+            InvalidTokenizer(), "Question?", config=InferenceConfig.direct()
+        )
 
 
 def test_generate_chat_rejects_empty_and_overlong_inputs() -> None:
