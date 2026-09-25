@@ -12,13 +12,16 @@ J-relevant components, J-merging and second-order J-gain are future work.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 import numpy as np
 import torch
 from jlens.hooks import ActivationRecorder
+from torch.utils.checkpoint import checkpoint
 
 from .probing import (
     ProbeConfig,
@@ -70,6 +73,21 @@ class ProbeSensitivity:
     sensitivity: float
 
 
+@contextmanager
+def _checkpoint_blocks(blocks: Sequence[torch.nn.Module]) -> Iterator[None]:
+    """Recompute block internals during backward, retaining the probed outputs."""
+    forwards = [block.forward for block in blocks]
+    try:
+        for block, forward in zip(blocks, forwards, strict=True):
+            # Non-reentrant checkpointing supports autograd.grad in eval mode.
+            # Wrap forward itself so recorder hooks run only on the initial pass.
+            block.forward = partial(checkpoint, forward, use_reentrant=False)
+        yield
+    finally:
+        for block, forward in zip(blocks, forwards, strict=True):
+            block.forward = forward
+
+
 def probe_sensitivities(
     model: Any,
     tokenizer: Any,
@@ -105,8 +123,8 @@ def probe_sensitivities(
     layers = sorted(probes)
     with (
         torch.enable_grad(),
-        # Long prompts otherwise retain every decoder intermediate on the GPU.
-        torch.autograd.graph.save_on_cpu(),
+        # Offloading every intermediate to CPU can exhaust Colab host RAM.
+        _checkpoint_blocks(blocks),
         ActivationRecorder(blocks, at=range(num_layers), start_graph_at=0) as recorder,
     ):
         outputs = model(
