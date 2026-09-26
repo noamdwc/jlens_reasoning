@@ -10,6 +10,7 @@ import pyarrow as pa
 import pytest
 import torch
 import transformers
+from jlens.hooks import ActivationRecorder
 from transformers import LlamaConfig, LlamaForCausalLM
 
 from experiments.flenqa_probe_jlens.constants import PROBE_CONFIG
@@ -196,5 +197,54 @@ def test_notebook_training_evaluation_and_gradients_use_generation_inputs(
         ):
             torch.testing.assert_close(trained, evaluated)
 
+        weight = torch.arange(1, 9, dtype=torch.float32) / 10
+        ns.update(
+            ActivationRecorder=ActivationRecorder,
+            lens_model=SimpleNamespace(layers=model.model.layers),
+            available_layers=[0],
+            checkpoint={
+                "layers": {
+                    layer: {
+                        "weight": weight,
+                        "training_mean": torch.zeros(8),
+                        "bias": torch.tensor(0.3),
+                    }
+                    for layer in range(2)
+                }
+            },
+            saved_scores=pd.DataFrame(
+                [
+                    {
+                        "prompt_id": prompt.prompt_id,
+                        "layer": layer,
+                        "probe_score": float(state[0] @ weight + 0.3),
+                        "input_sha256": generated.input_sha256,
+                        "n_input_tokens": generated.input_token_count,
+                        "output_margin": ns["output_margins"][0],
+                    }
+                    for layer, state in enumerate(trained_features)
+                ]
+            ).set_index(["prompt_id", "layer"]),
+        )
+        model.requires_grad_(False)
+        prior_hooks = [dict(layer._forward_hooks) for layer in model.model.layers]
+        exec(
+            notebook_cell(
+                "experiments/flenqa_probe_jlens/flenqa_probe_jlens.ipynb",
+                "prompt-sensitivity-function",
+            ),
+            ns,
+        )
+        rows = ns["prompt_sensitivity"](prompt)
+        assert len(rows) == 2 and all(np.isfinite(row["sensitivity"]) for row in rows)
+        for key in generated_inputs:
+            torch.testing.assert_close(seen[-1][key], generated_inputs[key])
+        assert [
+            dict(layer._forward_hooks) for layer in model.model.layers
+        ] == prior_hooks
+        # Equal-length token changes must fail before a sensitivity can be interpreted.
+        ns["saved_scores"]["input_sha256"] = "stale"
+        with pytest.raises(ValueError, match="Regenerate"):
+            ns["prompt_sensitivity"](prompt)
     finally:
         with_hook.remove()
