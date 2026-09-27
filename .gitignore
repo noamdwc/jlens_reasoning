@@ -6,6 +6,8 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .ipynb_checkpoints/
+*_out.ipynb
+*_output.ipynb
 .env
 artifacts/
 wandb/
@@ -13,3 +15,13 @@ wandb/
 .claude/
 docs/superpowers/
 docs/internal/
+# Google service-account keys (never commit)
+**/drive-sa.json
+**/*-sa.json
+.config/jlens/
+
+# Injected user OAuth and environment credentials (never commit)
+**/rclone.conf
+**/jlens.env
+**/wandb.env
+.config/rclone/

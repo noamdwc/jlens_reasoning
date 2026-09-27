@@ -238,6 +238,37 @@ def test_run_benchmark_rejects_populated_output_before_tokenization_or_lenses(
         )
 
 
+def test_run_benchmark_overwrites_only_its_table_shards(tmp_path: Path) -> None:
+    runners = LensRunners(DynamicRunner(), DynamicRunner())
+    run_benchmark(
+        (_row(), _row(source_row_id=1, problem_id=1)),
+        output_dir=tmp_path,
+        tokenizer=CharTokenizer(),
+        runners=runners,
+        config=_config(expected_source_rows=2, shard_size=1),
+        show_progress=False,
+    )
+    model_outputs = tmp_path / "model_outputs.parquet"
+    model_outputs.write_bytes(b"saved answers")
+
+    summary = run_benchmark(
+        (_row(),),
+        output_dir=tmp_path,
+        tokenizer=CharTokenizer(),
+        runners=runners,
+        config=_config(shard_size=1),
+        show_progress=False,
+        overwrite=True,
+    )
+
+    assert summary.prompt_count == 1
+    for table in REQUIRED_TABLES:
+        assert [path.name for path in (tmp_path / table).iterdir()] == [
+            "shard-00000.parquet"
+        ]
+    assert model_outputs.read_bytes() == b"saved answers"
+
+
 def test_run_summary_keeps_layers_when_top_k_is_zero(tmp_path: Path) -> None:
     summary = run_benchmark(
         (_row(),),

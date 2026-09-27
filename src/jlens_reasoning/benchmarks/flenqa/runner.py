@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,10 +59,16 @@ def _contains_output(path: Path) -> bool:
     return path.is_file() or (path.is_dir() and next(path.iterdir(), None) is not None)
 
 
-def _prepare_output(root: Path) -> None:
+def _prepare_output(root: Path, *, overwrite: bool = False) -> None:
     table_paths = [root / table for table in REQUIRED_TABLES]
-    if any(path.exists() and _contains_output(path) for path in table_paths):
+    if not overwrite and any(
+        path.exists() and _contains_output(path) for path in table_paths
+    ):
         raise FileExistsError(f"{root} already contains FLenQA output")
+    if overwrite:
+        for path in table_paths:
+            if path.exists():
+                shutil.rmtree(path)
     root.mkdir(parents=True, exist_ok=True)
     for table in REQUIRED_TABLES:
         (root / table).mkdir(exist_ok=True)
@@ -113,8 +120,9 @@ def run_benchmark(
     runners: LensRunners,
     config: RunConfig,
     show_progress: bool = True,
+    overwrite: bool = False,
 ) -> RunSummary:
-    """Run one non-resumable FLenQA benchmark into empty table directories."""
+    """Run a non-resumable benchmark, optionally replacing its table shards."""
     _validate_config(config)
     if len(rows) != config.expected_source_rows:
         raise ValueError(
@@ -125,7 +133,7 @@ def run_benchmark(
         raise ValueError("FLenQA benchmark requires at least one prompt")
 
     root = Path(output_dir)
-    _prepare_output(root)
+    _prepare_output(root, overwrite=overwrite)
 
     returned_layers: tuple[int, ...] | None = None
     max_abs_logit_diff = 0.0
