@@ -15,7 +15,7 @@ from jlens_reasoning.environments.common import RuntimeContext, create_runtime_c
 from jlens_reasoning.runtime import select_device
 from jlens_reasoning.tracking import authenticate_wandb
 
-DEFAULT_COLAB_ARTIFACT_ROOT = Path("/content/drive/MyDrive/jlens-reasoning")
+DEFAULT_COLAB_ARTIFACT_ROOT = Path("/content/project/data")
 
 
 def source_bundle_sha256(project_dir: Path) -> str:
@@ -81,24 +81,17 @@ def _get_colab_secret(name: str) -> str:
     return userdata.get(name)
 
 
-def _mount_google_drive() -> None:
-    from google.colab import drive
-
-    drive.mount("/content/drive")
-
-
-def _required_secret(
-    name: str,
+def _required_wandb_key(
     secret_getter: Callable[[str], str],
 ) -> str:
-    try:
-        value = secret_getter(name)
-    except Exception:
-        raise RuntimeError(f"Required Colab secret {name} is unavailable") from None
-
+    value = os.environ.get("WANDB_API_KEY")
     if not value:
-        raise RuntimeError(f"Required Colab secret {name} is unavailable")
-
+        try:
+            value = secret_getter("WANDB_API_KEY")
+        except Exception:
+            value = None
+    if not value:
+        raise RuntimeError("Required Colab secret WANDB_API_KEY is unavailable")
     return value
 
 
@@ -108,19 +101,12 @@ def initialize_colab(
     require_cuda: bool = False,
     artifact_root: str | Path = DEFAULT_COLAB_ARTIFACT_ROOT,
     secret_getter: Callable[[str], str] | None = None,
-    drive_mounter: Callable[[], None] | None = None,
     wandb_authenticator: Callable[..., bool] = authenticate_wandb,
     device_selector: Callable[..., torch.device] = select_device,
 ) -> RuntimeContext:
-    """Mount Drive, optionally authenticate W&B, and return runtime paths."""
+    """Initialize downloaded Colab artifacts and return runtime paths."""
 
     secret_getter = secret_getter or _get_colab_secret
-    drive_mounter = drive_mounter or _mount_google_drive
-
-    try:
-        drive_mounter()
-    except Exception:
-        raise RuntimeError("Google Drive mount failed") from None
 
     os.environ[ARTIFACT_ROOT_ENV] = str(artifact_root)
     paths = create_artifact_paths(artifact_root)
@@ -128,7 +114,7 @@ def initialize_colab(
 
     wandb_enabled = False
     if enable_wandb:
-        wandb_key = _required_secret("WANDB_API_KEY", secret_getter)
+        wandb_key = _required_wandb_key(secret_getter)
         try:
             wandb_enabled = wandb_authenticator(
                 api_key=wandb_key,

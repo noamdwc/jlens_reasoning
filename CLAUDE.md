@@ -22,19 +22,20 @@ on ubuntu 3.11/3.12 and macOS 3.11.
 Three environments, deliberately separated:
 
 - **Mac** — development, tests, small CPU/MPS work.
-- **Colab (GPU)** — every model-backed experiment. Colab is intentionally *not*
-  part of CI: no workflow ever launches a runtime, and nothing in `tests/`
-  imports `google.colab`. It *is* driven from `scripts/` (see below) — the
-  README's blanket "not part of scripts or CI" wording predates
-  `experiment_colab_run.sh` and is stale.
-- **GitHub Actions** — secret-free CPU tests. Never touches HF, W&B, or Drive.
+- **Colab (GPU)** — every model-backed experiment. Colab is outside CI and
+  launched through the sibling `colab-utils` runner.
+- **GitHub Actions** — secret-free CPU tests. Never touches HF, W&B, or R2.
 
-Colab does not install from git. `./scripts/upload_colab_wheel.sh` builds the
-project wheel plus exported locked requirements and a commit marker, and uploads
-them to `data/jlens-reasoning/wheels` on the rclone remote; the notebook loader
-cell installs from there. **Re-run the uploader after any code or dependency
-change**, otherwise Colab silently runs stale code.
-`./scripts/experiment_colab_run.sh` chains upload + notebook run.
+Colab runs use `scripts/run_colab_notebook.sh`, which calls the sibling
+`../colab-utils/run.sh` from this repository root.
+That runner sends the current working-tree contents of Git-indexed files to a
+temporary VM. Each notebook keeps its `check-environment` and R2 helper cells,
+installs locked project requirements from the sent source, and downloads
+the selected inputs from a stable R2 prefix. Set the same `R2_DATA_PREFIX` and
+`R2_ARTIFACT_PREFIX` in `.colab.env`; later notebooks read earlier
+results from `data/`, while new files under `output/` are uploaded by the
+runner. Keep the file named by `R2_CREDENTIALS_FILE` outside this repository. See
+`docs/REPRODUCING.md` for setup, paths, and run order.
 
 ## Layout
 
@@ -45,10 +46,13 @@ src/jlens_reasoning/          # reusable library
   environments/               # initialize_colab, RuntimeContext
   evaluation.py               # answer grading state machine (see policy below)
   evaluation_utils.py         # extraction / normalization / rank primitives
+  probing/                    # probe contracts, features, fitting, scoring,
+                              # checkpoints and output objectives
+  probe_jlens.py              # probe/J-Lens transport and sensitivity analysis
   experiments_utils/          # generic mechanics: tokens, interventions,
                               # controls, artifacts, validation
 experiments/<name>/           # one self-contained package + its notebook
-notebooks/                    # shared bootstrap + environment check only
+notebooks/                    # FLenQA drivers and shared Colab notebooks
 docs/superpowers/{specs,plans}/  # design docs and implementation plans
 ```
 
@@ -72,6 +76,16 @@ Split of responsibility: generic, reusable mechanics go in
 assembly, and reporting stay local to the owning experiment package
 (`constants.py`, `experiment.py`, `reporting.py`, `utils.py` facade).
 
+Core probing behavior belongs to `jlens_reasoning.probing`, the project source
+of truth for feature extraction, fitting, scoring, probe artifacts and output
+objectives. Combined probe/J-Lens analysis belongs to `jlens_reasoning.probe_jlens`:
+direction transport, prompt sensitivity and future implementation from
+`docs/probe_jlens_routing_framework.md`. Dependencies run from `probe_jlens` to
+`probing`, never the reverse. Experiments supply data, labels, splits, settings,
+and output objectives; notebooks call the shared APIs rather than implementing
+probe math. Chat preparation and input hashing remain in `inference.py`.
+See `docs/probing.md` and `docs/probe_jlens.md`.
+
 ## Conventions
 
 - Imports go at the top of the file. Function-local imports are allowed only for
@@ -92,15 +106,14 @@ assembly, and reporting stay local to the owning experiment package
   `experiments_utils/artifacts.py::write_results` (stable, sorted JSON).
 - Tests are CPU-only and model-free — use the fake-tokenizer pattern in
   `tests/experiments_utils/test_tokens.py`. No credentials of any kind.
-- Notebooks are committed with **no outputs and no execution counts**; the Drive
-  loader cell must stay byte-identical across notebooks (`test_notebooks.py`
-  enforces both). Keep the workflow visible in cells rather than hiding it
-  behind one opaque call; experiment cases are defined in the notebook itself.
-- Artifacts and data are never committed. Everything writes under
-  `JLENS_REAS_ARTIFACT_ROOT` (default `./artifacts`, `/content/drive/MyDrive/jlens-reasoning`
-  on Colab), laid out as `datasets/ cache/huggingface/ lenses/ checkpoints/ runs/`.
-- W&B is on by default in Colab and fails loudly; pass `enable_wandb=False` for
-  experiments that don't track.
+- Notebooks are committed with **no outputs and no execution counts**; their
+  `check-environment`, setup, and R2 helper cells stay identical where shared.
+  Keep experiment cases visible in the notebook.
+- Artifacts and data are never committed. Locally, `JLENS_REAS_ARTIFACT_ROOT`
+  defaults to `./artifacts`. On Colab, inputs are in `/content/project/data` and
+  new output files are written to `/content/project/output` for R2 upload.
+- W&B authentication is explicit. Pass `enable_wandb=False` for experiments
+  that do not track.
 
 ## Answer evaluation
 

@@ -115,7 +115,7 @@ def sample_result() -> ExperimentResult:
             },
         },
         {},
-        {"project_commit": "abc123"},
+        {"source_sha256": "abc123"},
     )
 
 
@@ -159,7 +159,7 @@ def test_complete_report_has_stable_sections_and_failure_details() -> None:
     assert report.index("READOUT DETAILS") < report.index("INTERVENTION DETAILS")
     assert report.index("INTERVENTION DETAILS") < report.index("NEGATIVE CONTROLS")
     assert "Overall status: FAIL" in report
-    assert "project_commit=abc123" in report
+    assert "source_sha256=abc123" in report
     assert "clean answer" in report
     assert "alpha=1: 4; alpha=2: 1" in report
     assert "FAILURES\n- random target control failed" in report
