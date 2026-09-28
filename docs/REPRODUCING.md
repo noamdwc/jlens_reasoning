@@ -189,6 +189,13 @@ under `<R2_DATA_PREFIX>/datasets/flenqa/` before benchmark runs.
    [`experiments/flenqa_lens_drift/flenqa_lens_intervention.ipynb`](../experiments/flenqa_lens_drift/flenqa_lens_intervention.ipynb)
    or [`flenqa_failure_concept_intervention.ipynb`](../experiments/flenqa_lens_drift/flenqa_failure_concept_intervention.ipynb)
    for the explicitly configured matched-prompt pilots.
+9. **Probe J-gain pilot:** run
+   [`experiments/flenqa_probe_jgain/flenqa_probe_jgain.ipynb`](../experiments/flenqa_probe_jgain/flenqa_probe_jgain.ipynb)
+   in development mode with the existing chat-v2 probe assets. After reviewing
+   derivative checks and freezing a strength, run its evaluation mode. See the
+   [pilot instructions](../experiments/flenqa_probe_jgain/README.md) for controls,
+   artifact paths, and numerical settings. This pilot generates fresh clean
+   answers; it does not require static lens shards or a probe-evaluation rerun.
 
 Every notebook is committed without saved output. To make a public result
 claim, preserve the executed output or a compact derived report with exact
