@@ -2,11 +2,65 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from typing import Any
 
 import torch
 from torch import nn
+
+
+@contextmanager
+def add_prompt_delta(
+    block: nn.Module,
+    delta: torch.Tensor,
+    *,
+    prompt_length: int,
+    token_position: int = -1,
+) -> Iterator[None]:
+    """Add delta to one token on the first block call, then leave decoding alone.
+
+    Wrap one `generate_chat` call (one prompt, no beams). The first block output
+    must contain the full wrapped prompt. Later calls are untouched, including
+    generation without a KV cache. The delta is cast to the activation's device
+    and dtype; verify the realized probe-score change for low-precision models.
+    This is an inference edit, not the differentiable map used to compute gain.
+    """
+    if (
+        delta.ndim != 1
+        or not delta.is_floating_point()
+        or not torch.isfinite(delta).all()
+    ):
+        raise ValueError("Delta must be a finite floating-point vector")
+    if prompt_length < 1 or not -prompt_length <= token_position < prompt_length:
+        raise ValueError("Token position must be inside the wrapped prompt")
+    delta = delta.detach().clone()
+    applied = False
+
+    def patch(module, args, output):
+        """Edit the selected prefill token once, preserving later decode outputs."""
+        nonlocal applied
+        if applied:
+            return output
+        hidden = output if torch.is_tensor(output) else output[0]
+        if hidden.shape != (1, prompt_length, delta.numel()):
+            raise ValueError(
+                "First block call must match one full prompt and delta width"
+            )
+        patched = hidden.clone()
+        patched[0, token_position] = hidden[0, token_position] + delta.to(hidden)
+        if not torch.isfinite(patched[0, token_position]).all():
+            raise ValueError("Non-finite intervened activation")
+        applied = True
+        return patched if torch.is_tensor(output) else (patched, *output[1:])
+
+    handle = block.register_forward_hook(patch)
+    try:
+        yield
+        if not applied:
+            raise RuntimeError("The intervention block was never called")
+    finally:
+        handle.remove()
 
 
 def jlens_vector(
