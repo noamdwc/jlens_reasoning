@@ -20,6 +20,9 @@ FLENQA_ACCURACY_NOTEBOOK = Path("notebooks/flenqa_accuracy.ipynb")
 FLENQA_PROBE_JLENS_NOTEBOOK = Path(
     "experiments/flenqa_probe_jlens/flenqa_probe_jlens.ipynb"
 )
+FLENQA_PROBE_JGAIN_NOTEBOOK = Path(
+    "experiments/flenqa_probe_jgain/flenqa_probe_jgain.ipynb"
+)
 FLENQA_LENS_DRIFT_NOTEBOOK = Path(
     "experiments/flenqa_lens_drift/flenqa_lens_drift.ipynb"
 )
@@ -119,6 +122,7 @@ def test_colab_results_are_written_under_the_r2_upload_directory() -> None:
         Path("notebooks/flenqa_probe_assets.ipynb"): "checkpoints/flenqa-probe-assets",
         Path("notebooks/flenqa_probe_eval.ipynb"): "runs/flenqa-probe-eval",
         FLENQA_PROBE_JLENS_NOTEBOOK: "runs/flenqa-probe-jlens",
+        FLENQA_PROBE_JGAIN_NOTEBOOK: "runs/flenqa-probe-jgain",
         Path("experiments/jlens_readout_sanity/jlens_readout_sanity.ipynb"): (
             "runs/jlens-readout-sanity"
         ),
@@ -170,6 +174,7 @@ def test_experiment_notebooks_exclude_flenqa_benchmark_drivers() -> None:
         Path("experiments/flenqa_lens_drift/flenqa_failure_concept_intervention.ipynb"),
         FLENQA_LENS_DRIFT_NOTEBOOK,
         FLENQA_LENS_INTERVENTION_NOTEBOOK,
+        FLENQA_PROBE_JGAIN_NOTEBOOK,
         FLENQA_PROBE_JLENS_NOTEBOOK,
         Path("experiments/jlens_readout_sanity/jlens_readout_sanity.ipynb"),
     ]
