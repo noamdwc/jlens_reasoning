@@ -2,11 +2,93 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
-from typing import Any
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import ExitStack, contextmanager
+from functools import partial
+from typing import Any, Self
 
 import torch
 from torch import nn
+
+
+class _ActivationHooks:
+    """Apply hidden-state edits in a context. An edit returning None skips the call."""
+
+    def __init__(
+        self,
+        edits: Iterable[
+            tuple[nn.Module, Callable[[torch.Tensor], torch.Tensor | None]]
+        ],
+    ) -> None:
+        self._edits = tuple(edits)
+
+    @staticmethod
+    def _hook(edit, _module, _args, output):
+        hidden = output if torch.is_tensor(output) else output[0]
+        patched = edit(hidden)
+        if patched is None:
+            return output
+        return patched if torch.is_tensor(output) else (patched, *output[1:])
+
+    def __enter__(self) -> Self:
+        with ExitStack() as cleanup:
+            for block, edit in self._edits:
+                handle = block.register_forward_hook(partial(self._hook, edit))
+                cleanup.callback(handle.remove)
+            self._cleanup = cleanup.pop_all()
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self._cleanup.close()
+
+
+@contextmanager
+def add_prompt_delta(
+    block: nn.Module,
+    delta: torch.Tensor,
+    *,
+    prompt_length: int,
+    token_position: int = -1,
+) -> Iterator[None]:
+    """Add delta to one token on the first block call, then leave decoding alone.
+
+    Wrap one `generate_chat` call (one prompt, no beams). The first block output
+    must contain the full wrapped prompt. Later calls are untouched, including
+    generation without a KV cache. The delta is cast to the activation's device
+    and dtype; verify the realized probe-score change for low-precision models.
+    This is an inference edit, not the differentiable map used to compute gain.
+    """
+    if (
+        delta.ndim != 1
+        or not delta.is_floating_point()
+        or not torch.isfinite(delta).all()
+    ):
+        raise ValueError("Delta must be a finite floating-point vector")
+    if prompt_length < 1 or not -prompt_length <= token_position < prompt_length:
+        raise ValueError("Token position must be inside the wrapped prompt")
+    delta = delta.detach().clone()
+    applied = False
+
+    def edit(hidden: torch.Tensor) -> torch.Tensor | None:
+        """Edit the selected prefill token once, preserving later decode outputs."""
+        nonlocal applied
+        if applied:
+            return None
+        if hidden.shape != (1, prompt_length, delta.numel()):
+            raise ValueError(
+                "First block call must match one full prompt and delta width"
+            )
+        patched = hidden.clone()
+        patched[0, token_position] = hidden[0, token_position] + delta.to(hidden)
+        if not torch.isfinite(patched[0, token_position]).all():
+            raise ValueError("Non-finite intervened activation")
+        applied = True
+        return patched
+
+    with _ActivationHooks([(block, edit)]):
+        yield
+        if not applied:
+            raise RuntimeError("The intervention block was never called")
 
 
 def jlens_vector(
@@ -137,7 +219,7 @@ def coordinate_patch_from_activation(
     )
 
 
-class LensCoordinateSwapper:
+class LensCoordinateSwapper(_ActivationHooks):
     def __init__(
         self,
         blocks: Sequence[nn.Module],
@@ -145,51 +227,21 @@ class LensCoordinateSwapper:
         *,
         alpha: float,
     ) -> None:
-        self._blocks = blocks
-        self._vectors_by_layer = dict(vectors_by_layer)
-        self._alpha = alpha
-        self._handles: list[torch.utils.hooks.RemovableHandle] = []
-
-    def _hook(self, layer: int):
-        source_vector, target_vector = self._vectors_by_layer[layer]
-
-        def patch(module: nn.Module, inputs: tuple[Any, ...], output: Any) -> Any:
-            """Patch one hooked layer output with the configured coordinate swap."""
-            del module, inputs
-            hidden = output if torch.is_tensor(output) else output[0]
-            patched = coordinate_swap(
-                hidden,
-                source_vector,
-                target_vector,
-                alpha=self._alpha,
+        super().__init__(
+            (
+                blocks[layer],
+                partial(
+                    coordinate_swap,
+                    source_vector=source,
+                    target_vector=target,
+                    alpha=alpha,
+                ),
             )
-            if torch.is_tensor(output):
-                return patched
-            return (patched, *output[1:])
-
-        return patch
-
-    def __enter__(self) -> LensCoordinateSwapper:
-        try:
-            for layer in sorted(self._vectors_by_layer):
-                self._handles.append(
-                    self._blocks[layer].register_forward_hook(self._hook(layer))
-                )
-        except Exception:
-            self._remove()
-            raise
-        return self
-
-    def _remove(self) -> None:
-        for handle in self._handles:
-            handle.remove()
-        self._handles = []
-
-    def __exit__(self, *exc: Any) -> None:
-        self._remove()
+            for layer, (source, target) in sorted(vectors_by_layer.items())
+        )
 
 
-class LensCoordinatePatcher:
+class LensCoordinatePatcher(_ActivationHooks):
     def __init__(
         self,
         blocks: Sequence[nn.Module],
@@ -198,50 +250,18 @@ class LensCoordinatePatcher:
         *,
         alpha: float,
     ) -> None:
-        self._blocks = blocks
-        self._vectors_by_layer = dict(vectors_by_layer)
-        self._target_coordinates_by_layer = dict(target_coordinates_by_layer)
-        self._alpha = alpha
-        self._handles: list[torch.utils.hooks.RemovableHandle] = []
-
-    def _hook(self, layer: int):
-        vectors = self._vectors_by_layer[layer]
-        target_coordinates = self._target_coordinates_by_layer[layer]
-
-        def patch(module: nn.Module, inputs: tuple[Any, ...], output: Any) -> Any:
-            """Patch one hooked layer output toward configured target coordinates."""
-            del module, inputs
-            hidden = output if torch.is_tensor(output) else output[0]
-            patched = coordinate_patch(
-                hidden,
-                vectors,
-                target_coordinates,
-                alpha=self._alpha,
+        super().__init__(
+            (
+                blocks[layer],
+                partial(
+                    coordinate_patch,
+                    vectors=vectors,
+                    target_coordinates=target_coordinates_by_layer[layer],
+                    alpha=alpha,
+                ),
             )
-            if torch.is_tensor(output):
-                return patched
-            return (patched, *output[1:])
-
-        return patch
-
-    def __enter__(self) -> LensCoordinatePatcher:
-        try:
-            for layer in sorted(self._vectors_by_layer):
-                self._handles.append(
-                    self._blocks[layer].register_forward_hook(self._hook(layer))
-                )
-        except Exception:
-            self._remove()
-            raise
-        return self
-
-    def _remove(self) -> None:
-        for handle in self._handles:
-            handle.remove()
-        self._handles = []
-
-    def __exit__(self, *exc: Any) -> None:
-        self._remove()
+            for layer, vectors in sorted(vectors_by_layer.items())
+        )
 
 
 def execute_intervention(

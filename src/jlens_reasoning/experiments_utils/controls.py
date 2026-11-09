@@ -10,6 +10,39 @@ from typing import Any
 import torch
 
 
+def random_orthogonal_direction(
+    axis: torch.Tensor, *, norm: float = 1.0, seed: int
+) -> torch.Tensor:
+    """Draw a seeded isotropic direction outside one axis, scaled to `norm`.
+
+    Returns a detached vector on the axis device, in at least float32. Keeping
+    controls in float32 avoids an early low-precision cast destroying their
+    orthogonality; the intervention performs the final activation-dtype cast.
+    """
+    if axis.ndim != 1 or axis.numel() < 2 or not axis.is_floating_point():
+        raise ValueError(
+            "Axis must be a floating-point vector of dimension at least two"
+        )
+    if not math.isfinite(norm) or norm < 0:
+        raise ValueError("Requested norm must be finite and non-negative")
+    working = axis.detach().to(
+        device="cpu", dtype=torch.promote_types(axis.dtype, torch.float32)
+    )
+    axis_norm = working.norm()
+    if not torch.isfinite(axis_norm) or axis_norm == 0:
+        raise ValueError("Axis must be finite and nonzero")
+    unit = working / axis_norm
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    direction = torch.randn(working.shape, generator=generator, dtype=working.dtype)
+    direction -= unit * (unit @ direction)
+    direction_norm = direction.norm()
+    if direction_norm == 0:
+        raise ValueError(
+            "Random draw has zero orthogonal component; choose another seed"
+        )
+    return (direction * (norm / direction_norm)).to(device=axis.device)
+
+
 def mean(values: Sequence[float]) -> float:
     """Return an accurate arithmetic mean for a non-empty sequence."""
     if not values:
